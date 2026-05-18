@@ -1009,6 +1009,67 @@
       .result-meta { grid-template-columns: repeat(3, 1fr); }
       .select-group { grid-template-columns: 1fr; }
     }
+
+    /* ── ACCESSIBILITY ── */
+    .acc-btn {
+      position: fixed;
+      bottom: 30px;
+      left: 30px;
+      background: var(--brand);
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0,0,0,.15);
+      z-index: 1000;
+      border: none;
+      transition: background .15s, transform .15s;
+    }
+
+    .acc-btn:hover { background: var(--brand-hover); transform: scale(1.05); }
+
+    .acc-menu {
+      position: fixed;
+      bottom: 90px;
+      left: 30px;
+      background: #fff;
+      width: 260px;
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.2);
+      padding: 1.5rem;
+      display: none;
+      flex-direction: column;
+      gap: .8rem;
+      z-index: 1000;
+      border: 1px solid var(--border);
+    }
+
+    .acc-menu h4 { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: .25rem; }
+
+    .acc-toggle {
+      width: 100%;
+      padding: .6rem .8rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+      font-family: inherit;
+      color: var(--text-2);
+      transition: border-color .15s, background .15s;
+    }
+
+    .acc-toggle:hover { border-color: var(--brand); background: var(--brand-light); color: var(--brand); }
+
+    body.acc-high-contrast { background: #000 !important; color: #fff !important; }
+    body.acc-high-contrast * { background: #000 !important; color: #fff !important; border-color: #fff !important; }
+    body.acc-large-text * { font-size: 120% !important; }
+    body.acc-highlight-links a { background: yellow !important; color: #000 !important; padding: 2px !important; }
   </style>
 </head>
 <body>
@@ -1653,5 +1714,18 @@
     if (!wasOpen) item.classList.add('open');
   }
 </script>
+
+<!-- ACCESSIBILITY -->
+<button class="acc-btn" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')" aria-label="Accessibility options">
+  <svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
+</button>
+<div class="acc-menu" id="acc-menu">
+  <h4>Accessibility Options</h4>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-high-contrast')">High Contrast Mode</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-large-text')">Increase Font Size</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-highlight-links')">Highlight Links</button>
+  <button class="acc-toggle" onclick="location.reload()" style="color:#ef4444;border-color:#ef4444;margin-top:6px;">Reset All</button>
+</div>
+
 </body>
 </html>

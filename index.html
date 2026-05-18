@@ -8,6 +8,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet" />
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-9YCZYPVJZJ"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-9YCZYPVJZJ');
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -66,25 +74,15 @@
     .logo {
       display: flex;
       align-items: center;
-      gap: 8px;
       text-decoration: none;
       color: var(--text);
-      font-weight: 700;
-      font-size: 17px;
+      font-weight: 800;
+      font-size: 1.25rem;
+      letter-spacing: -0.5px;
       flex-shrink: 0;
     }
 
-    .logo-icon {
-      width: 28px;
-      height: 28px;
-      background: var(--brand);
-      border-radius: 7px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .logo-icon svg { width: 16px; height: 16px; }
+    .logo .blue-cut { color: var(--brand); }
 
     .nav-links {
       display: flex;
@@ -957,18 +955,18 @@
     /* ── FOOTER ── */
     footer {
       border-top: 1px solid var(--border);
-      padding: 40px 24px;
+      padding: 28px 24px;
       background: var(--surface);
+      text-align: center;
     }
 
     .footer-inner {
       max-width: 1200px;
       margin: 0 auto;
       display: flex;
+      flex-direction: column;
       align-items: center;
-      justify-content: space-between;
-      gap: 20px;
-      flex-wrap: wrap;
+      gap: 12px;
     }
 
     .footer-links {
@@ -976,6 +974,7 @@
       gap: 20px;
       list-style: none;
       flex-wrap: wrap;
+      justify-content: center;
     }
 
     .footer-links a {
@@ -985,7 +984,7 @@
       transition: color .15s;
     }
 
-    .footer-links a:hover { color: var(--text-2); }
+    .footer-links a:hover { color: var(--brand); }
 
     .footer-copy { font-size: 13px; color: var(--text-3); }
 
@@ -1017,14 +1016,7 @@
 <!-- NAV -->
 <nav>
   <div class="nav-inner">
-    <a href="https://toclipskit.com/" class="logo">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
-        </svg>
-      </div>
-      toclipskit.com
-    </a>
+    <a href="https://toclipskit.com/" class="logo">ToClips<span class="blue-cut">Kit</span></a>
 
   </div>
 </nav>
@@ -1388,14 +1380,12 @@
 <!-- FOOTER -->
 <footer>
   <div class="footer-inner">
-    <a href="https://toclipskit.com/" class="logo">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M15 10l4.553-2.069A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
-        </svg>
-      </div>
-      toclipskit.com
-    </a>
+    <ul class="footer-links">
+      <li><a href="privacy.html">Privacy Policy</a></li>
+      <li><a href="terms.html">Terms of Service</a></li>
+      <li><a href="https://toclipskit.com/">toclipskit.com</a></li>
+    </ul>
+    <span class="footer-copy">&copy; 2026 ToClipsKit. All rights reserved.</span>
   </div>
 </footer>
 

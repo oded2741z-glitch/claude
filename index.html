@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StoryFrames — הפכו סרטון לסיפור של תמונות</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a href="#" class="logo">
+      <span class="logo-mark">◆</span>
+      <span>StoryFrames</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#how">איך זה עובד</a>
+      <a href="#features">תכונות</a>
+      <a href="#app">נסו עכשיו</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="container hero-inner">
+    <div class="hero-text">
+      <span class="badge">חדש · עיבוד בדפדפן · ללא העלאה לשרת</span>
+      <h1>הפכו <span class="grad">סרטון MP4</span> לסיפור של תמונות — ושמרו כ-GIF.</h1>
+      <p class="lede">
+        העלו סרטון, בחרו את הפריימים הכי יפים, סדרו את רצף הסיפור — וקבלו GIF מונפש שמספר את הרגע בלי מילים.
+      </p>
+      <div class="hero-cta">
+        <a href="#app" class="btn btn-primary">התחילו ליצור — חינם</a>
+        <a href="#how" class="btn btn-ghost">איך זה עובד ↓</a>
+      </div>
+      <ul class="hero-tags">
+        <li>🔒 הקבצים שלכם לא עוזבים את הדפדפן</li>
+        <li>⚡ ללא הרשמה</li>
+        <li>🎬 תמיכה ב-MP4 / WebM / MOV</li>
+      </ul>
+    </div>
+    <div class="hero-visual">
+      <div class="filmstrip">
+        <div class="frame">1</div>
+        <div class="frame">2</div>
+        <div class="frame">3</div>
+        <div class="frame">4</div>
+        <div class="frame">5</div>
+      </div>
+      <div class="gif-out">GIF.gif ✓</div>
+    </div>
+  </div>
+</section>
+
+<section id="how" class="section">
+  <div class="container">
+    <h2 class="section-title">איך זה עובד</h2>
+    <p class="section-sub">שלושה שלבים מהסרטון לסיפור.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>העלו סרטון</h3>
+        <p>גררו קובץ MP4 או בחרו מהמחשב. הקובץ נשאר אצלכם בדפדפן.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>בחרו פריימים</h3>
+        <p>שלפו פריימים אוטומטית או בחרו ידנית את הרגעים שמספרים את הסיפור.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>הורידו GIF</h3>
+        <p>סדרו את הרצף, קבעו מהירות — וייצאו GIF מונפש בלחיצה אחת.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features" class="section section-alt">
+  <div class="container">
+    <h2 class="section-title">למה StoryFrames</h2>
+    <div class="features">
+      <div class="feature">
+        <div class="ico">🔒</div>
+        <h3>פרטיות מלאה</h3>
+        <p>כל העיבוד מתבצע בדפדפן שלכם. שום קובץ לא נשלח לשרת.</p>
+      </div>
+      <div class="feature">
+        <div class="ico">🎞️</div>
+        <h3>חילוץ חכם</h3>
+        <p>דגימה אוטומטית של פריימים לאורך הסרטון, או בחירה ידנית מדויקת.</p>
+      </div>
+      <div class="feature">
+        <div class="ico">🧩</div>
+        <h3>סידור הסיפור</h3>
+        <p>גררו את הפריימים כדי לבנות את הרצף שאתם רוצים לספר.</p>
+      </div>
+      <div class="feature">
+        <div class="ico">⚡</div>
+        <h3>ייצוא מהיר</h3>
+        <p>GIF מוכן בכמה שניות, עם שליטה במהירות, גודל ואיכות.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="app" class="section">
+  <div class="container">
+    <h2 class="section-title">נסו עכשיו</h2>
+    <p class="section-sub">העלו סרטון MP4 — וצרו GIF מהסיפור שלו.</p>
+
+    <div class="app">
+      <div id="dropzone" class="dropzone">
+        <input type="file" id="fileInput" accept="video/*" hidden>
+        <div class="dz-inner">
+          <div class="dz-icon">⇪</div>
+          <div class="dz-title">גררו לכאן קובץ MP4</div>
+          <div class="dz-sub">או <button type="button" class="link" id="browseBtn">בחרו מהמחשב</button></div>
+        </div>
+      </div>
+
+      <div id="workspace" class="workspace hidden">
+        <div class="ws-grid">
+          <div class="ws-video">
+            <video id="video" controls playsinline></video>
+            <div class="ws-controls">
+              <label>
+                מספר פריימים
+                <input type="number" id="frameCount" min="2" max="40" value="10">
+              </label>
+              <button id="extractBtn" class="btn btn-primary">חלץ פריימים אוטומטית</button>
+              <button id="captureBtn" class="btn btn-ghost">📸 לכוד פריים נוכחי</button>
+            </div>
+          </div>
+          <div class="ws-options">
+            <h3>הגדרות GIF</h3>
+            <label>
+              משך הצגת פריים (ms)
+              <input type="number" id="delay" min="50" max="3000" value="400">
+            </label>
+            <label>
+              רוחב GIF (px)
+              <input type="number" id="gifWidth" min="120" max="1280" value="480">
+            </label>
+            <label>
+              איכות (1 = הכי טובה)
+              <input type="number" id="quality" min="1" max="30" value="10">
+            </label>
+            <button id="buildBtn" class="btn btn-primary" disabled>צרו GIF</button>
+            <div id="status" class="status"></div>
+          </div>
+        </div>
+
+        <div class="frames-section">
+          <div class="frames-head">
+            <h3>פריימים בסיפור <span id="framesCount" class="muted">(0)</span></h3>
+            <button id="clearBtn" class="btn-mini">נקה הכל</button>
+          </div>
+          <p class="muted">גררו פריימים כדי לסדר אותם · לחצו ✕ כדי להסיר</p>
+          <div id="framesList" class="frames-list"></div>
+        </div>
+
+        <div id="result" class="result hidden">
+          <h3>ה-GIF שלכם מוכן 🎉</h3>
+          <img id="gifImage" alt="Generated GIF">
+          <a id="downloadLink" class="btn btn-primary" download="story.gif">⬇ הורידו GIF</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <p>StoryFrames · נבנה בדפדפן · הסרטונים שלכם נשארים שלכם.</p>
+  </div>
+</footer>
+
+<canvas id="hiddenCanvas" style="display:none"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

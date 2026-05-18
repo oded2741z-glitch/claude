@@ -1,0 +1,6 @@
+build/
+dist/
+installer/
+*.pyc
+__pycache__/
+icon.ico

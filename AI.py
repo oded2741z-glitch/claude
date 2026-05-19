@@ -151,6 +151,9 @@ class DetectionWorker(QThread):
                 "Install: pip install opencv-python numpy"
             )
             return
+        except BaseException as e:
+            self.error.emit(f"opencv/numpy load failed:\n{type(e).__name__}: {e}")
+            return
 
         try:
             from ultralytics import YOLO
@@ -158,6 +161,14 @@ class DetectionWorker(QThread):
             self.error.emit(
                 f"Missing package: {getattr(e, 'name', e)}\n"
                 "Install: pip install ultralytics"
+            )
+            return
+        except BaseException as e:
+            self.error.emit(
+                f"ultralytics/torch load failed:\n{type(e).__name__}: {e}\n\n"
+                "On Windows, reinstall torch CPU build:\n"
+                "  pip install torch torchvision --index-url "
+                "https://download.pytorch.org/whl/cpu"
             )
             return
 
@@ -470,28 +481,44 @@ class IsolatedStreamReceiver(QWidget):
 
     def _check_detection_deps(self):
         missing = []
+        broken = []
         for pkg, install_name in (
-            ("cv2", "opencv-python"),
             ("numpy", "numpy"),
+            ("cv2", "opencv-python"),
             ("ultralytics", "ultralytics"),
         ):
             try:
                 __import__(pkg)
             except ImportError:
                 missing.append(install_name)
-        if missing:
-            self._show_missing_deps(missing)
+            except BaseException as e:
+                broken.append(f"{install_name}: {type(e).__name__}: {e}")
+        if missing or broken:
+            self._show_dep_error(missing, broken)
             return False
         return True
 
-    def _show_missing_deps(self, missing):
-        dialog = FramelessDialog("MISSING DEPENDENCIES", (420, 180), self)
-        text = QLabel(
-            "Detection requires:\n  " + "\n  ".join(missing) +
-            "\n\nInstall:\n  pip install " + " ".join(missing)
-        )
+    def _show_dep_error(self, missing, broken):
+        dialog = FramelessDialog("DETECTION UNAVAILABLE", (560, 280), self)
+        parts = []
+        if missing:
+            parts.append(
+                "Missing packages:\n  " + "\n  ".join(missing) +
+                "\n\nInstall:\n  pip install " + " ".join(missing)
+            )
+        if broken:
+            parts.append(
+                "Broken installations:\n  " + "\n  ".join(broken) +
+                "\n\nFor torch/DLL errors on Windows, install the\n"
+                "Visual C++ Redistributable, then:\n"
+                "  pip uninstall torch torchvision\n"
+                "  pip install torch torchvision --index-url "
+                "https://download.pytorch.org/whl/cpu"
+            )
+        text = QLabel("\n\n".join(parts))
         text.setStyleSheet("border: none;")
         text.setMargin(15)
+        text.setWordWrap(True)
         dialog.body_layout.addWidget(text)
         dialog.body_layout.addStretch()
         self.active_dialog = dialog

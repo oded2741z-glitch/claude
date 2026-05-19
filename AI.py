@@ -134,43 +134,76 @@ class DetectionWorker(QThread):
 
     def run(self):
         try:
+            self._run_inner()
+        except BaseException as e:
+            import traceback
+            tb = traceback.format_exc()
+            sys.stderr.write(tb)
+            self.error.emit(f"Detection thread crashed:\n{type(e).__name__}: {e}")
+
+    def _run_inner(self):
+        try:
+            import numpy as np
             import cv2
+        except ImportError as e:
+            self.error.emit(
+                f"Missing package: {getattr(e, 'name', e)}\n"
+                "Install: pip install opencv-python numpy"
+            )
+            return
+
+        try:
             from ultralytics import YOLO
         except ImportError as e:
-            self.error.emit(f"Missing package: {e.name}\nInstall: pip install ultralytics opencv-python")
+            self.error.emit(
+                f"Missing package: {getattr(e, 'name', e)}\n"
+                "Install: pip install ultralytics"
+            )
             return
 
         try:
             model = YOLO(YOLO_MODEL_PATH)
         except Exception as e:
-            self.error.emit(f"Model load failed:\n{e}")
+            self.error.emit(f"Model load failed:\n{type(e).__name__}: {e}")
             return
 
         cap = cv2.VideoCapture(self.url)
         if not cap.isOpened():
+            cap.release()
             self.error.emit(f"Cannot open stream:\n{self.url}")
             return
 
         try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass
+
+        try:
             while self._running:
                 ok, frame = cap.read()
-                if not ok:
+                if not ok or frame is None:
                     self.msleep(50)
                     continue
 
-                results = model(
-                    frame,
-                    classes=[PERSON_CLASS_ID],
-                    conf=DETECTION_CONF,
-                    verbose=False,
-                )
-                annotated = results[0].plot()
+                try:
+                    results = model.predict(
+                        frame,
+                        classes=[PERSON_CLASS_ID],
+                        conf=DETECTION_CONF,
+                        verbose=False,
+                        device="cpu",
+                    )
+                    annotated = results[0].plot()
+                except Exception as e:
+                    sys.stderr.write(f"inference error: {e}\n")
+                    annotated = frame
 
                 rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                rgb = np.ascontiguousarray(rgb)
                 h, w, ch = rgb.shape
                 qimg = QImage(
-                    rgb.data, w, h, ch * w, QImage.Format_RGB888
-                ).copy()
+                    rgb.tobytes(), w, h, ch * w, QImage.Format_RGB888
+                )
                 self.frame_ready.emit(qimg)
         finally:
             cap.release()
@@ -427,10 +460,42 @@ class IsolatedStreamReceiver(QWidget):
         dialog.show()
 
     def _toggle_detection(self, checked):
+        if checked and not self._check_detection_deps():
+            self.detect_btn.setChecked(False)
+            return
         self.detection_enabled = checked
         self.detect_btn.setText(f"DETECT: {'ON' if checked else 'OFF'}")
         if self.current_player is not None:
             self.connect_stream()
+
+    def _check_detection_deps(self):
+        missing = []
+        for pkg, install_name in (
+            ("cv2", "opencv-python"),
+            ("numpy", "numpy"),
+            ("ultralytics", "ultralytics"),
+        ):
+            try:
+                __import__(pkg)
+            except ImportError:
+                missing.append(install_name)
+        if missing:
+            self._show_missing_deps(missing)
+            return False
+        return True
+
+    def _show_missing_deps(self, missing):
+        dialog = FramelessDialog("MISSING DEPENDENCIES", (420, 180), self)
+        text = QLabel(
+            "Detection requires:\n  " + "\n  ".join(missing) +
+            "\n\nInstall:\n  pip install " + " ".join(missing)
+        )
+        text.setStyleSheet("border: none;")
+        text.setMargin(15)
+        dialog.body_layout.addWidget(text)
+        dialog.body_layout.addStretch()
+        self.active_dialog = dialog
+        dialog.show()
 
     def _clear_player(self):
         if self.placeholder is not None:

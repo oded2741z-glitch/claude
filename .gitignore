@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 venv/
 receiver_history.txt
+*.pt

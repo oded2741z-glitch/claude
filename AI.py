@@ -4,7 +4,8 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QLineEdit, QFrame, QListWidget)
-from PyQt5.QtCore import Qt, QUrl, QPoint
+from PyQt5.QtCore import Qt, QUrl, QThread, pyqtSignal
+from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
 # --- הגדרות עיצוב גלובליות ---
@@ -17,6 +18,10 @@ TEXT_COLOR = "#FFFFFF"
 HISTORY_FILE = Path("receiver_history.txt")
 MAX_HISTORY = 10
 DEFAULT_URL = "http://127.0.0.1:9006"
+
+YOLO_MODEL_PATH = "yolov8n.pt"
+PERSON_CLASS_ID = 0
+DETECTION_CONF = 0.4
 
 STYLESHEET = f"""
 QWidget {{
@@ -113,6 +118,107 @@ class StreamPlayer(QWebEngineView):
         self.setHtml(html, QUrl(url))
 
 
+class DetectionWorker(QThread):
+    """קורא פריימים מה-stream ומריץ זיהוי אנשים עם YOLOv8n."""
+
+    frame_ready = pyqtSignal(QImage)
+    error = pyqtSignal(str)
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self.url = url
+        self._running = True
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        try:
+            import cv2
+            from ultralytics import YOLO
+        except ImportError as e:
+            self.error.emit(f"Missing package: {e.name}\nInstall: pip install ultralytics opencv-python")
+            return
+
+        try:
+            model = YOLO(YOLO_MODEL_PATH)
+        except Exception as e:
+            self.error.emit(f"Model load failed:\n{e}")
+            return
+
+        cap = cv2.VideoCapture(self.url)
+        if not cap.isOpened():
+            self.error.emit(f"Cannot open stream:\n{self.url}")
+            return
+
+        try:
+            while self._running:
+                ok, frame = cap.read()
+                if not ok:
+                    self.msleep(50)
+                    continue
+
+                results = model(
+                    frame,
+                    classes=[PERSON_CLASS_ID],
+                    conf=DETECTION_CONF,
+                    verbose=False,
+                )
+                annotated = results[0].plot()
+
+                rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb.shape
+                qimg = QImage(
+                    rgb.data, w, h, ch * w, QImage.Format_RGB888
+                ).copy()
+                self.frame_ready.emit(qimg)
+        finally:
+            cap.release()
+
+
+class DetectionPlayer(QLabel):
+    """תצוגת stream עם זיהוי אנשים מצויר על הפריים."""
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet(
+            f"background-color: {BG_COLOR}; color: {ACCENT_COLOR};"
+            " font-size: 12pt; border: none;"
+        )
+        self.setText("LOADING YOLOv8n MODEL...")
+        self._last_image = None
+
+        self.worker = DetectionWorker(url, parent=self)
+        self.worker.frame_ready.connect(self._update_frame)
+        self.worker.error.connect(self._show_error)
+        self.worker.start()
+
+    def _update_frame(self, qimg):
+        self._last_image = qimg
+        self._render()
+
+    def _render(self):
+        if self._last_image is None:
+            return
+        pix = QPixmap.fromImage(self._last_image).scaled(
+            self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.setPixmap(pix)
+
+    def _show_error(self, msg):
+        self.setText(f"DETECTION ERROR\n\n{msg}")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._render()
+
+    def stop(self):
+        if self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(2000)
+
+
 class FramelessDialog(QWidget):
     """חלון מודאלי משותף עם כותרת וכפתור סגירה."""
 
@@ -165,6 +271,7 @@ class IsolatedStreamReceiver(QWidget):
         self.current_player = None
         self.placeholder = None
         self.active_dialog = None
+        self.detection_enabled = False
 
         self.history = self._load_history()
 
@@ -249,6 +356,11 @@ class IsolatedStreamReceiver(QWidget):
         saved_btn.clicked.connect(self.open_saved_list)
         layout.addWidget(saved_btn)
 
+        self.detect_btn = QPushButton("DETECT: OFF")
+        self.detect_btn.setCheckable(True)
+        self.detect_btn.clicked.connect(self._toggle_detection)
+        layout.addWidget(self.detect_btn)
+
         connect_btn = QPushButton("CONNECT")
         connect_btn.setStyleSheet(
             f"background-color: {BTN_COLOR}; color: {ACCENT_COLOR};"
@@ -314,6 +426,22 @@ class IsolatedStreamReceiver(QWidget):
         self.active_dialog = dialog
         dialog.show()
 
+    def _toggle_detection(self, checked):
+        self.detection_enabled = checked
+        self.detect_btn.setText(f"DETECT: {'ON' if checked else 'OFF'}")
+        if self.current_player is not None:
+            self.connect_stream()
+
+    def _clear_player(self):
+        if self.placeholder is not None:
+            self.placeholder.deleteLater()
+            self.placeholder = None
+        if self.current_player is not None:
+            if isinstance(self.current_player, DetectionPlayer):
+                self.current_player.stop()
+            self.current_player.deleteLater()
+            self.current_player = None
+
     def connect_stream(self):
         raw_url = self.url_input.text().strip()
         if not raw_url:
@@ -321,12 +449,7 @@ class IsolatedStreamReceiver(QWidget):
 
         full_url = normalize_url(raw_url)
 
-        if self.placeholder is not None:
-            self.placeholder.deleteLater()
-            self.placeholder = None
-        if self.current_player is not None:
-            self.current_player.deleteLater()
-            self.current_player = None
+        self._clear_player()
 
         if raw_url in self.history:
             self.history.remove(raw_url)
@@ -334,18 +457,22 @@ class IsolatedStreamReceiver(QWidget):
         del self.history[MAX_HISTORY:]
         self._save_history()
 
-        self.current_player = StreamPlayer(full_url)
+        if self.detection_enabled:
+            self.current_player = DetectionPlayer(full_url)
+        else:
+            self.current_player = StreamPlayer(full_url)
         self.video_layout.addWidget(self.current_player)
 
     def show_help(self):
-        dialog = FramelessDialog("SYSTEM MANUAL", (350, 180), self)
+        dialog = FramelessDialog("SYSTEM MANUAL", (380, 220), self)
 
         text = QLabel(
             "1. Enter the exact Stream URL.\n"
             "2. Addresses are saved automatically.\n"
             "3. Click 'SAVED' to pick from history.\n"
-            "4. Click 'CONNECT' to load stream.\n"
-            "5. Press 'F4' to instantly hide/show."
+            "4. Click 'DETECT' to toggle person detection (YOLOv8n).\n"
+            "5. Click 'CONNECT' to load stream.\n"
+            "6. Press 'F4' to instantly hide/show."
         )
         text.setStyleSheet("border: none;")
         text.setMargin(15)
@@ -364,6 +491,10 @@ class IsolatedStreamReceiver(QWidget):
         else:
             self.hide()
             self.is_hidden = True
+
+    def closeEvent(self, event):
+        self._clear_player()
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":

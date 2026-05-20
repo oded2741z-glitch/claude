@@ -18,6 +18,12 @@ try:
 except ImportError:
     YOLO_AVAILABLE = False
 
+try:
+    import torch
+    GPU_AVAILABLE = torch.cuda.is_available()
+except ImportError:
+    GPU_AVAILABLE = False
+
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QPushButton, QLabel,
                              QLineEdit, QComboBox, QFrame, QFileDialog, QSizePolicy, QScrollArea,
@@ -213,6 +219,7 @@ class DetectionWorker(QThread):
         self.enable_person = True
         self.enable_drone = True
         self.enable_flash = True
+        self.device = "cpu"
 
     def submit_frame(self, idx, frame_bgr, gray):
         with self._frames_lock:
@@ -240,7 +247,7 @@ class DetectionWorker(QThread):
                 now = time.time()
 
                 if self.person_model and self.enable_person:
-                    results = self.person_model(frame_bgr, classes=[0], verbose=False)
+                    results = self.person_model(frame_bgr, classes=[0], verbose=False, device=self.device)
                     for box in results[0].boxes:
                         conf = float(box.conf[0])
                         if conf >= 0.4:
@@ -248,7 +255,7 @@ class DetectionWorker(QThread):
                             rects.append((x1, y1, x2 - x1, y2 - y1, conf, "person"))
 
                 if self.drone_model and self.enable_drone:
-                    results = self.drone_model(frame_bgr, verbose=False)
+                    results = self.drone_model(frame_bgr, verbose=False, device=self.device)
                     for box in results[0].boxes:
                         conf = float(box.conf[0])
                         if conf >= 0.4:
@@ -509,11 +516,13 @@ class CombinedSystemApp(QMainWindow):
         self.detect_person = True
         self.detect_drone = True
         self.detect_flash = True
+        self.use_gpu = GPU_AVAILABLE
         self._stream_pairs = []
         self._detect_btn = None
 
         # Worker setup
         self.detection_worker = DetectionWorker()
+        self.detection_worker.device = "cuda:0" if self.use_gpu else "cpu"
         self.detection_worker.results_ready.connect(self._on_detection_results)
         self.detection_worker.start()
 
@@ -672,6 +681,18 @@ class CombinedSystemApp(QMainWindow):
         models_layout.addWidget(self.cb_flash)
         models_layout.addStretch()
         layout_vbox.addWidget(models_frame)
+
+        device_frame = QFrame()
+        device_layout = QHBoxLayout(device_frame)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        device_layout.setSpacing(8)
+        self.cb_gpu = QCheckBox("GPU" if GPU_AVAILABLE else "GPU (unavailable)")
+        self.cb_gpu.setChecked(self.use_gpu)
+        self.cb_gpu.setEnabled(GPU_AVAILABLE)
+        self.cb_gpu.toggled.connect(self._set_device)
+        device_layout.addWidget(self.cb_gpu)
+        device_layout.addStretch()
+        layout_vbox.addWidget(device_frame)
 
         layout_vbox.addStretch()
         self.dashboard_layout.addWidget(layout_widget)
@@ -856,6 +877,10 @@ class CombinedSystemApp(QMainWindow):
                 self.state_data["urls"].append({"label": label or f"Source {len(self.state_data['urls'])+1}", "url": url})
                 added = True
         return added
+
+    def _set_device(self, use_gpu):
+        self.use_gpu = use_gpu and GPU_AVAILABLE
+        self.detection_worker.device = "cuda:0" if self.use_gpu else "cpu"
 
     def _set_model_enabled(self, kind, value):
         if kind == "person":

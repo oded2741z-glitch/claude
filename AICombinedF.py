@@ -190,17 +190,28 @@ def clear_layout(layout):
 # ==========================================
 # WORKER THREAD FOR DETECTION
 # ==========================================
+import threading
+
 class DetectionWorker(QThread):
     results_ready = pyqtSignal(int, list)
 
     def __init__(self):
         super().__init__()
         self.running = True
-        self.frame_queue = queue.Queue(maxsize=10)
+        # Only keep the latest frame per stream so detection never lags
+        # behind the live video when YOLO is slower than the capture tick.
+        self._latest_frames = {}
+        self._frames_lock = threading.Lock()
+        self._frames_event = threading.Event()
         self.person_model = None
         self.drone_model = None
         self._prev_frames = {}
         self._flash_persist = {}
+
+    def submit_frame(self, idx, frame_bgr, gray):
+        with self._frames_lock:
+            self._latest_frames[idx] = (frame_bgr, gray)
+        self._frames_event.set()
 
     def run(self):
         if YOLO_AVAILABLE:
@@ -209,50 +220,56 @@ class DetectionWorker(QThread):
                 self.drone_model = YOLO(DRONE_MODEL_PATH)
 
         while self.running:
-            try:
-                idx, frame_bgr, gray = self.frame_queue.get(timeout=0.1)
-            except queue.Empty:
+            if not self._frames_event.wait(timeout=0.1):
                 continue
+            with self._frames_lock:
+                pending = self._latest_frames
+                self._latest_frames = {}
+                self._frames_event.clear()
 
-            rects = []
-            now = time.time()
+            for idx, (frame_bgr, gray) in pending.items():
+                if not self.running:
+                    break
+                rects = []
+                now = time.time()
 
-            if self.person_model:
-                results = self.person_model(frame_bgr, classes=[0], verbose=False)
-                for box in results[0].boxes:
-                    conf = float(box.conf[0])
-                    if conf >= 0.4:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        rects.append((x1, y1, x2 - x1, y2 - y1, conf, "person"))
+                if self.person_model:
+                    results = self.person_model(frame_bgr, classes=[0], verbose=False)
+                    for box in results[0].boxes:
+                        conf = float(box.conf[0])
+                        if conf >= 0.4:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            rects.append((x1, y1, x2 - x1, y2 - y1, conf, "person"))
 
-            if self.drone_model:
-                results = self.drone_model(frame_bgr, verbose=False)
-                for box in results[0].boxes:
-                    conf = float(box.conf[0])
-                    if conf >= 0.4:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                        rects.append((x1, y1, x2 - x1, y2 - y1, conf, "drone"))
+                if self.drone_model:
+                    results = self.drone_model(frame_bgr, verbose=False)
+                    for box in results[0].boxes:
+                        conf = float(box.conf[0])
+                        if conf >= 0.4:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            rects.append((x1, y1, x2 - x1, y2 - y1, conf, "drone"))
 
-            prev_gray = self._prev_frames.get(idx)
-            if prev_gray is not None and prev_gray.shape == gray.shape:
-                for (x, y, fw, fh) in detect_muzzle_flash(prev_gray, gray):
-                    self._flash_persist.setdefault(idx, []).append((x, y, fw, fh, now))
-            
-            self._prev_frames[idx] = gray
+                prev_gray = self._prev_frames.get(idx)
+                if prev_gray is not None and prev_gray.shape == gray.shape:
+                    for (x, y, fw, fh) in detect_muzzle_flash(prev_gray, gray):
+                        self._flash_persist.setdefault(idx, []).append((x, y, fw, fh, now))
 
-            active = [(x, y, fw, fh, t) for (x, y, fw, fh, t)
-                      in self._flash_persist.get(idx, [])
-                      if now - t <= FLASH_PERSIST_SECS]
-            self._flash_persist[idx] = active
-            
-            for (x, y, fw, fh, t) in active:
-                remaining = max(1, FLASH_PERSIST_SECS - int(now - t))
-                rects.append((x, y, fw, fh, 1.0, "flash", remaining))
+                self._prev_frames[idx] = gray
 
-            self.results_ready.emit(idx, rects)
+                active = [(x, y, fw, fh, t) for (x, y, fw, fh, t)
+                          in self._flash_persist.get(idx, [])
+                          if now - t <= FLASH_PERSIST_SECS]
+                self._flash_persist[idx] = active
+
+                for (x, y, fw, fh, t) in active:
+                    remaining = max(1, FLASH_PERSIST_SECS - int(now - t))
+                    rects.append((x, y, fw, fh, 1.0, "flash", remaining))
+
+                self.results_ready.emit(idx, rects)
 
     def stop(self):
         self.running = False
+        self._frames_event.set()
         self.wait()
 
 
@@ -653,7 +670,8 @@ class CombinedSystemApp(QMainWindow):
                 overlay.deleteLater()
         clear_layout(self.displays_layout)
         self._stream_pairs = []
-        self.detection_worker.frame_queue.queue.clear()
+        with self.detection_worker._frames_lock:
+            self.detection_worker._latest_frames.clear()
         
         s = self.state_data
         layout_type = s["layout"]
@@ -889,8 +907,7 @@ class CombinedSystemApp(QMainWindow):
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
-                if not self.detection_worker.frame_queue.full():
-                    self.detection_worker.frame_queue.put_nowait((idx, frame_bgr, gray))
+                self.detection_worker.submit_frame(idx, frame_bgr, gray)
 
             except Exception:
                 pass

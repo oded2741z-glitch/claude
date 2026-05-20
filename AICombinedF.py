@@ -291,8 +291,19 @@ class StreamPlayer(QWebEngineView):
 class DetectionOverlay(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Top-level transparent window: QWebEngineView uses a native GPU
+        # surface that draws above sibling Qt widgets, so an in-layout
+        # overlay stays hidden. A frameless top-level window with
+        # transparent input sits above the web view reliably.
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+            | Qt.WindowTransparentForInput
+        )
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setStyleSheet("background: transparent;")
         self._rects = []
 
@@ -636,6 +647,10 @@ class CombinedSystemApp(QMainWindow):
             self.config_window.activateWindow()
 
     def refresh_screens(self):
+        for overlay, _ in self._stream_pairs:
+            if overlay:
+                overlay.close()
+                overlay.deleteLater()
         clear_layout(self.displays_layout)
         self._stream_pairs = []
         self.detection_worker.frame_queue.queue.clear()
@@ -659,13 +674,10 @@ class CombinedSystemApp(QMainWindow):
             
             if url:
                 player = StreamPlayer(url, ratio=current_ratio)
+                inner_layout.addWidget(player, 0, 0)
                 overlay = DetectionOverlay()
-                stack_w = QWidget()
-                stack_l = QStackedLayout(stack_w)
-                stack_l.setStackingMode(QStackedLayout.StackAll)
-                stack_l.addWidget(player)
-                stack_l.addWidget(overlay)
-                inner_layout.addWidget(stack_w, 0, 0)
+                if self.detection_enabled:
+                    overlay.show()
                 self._stream_pairs.append((overlay, player))
             else:
                 lbl = QLabel(f"SCREEN {i+1}\n\n(No Stream Selected)")
@@ -811,8 +823,28 @@ class CombinedSystemApp(QMainWindow):
             for overlay, _ in self._stream_pairs:
                 if overlay:
                     overlay.set_rects([])
+                    overlay.hide()
+        else:
+            self._sync_overlay_geometry()
+
+    def _sync_overlay_geometry(self):
+        for overlay, player in self._stream_pairs:
+            if not overlay or not player:
+                continue
+            if not player.isVisible() or not self.detection_enabled or self.is_hidden:
+                if overlay.isVisible():
+                    overlay.hide()
+                continue
+            top_left = player.mapToGlobal(QPoint(0, 0))
+            overlay.setGeometry(top_left.x(), top_left.y(),
+                                player.width(), player.height())
+            if not overlay.isVisible():
+                overlay.show()
+            overlay.raise_()
 
     def _capture_frames_for_worker(self):
+        self._sync_overlay_geometry()
+
         if not self.detection_enabled or not YOLO_AVAILABLE or not CV2_AVAILABLE:
             return
 

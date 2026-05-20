@@ -21,7 +21,7 @@ except ImportError:
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QPushButton, QLabel,
                              QLineEdit, QComboBox, QFrame, QFileDialog, QSizePolicy, QScrollArea,
-                             QStackedLayout)
+                             QStackedLayout, QCheckBox)
 from PyQt5.QtCore import Qt, QUrl, QTimer, QPoint, pyqtSignal, QThread
 from PyQt5.QtGui import QKeySequence, QFont, QColor, QPainter, QPen, QImage
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -118,6 +118,9 @@ QScrollArea {{ border: none; background-color: transparent; }}
 QScrollBar:vertical {{ background: {C_BG}; width: 10px; }}
 QScrollBar::handle:vertical {{ background: {C_BORDER}; }}
 QScrollBar::handle:vertical:hover {{ background: {C_ACCENT}; }}
+QCheckBox {{ color: #FFFFFF; spacing: 4px; font-size: 9pt; }}
+QCheckBox::indicator {{ width: 12px; height: 12px; border: 1px solid {C_BORDER}; background: {C_BG2}; }}
+QCheckBox::indicator:checked {{ background: {C_ACCENT}; border: 1px solid {C_ACCENT}; }}
 """
 
 # ==========================================
@@ -207,6 +210,9 @@ class DetectionWorker(QThread):
         self.drone_model = None
         self._prev_frames = {}
         self._flash_persist = {}
+        self.enable_person = True
+        self.enable_drone = True
+        self.enable_flash = True
 
     def submit_frame(self, idx, frame_bgr, gray):
         with self._frames_lock:
@@ -233,7 +239,7 @@ class DetectionWorker(QThread):
                 rects = []
                 now = time.time()
 
-                if self.person_model:
+                if self.person_model and self.enable_person:
                     results = self.person_model(frame_bgr, classes=[0], verbose=False)
                     for box in results[0].boxes:
                         conf = float(box.conf[0])
@@ -241,7 +247,7 @@ class DetectionWorker(QThread):
                             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                             rects.append((x1, y1, x2 - x1, y2 - y1, conf, "person"))
 
-                if self.drone_model:
+                if self.drone_model and self.enable_drone:
                     results = self.drone_model(frame_bgr, verbose=False)
                     for box in results[0].boxes:
                         conf = float(box.conf[0])
@@ -249,21 +255,23 @@ class DetectionWorker(QThread):
                             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                             rects.append((x1, y1, x2 - x1, y2 - y1, conf, "drone"))
 
-                prev_gray = self._prev_frames.get(idx)
-                if prev_gray is not None and prev_gray.shape == gray.shape:
-                    for (x, y, fw, fh) in detect_muzzle_flash(prev_gray, gray):
-                        self._flash_persist.setdefault(idx, []).append((x, y, fw, fh, now))
+                if self.enable_flash:
+                    prev_gray = self._prev_frames.get(idx)
+                    if prev_gray is not None and prev_gray.shape == gray.shape:
+                        for (x, y, fw, fh) in detect_muzzle_flash(prev_gray, gray):
+                            self._flash_persist.setdefault(idx, []).append((x, y, fw, fh, now))
+                    self._prev_frames[idx] = gray
 
-                self._prev_frames[idx] = gray
+                    active = [(x, y, fw, fh, t) for (x, y, fw, fh, t)
+                              in self._flash_persist.get(idx, [])
+                              if now - t <= FLASH_PERSIST_SECS]
+                    self._flash_persist[idx] = active
 
-                active = [(x, y, fw, fh, t) for (x, y, fw, fh, t)
-                          in self._flash_persist.get(idx, [])
-                          if now - t <= FLASH_PERSIST_SECS]
-                self._flash_persist[idx] = active
-
-                for (x, y, fw, fh, t) in active:
-                    remaining = max(1, FLASH_PERSIST_SECS - int(now - t))
-                    rects.append((x, y, fw, fh, 1.0, "flash", remaining))
+                    for (x, y, fw, fh, t) in active:
+                        remaining = max(1, FLASH_PERSIST_SECS - int(now - t))
+                        rects.append((x, y, fw, fh, 1.0, "flash", remaining))
+                else:
+                    self._prev_frames[idx] = gray
 
                 self.results_ready.emit(idx, rects)
 
@@ -498,6 +506,9 @@ class CombinedSystemApp(QMainWindow):
         self.focused_screen_idx = None
         self.config_window = None
         self.detection_enabled = False
+        self.detect_person = True
+        self.detect_drone = True
+        self.detect_flash = True
         self._stream_pairs = []
         self._detect_btn = None
 
@@ -642,6 +653,25 @@ class CombinedSystemApp(QMainWindow):
         self._detect_btn.setObjectName("AccentButton" if self.detection_enabled else "")
         self._detect_btn.clicked.connect(self.toggle_detection)
         layout_vbox.addWidget(self._detect_btn)
+
+        models_frame = QFrame()
+        models_layout = QHBoxLayout(models_frame)
+        models_layout.setContentsMargins(0, 0, 0, 0)
+        models_layout.setSpacing(8)
+        self.cb_person = QCheckBox("Person")
+        self.cb_drone = QCheckBox("Drone")
+        self.cb_flash = QCheckBox("Flash")
+        self.cb_person.setChecked(self.detect_person)
+        self.cb_drone.setChecked(self.detect_drone)
+        self.cb_flash.setChecked(self.detect_flash)
+        self.cb_person.toggled.connect(lambda v: self._set_model_enabled("person", v))
+        self.cb_drone.toggled.connect(lambda v: self._set_model_enabled("drone", v))
+        self.cb_flash.toggled.connect(lambda v: self._set_model_enabled("flash", v))
+        models_layout.addWidget(self.cb_person)
+        models_layout.addWidget(self.cb_drone)
+        models_layout.addWidget(self.cb_flash)
+        models_layout.addStretch()
+        layout_vbox.addWidget(models_frame)
 
         layout_vbox.addStretch()
         self.dashboard_layout.addWidget(layout_widget)
@@ -826,6 +856,21 @@ class CombinedSystemApp(QMainWindow):
                 self.state_data["urls"].append({"label": label or f"Source {len(self.state_data['urls'])+1}", "url": url})
                 added = True
         return added
+
+    def _set_model_enabled(self, kind, value):
+        if kind == "person":
+            self.detect_person = value
+            self.detection_worker.enable_person = value
+        elif kind == "drone":
+            self.detect_drone = value
+            self.detection_worker.enable_drone = value
+        elif kind == "flash":
+            self.detect_flash = value
+            self.detection_worker.enable_flash = value
+        if not value:
+            for overlay, _ in self._stream_pairs:
+                if overlay:
+                    overlay.set_rects([])
 
     def toggle_detection(self):
         if not YOLO_AVAILABLE or not CV2_AVAILABLE:

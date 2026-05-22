@@ -1,25 +1,25 @@
 # YT Downloader
 
-אתר נחיתה להורדת סרטונים מ-YouTube בסגנון מודרני (gradient סגול/ורוד, RTL).
+Modern landing page for a YouTube downloader (purple/pink gradient, glassmorphism).
 
-## הפעלה
+## Run
 
-פתח את `index.html` בדפדפן, או הרץ שרת סטטי:
+Open `index.html` in a browser, or serve statically:
 
 ```
 python3 -m http.server 8000
 ```
 
-## חיבור backend
+## Backend hookup
 
-ה-frontend שולח POST ל-`/api/download` עם `{ videoId, format, quality }`
-ומצפה לתשובה `{ downloadUrl, title }`.
+The frontend POSTs to `/api/download` with `{ videoId, format, quality }`
+and expects `{ downloadUrl, title }` back.
 
-להורדת YouTube אמיתית צריך שרת backend עם `yt-dlp` — לא ניתן לעשות זאת
-ישירות בדפדפן בגלל CORS ומדיניות YouTube.
+Real YouTube downloads require a backend with `yt-dlp` — this cannot be
+done directly from the browser due to CORS and YouTube's policies.
 
-## קבצים
+## Files
 
-- `index.html` — מבנה הדף
-- `styles.css` — עיצוב
-- `script.js` — לוגיקה
+- `index.html` — markup
+- `styles.css` — styling
+- `script.js` — logic

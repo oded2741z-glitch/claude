@@ -24,7 +24,7 @@ pasteBtn.addEventListener('click', async () => {
     urlInput.value = text;
     setStatus('', '');
   } catch {
-    setStatus('לא ניתן לגשת ללוח. הדבק ידנית עם Ctrl+V', 'error');
+    setStatus('Cannot access clipboard. Paste manually with Ctrl+V', 'error');
   }
 });
 
@@ -47,17 +47,17 @@ downloadBtn.addEventListener('click', async () => {
   const format = document.querySelector('input[name="format"]:checked').value;
 
   if (!url) {
-    setStatus('אנא הדבק קישור YouTube', 'error');
+    setStatus('Please paste a YouTube link', 'error');
     return;
   }
   if (!isValidYouTubeUrl(url)) {
-    setStatus('הקישור לא תקין. ודא שזה קישור YouTube', 'error');
+    setStatus('Invalid link. Make sure it is a YouTube URL', 'error');
     return;
   }
 
   const videoId = extractVideoId(url);
   downloadBtn.disabled = true;
-  setStatus('מעבד את הסרטון...', 'loading');
+  setStatus('Processing video...', 'loading');
 
   try {
     // NOTE: Real YouTube downloading requires a backend (yt-dlp / similar).
@@ -73,7 +73,7 @@ downloadBtn.addEventListener('click', async () => {
     if (!res.ok) throw new Error('Backend not available');
 
     const data = await res.json();
-    setStatus('✓ מוכן! ההורדה מתחילה...', 'success');
+    setStatus('✓ Ready! Your download is starting...', 'success');
     const a = document.createElement('a');
     a.href = data.downloadUrl;
     a.download = (data.title || 'youtube-video') + '.' + format;
@@ -81,7 +81,7 @@ downloadBtn.addEventListener('click', async () => {
     a.click();
     a.remove();
   } catch (err) {
-    setStatus('⚠ נדרש שרת backend עם yt-dlp להורדה אמיתית. ראה README.', 'error');
+    setStatus('⚠ A backend with yt-dlp is required for real downloads. See README.', 'error');
   } finally {
     downloadBtn.disabled = false;
   }

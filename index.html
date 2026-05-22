@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<html lang="he" dir="rtl">
+<html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>YouTube Downloader — הורדת סרטונים מיוטיוב</title>
+<title>YT Downloader — Download YouTube Videos Fast</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -25,25 +25,25 @@
       <span>YT Downloader</span>
     </div>
     <nav>
-      <a href="#how">איך זה עובד</a>
-      <a href="#features">תכונות</a>
-      <a href="#faq">שאלות נפוצות</a>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#faq">FAQ</a>
     </nav>
   </header>
 
   <main class="container">
     <section class="hero">
-      <span class="badge">✨ מהיר • חינמי • איכותי</span>
-      <h1>הורדת סרטונים מ-<span class="grad-text">YouTube</span><br/>בלחיצה אחת</h1>
-      <p class="subtitle">הדבק קישור לסרטון, בחר איכות והורד MP4 או MP3 ישירות למחשב.</p>
+      <span class="badge">✨ Fast • Free • High Quality</span>
+      <h1>Download <span class="grad-text">YouTube</span> videos<br/>in one click</h1>
+      <p class="subtitle">Paste a video link, pick your format and quality, and download MP4 or MP3 instantly.</p>
 
       <div class="converter-card">
         <div class="input-wrap">
           <div class="input-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
           </div>
-          <input type="text" id="urlInput" placeholder="הדבק כאן קישור YouTube — https://youtube.com/watch?v=..." />
-          <button class="paste-btn" id="pasteBtn">הדבק</button>
+          <input type="text" id="urlInput" placeholder="Paste YouTube link here — https://youtube.com/watch?v=..." />
+          <button class="paste-btn" id="pasteBtn">Paste</button>
         </div>
 
         <div class="format-row">
@@ -52,7 +52,7 @@
             <div class="format-card">
               <span class="format-icon">🎬</span>
               <span class="format-name">MP4</span>
-              <span class="format-desc">וידאו באיכות גבוהה</span>
+              <span class="format-desc">High quality video</span>
             </div>
           </label>
           <label class="format-option">
@@ -60,13 +60,13 @@
             <div class="format-card">
               <span class="format-icon">🎵</span>
               <span class="format-name">MP3</span>
-              <span class="format-desc">אודיו בלבד</span>
+              <span class="format-desc">Audio only</span>
             </div>
           </label>
         </div>
 
         <div class="quality-row" id="qualityRow">
-          <span class="quality-label">איכות:</span>
+          <span class="quality-label">Quality:</span>
           <div class="quality-pills">
             <button class="pill active" data-q="1080">1080p</button>
             <button class="pill" data-q="720">720p</button>
@@ -77,88 +77,88 @@
 
         <button class="download-btn" id="downloadBtn">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          הורד עכשיו
+          Download Now
         </button>
 
         <div class="status" id="status"></div>
       </div>
 
       <div class="trust-row">
-        <div class="trust-item"><span>🔒</span> ללא הרשמה</div>
-        <div class="trust-item"><span>⚡</span> מהירות גבוהה</div>
-        <div class="trust-item"><span>🆓</span> חינם לחלוטין</div>
+        <div class="trust-item"><span>🔒</span> No signup</div>
+        <div class="trust-item"><span>⚡</span> Lightning fast</div>
+        <div class="trust-item"><span>🆓</span> 100% free</div>
       </div>
     </section>
 
     <section id="features" class="features">
-      <h2>למה לבחור בנו?</h2>
+      <h2>Why choose us?</h2>
       <div class="features-grid">
         <div class="feature-card">
           <div class="feature-icon">⚡</div>
-          <h3>מהיר במיוחד</h3>
-          <p>הורדה מהירה תוך שניות, ללא המתנות ארוכות.</p>
+          <h3>Blazing Fast</h3>
+          <p>Get your video in seconds — no waiting, no nonsense.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">🎥</div>
-          <h3>איכות עד 4K</h3>
-          <p>תמיכה בכל הרזולוציות מ-360p ועד 4K Ultra HD.</p>
+          <h3>Up to 4K</h3>
+          <p>Supports every resolution from 360p all the way to 4K Ultra HD.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">🎵</div>
           <h3>MP3 + MP4</h3>
-          <p>הורד וידאו מלא או רק את האודיו בפורמט MP3.</p>
+          <p>Download the full video or extract audio as MP3.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">📱</div>
-          <h3>בכל מכשיר</h3>
-          <p>עובד במחשב, טלפון וטאבלט — בלי להתקין שום דבר.</p>
+          <h3>Any Device</h3>
+          <p>Works on desktop, mobile, and tablet — no installs required.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">🔒</div>
-          <h3>בטוח ופרטי</h3>
-          <p>אנחנו לא שומרים את ההורדות שלך ולא דורשים פרטים.</p>
+          <h3>Safe & Private</h3>
+          <p>We never store your downloads and we don't ask for personal info.</p>
         </div>
         <div class="feature-card">
           <div class="feature-icon">♾️</div>
-          <h3>ללא הגבלה</h3>
-          <p>הורד כמה סרטונים שתרצה — אין מגבלה יומית.</p>
+          <h3>Unlimited</h3>
+          <p>Download as many videos as you want — no daily limits.</p>
         </div>
       </div>
     </section>
 
     <section id="how" class="how">
-      <h2>איך זה עובד?</h2>
+      <h2>How it works</h2>
       <div class="steps">
         <div class="step">
           <div class="step-num">1</div>
-          <h3>העתק קישור</h3>
-          <p>העתק את הקישור של הסרטון מ-YouTube</p>
+          <h3>Copy the link</h3>
+          <p>Grab the URL of any YouTube video</p>
         </div>
         <div class="step">
           <div class="step-num">2</div>
-          <h3>הדבק ובחר פורמט</h3>
-          <p>הדבק את הקישור ובחר MP4 או MP3 והאיכות הרצויה</p>
+          <h3>Paste & choose format</h3>
+          <p>Drop the link in, pick MP4 or MP3 and the quality you want</p>
         </div>
         <div class="step">
           <div class="step-num">3</div>
-          <h3>הורד</h3>
-          <p>לחץ על "הורד עכשיו" וקבל את הקובץ למחשב</p>
+          <h3>Download</h3>
+          <p>Hit "Download Now" and save the file to your device</p>
         </div>
       </div>
     </section>
 
     <section id="faq" class="faq">
-      <h2>שאלות נפוצות</h2>
-      <details><summary>האם השירות חינמי?</summary><p>כן, השירות חינמי לחלוטין וללא הגבלה.</p></details>
-      <details><summary>אילו פורמטים נתמכים?</summary><p>אנו תומכים ב-MP4 (וידאו) ו-MP3 (אודיו) באיכויות שונות.</p></details>
-      <details><summary>האם נדרשת הרשמה?</summary><p>לא — אין צורך בהרשמה או בהתקנת תוכנה.</p></details>
-      <details><summary>האם זה בטוח?</summary><p>כן. אנחנו לא שומרים את הקבצים שאתה מוריד ולא מבקשים פרטים אישיים.</p></details>
+      <h2>Frequently asked questions</h2>
+      <details><summary>Is this service free?</summary><p>Yes — completely free with no usage limits.</p></details>
+      <details><summary>Which formats are supported?</summary><p>We support MP4 (video) and MP3 (audio) at multiple quality levels.</p></details>
+      <details><summary>Do I need to sign up?</summary><p>No signup required and no software to install.</p></details>
+      <details><summary>Is it safe?</summary><p>Yes. We don't store your files and we don't ask for any personal details.</p></details>
     </section>
   </main>
 
   <footer>
-    <p>© 2026 YT Downloader · כל הזכויות שמורות</p>
-    <p class="disclaimer">נא לכבד זכויות יוצרים. השתמש בשירות רק לסרטונים שאתה מורשה להוריד.</p>
+    <p>© 2026 YT Downloader · All rights reserved</p>
+    <p class="disclaimer">Please respect copyright. Only download videos you are authorized to download.</p>
   </footer>
 
   <script src="script.js"></script>

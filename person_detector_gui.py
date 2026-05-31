@@ -29,10 +29,58 @@ DISPLAY_FPS = 15      # cap UI refresh rate
 
 
 class PersonDetectorApp:
+    BG = "#1e1e2e"
+    PANEL = "#282838"
+    FG = "#cdd6f4"
+    MUTED = "#9399b2"
+    ACCENT = "#89b4fa"
+    SUCCESS = "#a6e3a1"
+    DANGER = "#f38ba8"
+
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Person Detector (YOLO)")
-        self.root.geometry("960x720")
+        self.root.title("Person Detector")
+        self.root.geometry("1100x780")
+        self.root.configure(bg=self.BG)
+
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(".", background=self.BG, foreground=self.FG, font=("Segoe UI", 10))
+        style.configure("TFrame", background=self.BG)
+        style.configure("Panel.TFrame", background=self.PANEL)
+        style.configure("TLabel", background=self.BG, foreground=self.FG)
+        style.configure("Muted.TLabel", background=self.BG, foreground=self.MUTED, font=("Segoe UI", 9))
+        style.configure("Title.TLabel", background=self.BG, foreground=self.ACCENT, font=("Segoe UI Semibold", 14))
+        style.configure("TButton",
+            background=self.PANEL, foreground=self.FG,
+            borderwidth=0, focusthickness=0, padding=(12, 6), font=("Segoe UI", 10))
+        style.map("TButton",
+            background=[("active", self.ACCENT), ("disabled", "#3a3a4a")],
+            foreground=[("active", self.BG), ("disabled", self.MUTED)])
+        style.configure("Accent.TButton",
+            background=self.ACCENT, foreground=self.BG,
+            borderwidth=0, focusthickness=0, padding=(14, 6),
+            font=("Segoe UI Semibold", 10))
+        style.map("Accent.TButton",
+            background=[("active", "#74a8f0"), ("disabled", "#3a3a4a")],
+            foreground=[("disabled", self.MUTED)])
+        style.configure("Danger.TButton",
+            background=self.DANGER, foreground=self.BG,
+            borderwidth=0, focusthickness=0, padding=(14, 6),
+            font=("Segoe UI Semibold", 10))
+        style.map("Danger.TButton",
+            background=[("active", "#e07896"), ("disabled", "#3a3a4a")])
+        style.configure("TEntry",
+            fieldbackground=self.PANEL, foreground=self.FG,
+            insertcolor=self.FG, borderwidth=0, padding=6)
+        style.configure("TSpinbox",
+            fieldbackground=self.PANEL, foreground=self.FG,
+            arrowcolor=self.ACCENT, borderwidth=0, padding=4)
+        style.configure("TCheckbutton", background=self.BG, foreground=self.FG)
+        style.map("TCheckbutton", background=[("active", self.BG)])
 
         self.model = None
         self.cap = None
@@ -56,51 +104,53 @@ class PersonDetectorApp:
         self._build_ui()
 
     def _build_ui(self):
-        top = ttk.Frame(self.root, padding=8)
-        top.pack(side=tk.TOP, fill=tk.X)
+        header = ttk.Frame(self.root, padding=(20, 16, 20, 8))
+        header.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(header, text="Person Detector", style="Title.TLabel").pack(side=tk.LEFT)
+        ttk.Label(header, text="YOLOv8n  ·  local  ·  real-time",
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=12)
 
-        ttk.Label(top, text="Source:").pack(side=tk.LEFT)
+        controls = ttk.Frame(self.root, padding=(20, 8, 20, 8))
+        controls.pack(side=tk.TOP, fill=tk.X)
+
+        ttk.Label(controls, text="Source").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.source_var = tk.StringVar(value="0")
-        ttk.Entry(top, textvariable=self.source_var, width=40).pack(side=tk.LEFT, padx=4)
+        ttk.Entry(controls, textvariable=self.source_var, width=42).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(controls, text="Browse", command=self.browse_video).grid(row=0, column=2, padx=2)
+        ttk.Button(controls, text="Webcam", command=lambda: self.source_var.set("0")).grid(row=0, column=3, padx=2)
 
-        ttk.Button(top, text="Browse Video...", command=self.browse_video).pack(
-            side=tk.LEFT, padx=2
-        )
-        ttk.Button(top, text="Webcam", command=lambda: self.source_var.set("0")).pack(
-            side=tk.LEFT, padx=2
-        )
-
-        ttk.Label(top, text="Conf:").pack(side=tk.LEFT, padx=(12, 2))
+        ttk.Label(controls, text="Confidence").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(10, 0))
         self.conf_var = tk.DoubleVar(value=0.4)
-        ttk.Spinbox(
-            top, from_=0.05, to=0.95, increment=0.05,
-            textvariable=self.conf_var, width=5,
-        ).pack(side=tk.LEFT)
+        ttk.Spinbox(controls, from_=0.05, to=0.95, increment=0.05,
+                    textvariable=self.conf_var, width=6).grid(row=1, column=1, sticky="w", pady=(10, 0))
+
+        ttk.Label(controls, text="Interval (s)").grid(row=1, column=2, sticky="e", padx=(20, 6), pady=(10, 0))
+        self.interval_var = tk.DoubleVar(value=0.0)
+        ttk.Spinbox(controls, from_=0.0, to=10.0, increment=0.5,
+                    textvariable=self.interval_var, width=6).grid(row=1, column=3, sticky="w", pady=(10, 0))
 
         self.save_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(top, text="Save output", variable=self.save_var).pack(
-            side=tk.LEFT, padx=(12, 2)
+        ttk.Checkbutton(controls, text="Save output", variable=self.save_var).grid(
+            row=1, column=4, padx=(20, 0), pady=(10, 0), sticky="w"
         )
 
-        ttk.Label(top, text="Interval (s):").pack(side=tk.LEFT, padx=(12, 2))
-        self.interval_var = tk.DoubleVar(value=0.0)
-        ttk.Spinbox(
-            top, from_=0.0, to=10.0, increment=0.5,
-            textvariable=self.interval_var, width=5,
-        ).pack(side=tk.LEFT)
+        actions = ttk.Frame(self.root, padding=(20, 4, 20, 12))
+        actions.pack(side=tk.TOP, fill=tk.X)
+        self.start_btn = ttk.Button(actions, text="▶  Start", command=self.start, style="Accent.TButton")
+        self.start_btn.pack(side=tk.LEFT)
+        self.stop_btn = ttk.Button(actions, text="■  Stop", command=self.stop,
+                                   style="Danger.TButton", state=tk.DISABLED)
+        self.stop_btn.pack(side=tk.LEFT, padx=8)
 
-        self.start_btn = ttk.Button(top, text="Start", command=self.start)
-        self.start_btn.pack(side=tk.LEFT, padx=(12, 2))
-        self.stop_btn = ttk.Button(top, text="Stop", command=self.stop, state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, padx=2)
+        video_wrap = tk.Frame(self.root, bg=self.PANEL, highlightthickness=0)
+        video_wrap.pack(expand=True, fill=tk.BOTH, padx=20, pady=8)
+        self.video_label = tk.Label(video_wrap, bg=self.PANEL)
+        self.video_label.pack(expand=True, fill=tk.BOTH, padx=2, pady=2)
 
-        self.video_label = ttk.Label(self.root, background="black")
-        self.video_label.pack(expand=True, fill=tk.BOTH, padx=8, pady=8)
-
-        bottom = ttk.Frame(self.root, padding=8)
+        bottom = ttk.Frame(self.root, padding=(20, 8, 20, 12))
         bottom.pack(side=tk.BOTTOM, fill=tk.X)
-        self.status_var = tk.StringVar(value="Idle. Load a model and start.")
-        ttk.Label(bottom, textvariable=self.status_var).pack(side=tk.LEFT)
+        self.status_var = tk.StringVar(value="Idle.  Pick a source and press Start.")
+        ttk.Label(bottom, textvariable=self.status_var, style="Muted.TLabel").pack(side=tk.LEFT)
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 

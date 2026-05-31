@@ -1,108 +1,158 @@
-#!/usr/bin/env python3
-"""IP checker - validates an IP address and fetches public info about it."""
-
-import argparse
 import ipaddress
-import json
-import socket
-import sys
-from urllib.request import urlopen
-from urllib.error import URLError
+import tkinter as tk
+from tkinter import messagebox
+
+BG = "#121212"
+ACCENT = "#FF6B00"
+FG = "#FFFFFF"
+BTN_BG = "#333333"
+RED = "#C0392B"
+
+APP_TITLE = "IP Checker"
 
 
-def classify(ip_str):
-    ip = ipaddress.ip_address(ip_str)
-    return {
-        "address": str(ip),
-        "version": f"IPv{ip.version}",
-        "is_private": ip.is_private,
-        "is_global": ip.is_global,
-        "is_loopback": ip.is_loopback,
-        "is_multicast": ip.is_multicast,
-        "is_reserved": ip.is_reserved,
-        "is_link_local": ip.is_link_local,
-    }
+class IPCheckerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.overrideredirect(True)
+        self.root.configure(bg=ACCENT)
+        self.width = 420
+        self.height = 280
+        self._center_window()
 
+        self.outer = tk.Frame(self.root, bg=ACCENT)
+        self.outer.pack(fill="both", expand=True, padx=1, pady=1)
 
-def reverse_dns(ip_str):
-    try:
-        return socket.gethostbyaddr(ip_str)[0]
-    except (socket.herror, socket.gaierror):
-        return None
+        self.container = tk.Frame(self.outer, bg=BG)
+        self.container.pack(fill="both", expand=True)
 
+        self._drag_x = 0
+        self._drag_y = 0
 
-def geo_lookup(ip_str):
-    try:
-        with urlopen(f"http://ip-api.com/json/{ip_str}", timeout=5) as r:
-            data = json.loads(r.read().decode())
-        if data.get("status") != "success":
-            return None
-        return {
-            "country": data.get("country"),
-            "region": data.get("regionName"),
-            "city": data.get("city"),
-            "isp": data.get("isp"),
-            "org": data.get("org"),
-            "as": data.get("as"),
-        }
-    except (URLError, socket.timeout, json.JSONDecodeError):
-        return None
+        self._build_title_bar()
+        self._build_body()
+        self._build_watermark()
 
+    def _center_window(self):
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = (sw - self.width) // 2
+        y = (sh - self.height) // 2
+        self.root.geometry(f"{self.width}x{self.height}+{x}+{y}")
 
-def my_public_ip():
-    try:
-        with urlopen("https://api.ipify.org", timeout=5) as r:
-            return r.read().decode().strip()
-    except URLError:
-        return None
+    def _build_title_bar(self):
+        bar = tk.Frame(self.container, bg=BG, height=36)
+        bar.pack(fill="x", side="top")
+        bar.pack_propagate(False)
 
+        title = tk.Label(
+            bar, text=APP_TITLE, bg=BG, fg=ACCENT,
+            font=("Segoe UI", 11, "bold"),
+        )
+        title.pack(side="left", padx=10)
 
-def check(ip_str):
-    try:
-        info = classify(ip_str)
-    except ValueError:
-        return {"error": f"'{ip_str}' is not a valid IP address"}
+        quit_btn = tk.Button(
+            bar, text="Quit", bg=RED, fg=FG, activebackground=RED,
+            activeforeground=FG, bd=0, relief="flat",
+            font=("Segoe UI", 9, "bold"), width=7,
+            command=self._on_quit,
+        )
+        quit_btn.pack(side="right", padx=(0, 8), pady=4)
 
-    info["reverse_dns"] = reverse_dns(ip_str)
-    if info["is_global"]:
-        info["geo"] = geo_lookup(ip_str)
-    return info
+        help_btn = tk.Button(
+            bar, text="Help", bg=BTN_BG, fg=FG, activebackground=BTN_BG,
+            activeforeground=FG, bd=0, relief="flat",
+            font=("Segoe UI", 9), width=7,
+            command=self._on_help,
+        )
+        help_btn.pack(side="right", padx=(0, 6), pady=4)
 
+        for w in (bar, title):
+            w.bind("<ButtonPress-1>", self._start_drag)
+            w.bind("<B1-Motion>", self._do_drag)
 
-def print_report(info):
-    if "error" in info:
-        print(f"ERROR: {info['error']}")
-        return
-    print(f"Address     : {info['address']} ({info['version']})")
-    print(f"Reverse DNS : {info.get('reverse_dns') or '-'}")
-    flags = [k for k in ("is_private", "is_global", "is_loopback",
-                         "is_multicast", "is_reserved", "is_link_local")
-             if info.get(k)]
-    print(f"Flags       : {', '.join(flags) or '-'}")
-    geo = info.get("geo")
-    if geo:
-        print("Geolocation :")
-        for k, v in geo.items():
-            print(f"  {k:8}: {v or '-'}")
+    def _build_body(self):
+        body = tk.Frame(self.container, bg=BG)
+        body.pack(fill="both", expand=True, padx=20, pady=10)
+
+        lbl = tk.Label(
+            body, text="Enter IP address:", bg=BG, fg=FG,
+            font=("Segoe UI", 10),
+        )
+        lbl.pack(anchor="w", pady=(8, 4))
+
+        self.entry = tk.Entry(
+            body, bg="#1E1E1E", fg=FG, insertbackground=FG,
+            relief="flat", font=("Consolas", 11),
+            highlightthickness=1, highlightbackground=BTN_BG,
+            highlightcolor=ACCENT,
+        )
+        self.entry.pack(fill="x", ipady=6)
+        self.entry.bind("<Return>", lambda e: self._check())
+
+        check_btn = tk.Button(
+            body, text="Check", bg=BTN_BG, fg=FG,
+            activebackground=BTN_BG, activeforeground=FG,
+            bd=0, relief="flat", font=("Segoe UI", 10, "bold"),
+            command=self._check,
+        )
+        check_btn.pack(fill="x", pady=12, ipady=6)
+
+        self.result_var = tk.StringVar(value="")
+        self.result = tk.Label(
+            body, textvariable=self.result_var, bg=BG, fg=ACCENT,
+            font=("Consolas", 11, "bold"), justify="left", anchor="w",
+        )
+        self.result.pack(fill="x", pady=(4, 0))
+
+    def _build_watermark(self):
+        wm = tk.Label(
+            self.container, text="oT", bg=BG, fg="#555555",
+            font=("Segoe UI", 8, "italic"),
+        )
+        wm.place(relx=1.0, rely=1.0, x=-8, y=-6, anchor="se")
+
+    def _check(self):
+        value = self.entry.get().strip()
+        if not value:
+            self.result.configure(fg=ACCENT)
+            self.result_var.set("Please enter an IP address.")
+            return
+        try:
+            ip = ipaddress.ip_address(value)
+            version = "IPv4" if ip.version == 4 else "IPv6"
+            self.result.configure(fg="#2ECC71")
+            self.result_var.set(f"Valid  -  {version}")
+        except ValueError:
+            self.result.configure(fg=RED)
+            self.result_var.set("Invalid IP address")
+
+    def _on_help(self):
+        messagebox.showinfo(
+            "Help",
+            "Enter an IPv4 or IPv6 address and press Check.\n"
+            "The app reports whether the address is valid\n"
+            "and its version (IPv4 or IPv6).",
+        )
+
+    def _on_quit(self):
+        self.root.destroy()
+
+    def _start_drag(self, event):
+        self._drag_x = event.x
+        self._drag_y = event.y
+
+    def _do_drag(self, event):
+        x = self.root.winfo_pointerx() - self._drag_x
+        y = self.root.winfo_pointery() - self._drag_y
+        self.root.geometry(f"+{x}+{y}")
 
 
 def main():
-    p = argparse.ArgumentParser(description="Check an IP address.")
-    p.add_argument("ip", nargs="?", help="IP to check (omit to use your public IP)")
-    p.add_argument("--json", action="store_true", help="Output JSON")
-    args = p.parse_args()
-
-    ip = args.ip or my_public_ip()
-    if not ip:
-        print("Could not determine an IP to check.", file=sys.stderr)
-        sys.exit(1)
-
-    info = check(ip)
-    if args.json:
-        print(json.dumps(info, indent=2, ensure_ascii=False))
-    else:
-        print_report(info)
-    sys.exit(0 if "error" not in info else 2)
+    root = tk.Tk()
+    root.title(APP_TITLE)
+    IPCheckerApp(root)
+    root.mainloop()
 
 
 if __name__ == "__main__":

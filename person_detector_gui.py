@@ -26,8 +26,13 @@ class PersonDetectorApp:
         self.cap = None
         self.running = False
         self.worker = None
+        self.detector = None
         self.writer = None
         self.save_path = None
+        self._latest_frame = None
+        self._latest_lock = threading.Lock()
+        self._last_boxes = []
+        self._boxes_lock = threading.Lock()
 
         self._build_ui()
 
@@ -143,36 +148,55 @@ class PersonDetectorApp:
                 self.save_path = path
 
         self.running = True
+        self._last_boxes = []
+        self._latest_frame = None
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self.status_var.set("Running...")
         self.worker = threading.Thread(target=self._loop, daemon=True)
         self.worker.start()
+        self.detector = threading.Thread(target=self._detector_thread, daemon=True)
+        self.detector.start()
 
-    def _loop(self):
+    def _detector_thread(self):
         import time
         conf = float(self.conf_var.get())
         last_detect_time = 0.0
-        last_boxes = []
+        while self.running:
+            interval = float(self.interval_var.get())
+            now = time.monotonic()
+            if (now - last_detect_time) < max(interval, 0.0):
+                time.sleep(0.02)
+                continue
+            with self._latest_lock:
+                frame = None if self._latest_frame is None else self._latest_frame.copy()
+            if frame is None:
+                time.sleep(0.02)
+                continue
+            results = self.model.predict(
+                frame, classes=[PERSON_CLASS_ID], conf=conf, verbose=False
+            )
+            boxes = [
+                (list(map(int, b.xyxy[0].tolist())), float(b.conf[0]))
+                for b in results[0].boxes
+            ]
+            with self._boxes_lock:
+                self._last_boxes = boxes
+            last_detect_time = now
+
+    def _loop(self):
         while self.running:
             ok, frame = self.cap.read()
             if not ok:
                 break
 
-            interval = float(self.interval_var.get())
-            now = time.monotonic()
-            if interval <= 0 or (now - last_detect_time) >= interval:
-                results = self.model.predict(
-                    frame, classes=[PERSON_CLASS_ID], conf=conf, verbose=False
-                )
-                last_boxes = [
-                    (list(map(int, b.xyxy[0].tolist())), float(b.conf[0]))
-                    for b in results[0].boxes
-                ]
-                last_detect_time = now
+            with self._latest_lock:
+                self._latest_frame = frame.copy()
+            with self._boxes_lock:
+                boxes = list(self._last_boxes)
 
             count = 0
-            for (x1, y1, x2, y2), c in last_boxes:
+            for (x1, y1, x2, y2), c in boxes:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
                     frame,

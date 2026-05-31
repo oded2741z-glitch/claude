@@ -63,6 +63,17 @@ class PersonDetectorApp:
             top, text="Save output", variable=self.save_var
         ).pack(side=tk.LEFT, padx=(12, 2))
 
+        ttk.Label(top, text="Interval (s):").pack(side=tk.LEFT, padx=(12, 2))
+        self.interval_var = tk.DoubleVar(value=0.0)
+        ttk.Spinbox(
+            top,
+            from_=0.0,
+            to=10.0,
+            increment=0.5,
+            textvariable=self.interval_var,
+            width=5,
+        ).pack(side=tk.LEFT)
+
         self.start_btn = ttk.Button(top, text="Start", command=self.start)
         self.start_btn.pack(side=tk.LEFT, padx=(12, 2))
         self.stop_btn = ttk.Button(
@@ -139,18 +150,29 @@ class PersonDetectorApp:
         self.worker.start()
 
     def _loop(self):
+        import time
         conf = float(self.conf_var.get())
+        last_detect_time = 0.0
+        last_boxes = []
         while self.running:
             ok, frame = self.cap.read()
             if not ok:
                 break
-            results = self.model.predict(
-                frame, classes=[PERSON_CLASS_ID], conf=conf, verbose=False
-            )
+
+            interval = float(self.interval_var.get())
+            now = time.monotonic()
+            if interval <= 0 or (now - last_detect_time) >= interval:
+                results = self.model.predict(
+                    frame, classes=[PERSON_CLASS_ID], conf=conf, verbose=False
+                )
+                last_boxes = [
+                    (list(map(int, b.xyxy[0].tolist())), float(b.conf[0]))
+                    for b in results[0].boxes
+                ]
+                last_detect_time = now
+
             count = 0
-            for box in results[0].boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                c = float(box.conf[0])
+            for (x1, y1, x2, y2), c in last_boxes:
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 cv2.putText(
                     frame,

@@ -21,8 +21,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="זיהוי אנשים בווידאו/מצלמה")
     parser.add_argument(
         "--source",
-        default="0",
-        help="מקור: מספר התקן מצלמה (למשל 0) או נתיב לקובץ וידאו",
+        default=None,
+        help="מקור: מספר התקן מצלמה (למשל 0) או נתיב לקובץ וידאו. אם לא מצוין - יתבקש בעת ההרצה",
     )
     parser.add_argument(
         "--model",
@@ -48,6 +48,22 @@ def parse_args():
     return parser.parse_args()
 
 
+def prompt_source() -> str:
+    print("בחר מקור קלט:")
+    print("  1) מצלמת רשת")
+    print("  2) קובץ וידאו")
+    choice = input("בחירה [1/2]: ").strip()
+    if choice == "1":
+        idx = input("מספר התקן המצלמה [0]: ").strip() or "0"
+        return idx
+    if choice == "2":
+        path = input("נתיב לקובץ הווידאו: ").strip().strip('"').strip("'")
+        if not path:
+            sys.exit("לא הוזן נתיב.")
+        return path
+    sys.exit("בחירה לא חוקית.")
+
+
 def open_source(source: str) -> cv2.VideoCapture:
     if source.isdigit():
         cap = cv2.VideoCapture(int(source))
@@ -60,8 +76,9 @@ def open_source(source: str) -> cv2.VideoCapture:
 
 def main():
     args = parse_args()
+    source = args.source if args.source is not None else prompt_source()
     model = YOLO(args.model)
-    cap = open_source(args.source)
+    cap = open_source(source)
 
     writer = None
     if args.save:

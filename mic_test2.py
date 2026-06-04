@@ -154,6 +154,9 @@ class App(tk.Tk):
         self._mic_sep_m   = float(self._settings.get("sep_m", 0.5))
         self._max_delay   = self._mic_sep_m / SPEED_SOUND
         self._threshold   = float(self._settings.get("threshold", THRESHOLD))
+        self._angle_buf   = []   # smoothing buffer for direction estimates
+        _DIR_SMOOTH = 6          # number of hops to average over
+        self._DIR_SMOOTH = _DIR_SMOOTH
 
         self._mic_devices  = self._get_mic_devices()
         self._mic1_idx     = self._match_device(self._settings.get("mic1_name"), 0)
@@ -680,7 +683,7 @@ class App(tk.Tk):
 
     @staticmethod
     def _gcc_phat(sig1, sig2, fs, max_delay_s):
-        """GCC-PHAT — returns time delay in seconds (positive = sig1 leads)."""
+        """GCC-PHAT — returns (delay_s, peak_strength); positive delay = sig1 leads."""
         raw_n  = len(sig1) + len(sig2) - 1
         n      = 1 << (raw_n - 1).bit_length()
         F1     = np.fft.rfft(sig1, n=n)
@@ -691,18 +694,38 @@ class App(tk.Tk):
         cc     = np.fft.irfft(R, n=n)
         max_k  = int(max_delay_s * fs) + 1
         cc     = np.concatenate([cc[-max_k:], cc[:max_k + 1]])
-        delay  = (np.argmax(np.abs(cc)) - max_k) / fs
-        return float(delay)
+        peak_idx  = int(np.argmax(np.abs(cc)))
+        peak_val  = float(np.abs(cc[peak_idx]))
+        mean_val  = float(np.mean(np.abs(cc)))
+        strength  = peak_val / (mean_val + 1e-9)   # SNR-like sharpness
+        delay     = (peak_idx - max_k) / fs
+        return float(delay), strength
+
+    # minimum GCC-PHAT sharpness to accept a direction estimate
+    _GCC_MIN_STRENGTH = 3.0
 
     def _calc_and_show_direction(self):
-        """Compute arrival direction from both ring buffers and update compass."""
+        """Compute smoothed arrival direction from ring buffers and update compass."""
         try:
-            tau   = self._gcc_phat(self._ring, self._ring2,
-                                   SAMPLE_RATE, self._max_delay)
+            tau, strength = self._gcc_phat(self._ring, self._ring2,
+                                           SAMPLE_RATE, self._max_delay)
+            if strength < self._GCC_MIN_STRENGTH:
+                return None   # signal too ambiguous — skip this hop
+
             ratio = max(-1.0, min(1.0, tau * SPEED_SOUND / self._mic_sep_m))
             angle = math.degrees(math.asin(ratio))
-            self.after(0, self._draw_compass, angle)
-            return angle
+
+            # circular-mean smoothing using sin/cos to handle ±90° wrap
+            self._angle_buf.append(angle)
+            if len(self._angle_buf) > self._DIR_SMOOTH:
+                self._angle_buf.pop(0)
+            rads  = [math.radians(a) for a in self._angle_buf]
+            mean  = math.degrees(math.atan2(
+                sum(math.sin(r) for r in rads),
+                sum(math.cos(r) for r in rads)))
+
+            self.after(0, self._draw_compass, mean)
+            return mean
         except Exception:
             return None
 
@@ -1127,6 +1150,7 @@ class App(tk.Tk):
         self._hop_buf_len  = 0
         self._hop_buf2     = []
         self._hop_buf2_len = 0
+        self._angle_buf    = []
         self._bar_score    = 0.0
         self._bar_label    = ""
         self._btn.configure(text="▶   START MONITORING",

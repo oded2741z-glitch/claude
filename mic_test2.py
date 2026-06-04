@@ -117,6 +117,7 @@ class App(tk.Tk):
         self.model     = None
         self.processor = None
         self._cuda_available = torch.cuda.is_available()
+        self._cuda_reason    = self._diagnose_cuda()
         self.device    = "cuda" if self._cuda_available else "cpu"
         self.running   = False
         self.stream    = None
@@ -170,8 +171,24 @@ class App(tk.Tk):
             self._apply_dir_mode_ui()       # restore saved DIRECTION MODE state
         self._decay_tick()
         self._blink_tick()
+        self._write_log(self._cuda_reason, "info" if self._cuda_available else "alert")
         threading.Thread(target=self._load_model, daemon=True).start()
         threading.Thread(target=self._worker,     daemon=True).start()
+
+    # ── CUDA diagnosis ─────────────────────────────────────────────────────────
+    def _diagnose_cuda(self):
+        """Return a human-readable reason why CUDA is/ isn't available."""
+        if self._cuda_available:
+            try:
+                return f"GPU ready: {torch.cuda.get_device_name(0)}"
+            except Exception:
+                return "GPU ready"
+        if torch.version.cuda is None:
+            return ("CPU-only PyTorch installed — reinstall with CUDA: "
+                    "pip install torch --index-url "
+                    "https://download.pytorch.org/whl/cu121")
+        return (f"PyTorch built for CUDA {torch.version.cuda} but no GPU "
+                "detected — check NVIDIA driver / GPU")
 
     # ── device list ──────────────────────────────────────────────────────────
     def _get_mic_devices(self):

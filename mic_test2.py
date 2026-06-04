@@ -774,8 +774,9 @@ class App(tk.Tk):
     def _dir_tick(self):
         """Continuously update the compass while monitoring in direction mode."""
         if self.running and self._dir_mode:
-            rms = float(np.sqrt(np.mean(self._ring[-self._hop_samples:] ** 2)))
-            if rms > ENERGY_GATE:
+            buf  = self._ring[-self._hop_samples:]
+            peak = float(np.max(np.abs(buf)))
+            if peak > ENERGY_GATE:   # peak catches short impulsive sounds (gunshots)
                 self._calc_and_show_direction()
         self.after(120, self._dir_tick)
 

@@ -33,8 +33,9 @@ except ImportError:
 SAMPLE_RATE = 48000
 WINDOW_SEC  = 1.0
 HOP_SEC     = 0.25
-THRESHOLD   = 0.30
+THRESHOLD   = 0.45
 ENERGY_GATE = 0.003
+CLAP_MARGIN = 0.15   # threat must beat the best neutral label by this much
 SPEED_SOUND = 343.0   # m/s at ~20 °C
 
 THREAT_LABELS = [
@@ -467,8 +468,8 @@ class App(tk.Tk):
         def _wait_for_tap():
             for _ in range(40):
                 time.sleep(0.05)
-                rms1 = float(np.sqrt(np.mean(self._ring[:self._hop_samples] ** 2)))
-                rms2 = float(np.sqrt(np.mean(self._ring2[:self._hop_samples] ** 2)))
+                rms1 = float(np.sqrt(np.mean(self._ring[-self._hop_samples:] ** 2)))
+                rms2 = float(np.sqrt(np.mean(self._ring2[-self._hop_samples:] ** 2)))
                 if rms1 > 0.02 or rms2 > 0.02:
                     angle = self._calc_and_show_direction()
                     if angle is None:
@@ -849,6 +850,10 @@ class App(tk.Tk):
             f"{ALL_LABELS[i][:20]}: {prob[i]:.0%}" for i in top3_idx)
         best = int(np.argmax(prob))
         if best < n:
+            # Reject unless the threat clearly beats the best neutral label.
+            best_neutral = float(np.max(prob[n:]))
+            if float(prob[best]) - best_neutral < CLAP_MARGIN:
+                return "", 0.0, dbg
             return THREAT_LABELS[best], float(prob[best]), dbg
         return "", 0.0, dbg
 

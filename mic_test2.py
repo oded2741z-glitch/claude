@@ -388,6 +388,12 @@ class App(tk.Tk):
         self._mic_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
         self._mic_combo.bind("<<ComboboxSelected>>", self._on_mic_change)
 
+        self._mic1_muted = tk.BooleanVar(value=False)
+        tk.Checkbutton(mic_row, text="MUTE", variable=self._mic1_muted,
+                       font=("Consolas", 8), fg=C["dim"], bg=C["bg"],
+                       selectcolor=C["panel"], activebackground=C["bg"],
+                       command=self._on_mic1_mute).pack(side=tk.LEFT, padx=(8, 0))
+
         # direction mode panel (hidden until DIR ON)
         self._dir_frame = tk.Frame(root, bg=C["bg"])
 
@@ -402,6 +408,12 @@ class App(tk.Tk):
         self._mic2_combo.current(self._mic2_idx)
         self._mic2_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
         self._mic2_combo.bind("<<ComboboxSelected>>", self._on_mic2_change)
+
+        self._mic2_muted = tk.BooleanVar(value=False)
+        tk.Checkbutton(dir_top, text="MUTE", variable=self._mic2_muted,
+                       font=("Consolas", 8), fg=C["dim"], bg=C["bg"],
+                       selectcolor=C["panel"], activebackground=C["bg"],
+                       command=self._on_mic2_mute).pack(side=tk.LEFT, padx=(8, 0))
 
         sep_row = tk.Frame(self._dir_frame, bg=C["bg"])
         sep_row.pack(fill=tk.X, pady=(2, 4))
@@ -598,6 +610,18 @@ class App(tk.Tk):
         idx = self._mic2_combo.current()
         self._sel_dev2_id = self._mic_devices[idx][0]
         self._save_settings()
+
+    def _on_mic1_mute(self):
+        muted = self._mic1_muted.get()
+        self._ring[:]     = 0
+        self._hop_buf     = []
+        self._hop_buf_len = 0
+
+    def _on_mic2_mute(self):
+        muted = self._mic2_muted.get()
+        self._ring2[:]     = 0
+        self._hop_buf2     = []
+        self._hop_buf2_len = 0
         if self.running and self._dir_mode:
             self._restart()
 
@@ -1197,6 +1221,8 @@ class App(tk.Tk):
             self.after(0, self._stop); return
         if indata is None or len(indata) == 0:
             self.after(0, self._stop); return
+        if self._mic1_muted.get():
+            return
 
         chunk = indata.flatten()
         chunk = np.append(chunk[0], chunk[1:] - 0.97 * chunk[:-1])
@@ -1232,6 +1258,8 @@ class App(tk.Tk):
         if status and (status.input_underflow or status.input_overflow):
             return
         if indata is None or len(indata) == 0:
+            return
+        if self._mic2_muted.get():
             return
 
         chunk = indata.flatten()

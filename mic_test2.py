@@ -171,6 +171,7 @@ class App(tk.Tk):
             self._apply_dir_mode_ui()       # restore saved DIRECTION MODE state
         self._decay_tick()
         self._blink_tick()
+        self._dir_tick()
         self._write_log(self._cuda_reason, "info" if self._cuda_available else "alert")
         threading.Thread(target=self._load_model, daemon=True).start()
         threading.Thread(target=self._worker,     daemon=True).start()
@@ -719,7 +720,7 @@ class App(tk.Tk):
         return float(delay), strength
 
     # minimum GCC-PHAT sharpness to accept a direction estimate
-    _GCC_MIN_STRENGTH = 3.0
+    _GCC_MIN_STRENGTH = 1.8
 
     def _calc_and_show_direction(self):
         """Compute smoothed arrival direction from ring buffers and update compass."""
@@ -745,6 +746,14 @@ class App(tk.Tk):
             return mean
         except Exception:
             return None
+
+    def _dir_tick(self):
+        """Continuously update the compass while monitoring in direction mode."""
+        if self.running and self._dir_mode:
+            rms = float(np.sqrt(np.mean(self._ring[-self._hop_samples:] ** 2)))
+            if rms > ENERGY_GATE:
+                self._calc_and_show_direction()
+        self.after(120, self._dir_tick)
 
     # ── visual helpers ────────────────────────────────────────────────────────
     def _redraw_segs(self):

@@ -1,7 +1,7 @@
 """
 mic_test2.py — CLAP / AST Acoustic Threat Monitor (dual-mic direction edition)
 """
-import warnings, time, os
+import warnings, time, os, json
 warnings.filterwarnings("ignore")
 
 import threading, queue, math
@@ -36,6 +36,8 @@ HOP_SEC     = 0.25
 THRESHOLD   = 0.45
 ENERGY_GATE = 0.003
 CLAP_MARGIN = 0.15   # threat must beat the best neutral label by this much
+
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "mic_settings.json")
 SPEED_SOUND = 343.0   # m/s at ~20 °C
 
 THREAT_LABELS = [
@@ -143,17 +145,26 @@ class App(tk.Tk):
         self._model_name     = DEFAULT_MODEL
         self._ast_threat_idx = []
 
+        # persisted settings (mics, separation, threshold, direction)
+        self._settings = self._load_settings()
+
         # dual-mic direction
-        self._dir_mode    = False
+        self._dir_mode    = bool(self._settings.get("dir_mode", False))
         self._calibrating = False
-        self._mic_sep_m   = 0.5
+        self._mic_sep_m   = float(self._settings.get("sep_m", 0.5))
         self._max_delay   = self._mic_sep_m / SPEED_SOUND
+        self._threshold   = float(self._settings.get("threshold", THRESHOLD))
 
         self._mic_devices  = self._get_mic_devices()
-        self._sel_dev_id   = self._mic_devices[0][0] if self._mic_devices else -1
-        self._sel_dev2_id  = self._mic_devices[1][0] if len(self._mic_devices) > 1 else self._sel_dev_id
+        self._mic1_idx     = self._match_device(self._settings.get("mic1_name"), 0)
+        self._mic2_idx     = self._match_device(self._settings.get("mic2_name"),
+                                                min(1, len(self._mic_devices) - 1))
+        self._sel_dev_id   = self._mic_devices[self._mic1_idx][0]
+        self._sel_dev2_id  = self._mic_devices[self._mic2_idx][0]
 
         self._build_ui()
+        if self._dir_mode:
+            self._apply_dir_mode_ui()       # restore saved DIRECTION MODE state
         self._decay_tick()
         self._blink_tick()
         threading.Thread(target=self._load_model, daemon=True).start()
@@ -171,6 +182,38 @@ class App(tk.Tk):
             else:
                 mics.append((i, f"  {n}"))
         return (mics + loop) or [(-1, "  Default")]
+
+    # ── settings persistence ───────────────────────────────────────────────────
+    def _load_settings(self):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_settings(self):
+        data = {
+            "mic1_name":  self._mic_devices[self._mic_combo.current()][1].strip()
+                          if hasattr(self, "_mic_combo") else None,
+            "mic2_name":  self._mic_devices[self._mic2_combo.current()][1].strip()
+                          if hasattr(self, "_mic2_combo") else None,
+            "sep_m":      self._mic_sep_m,
+            "threshold":  self._threshold,
+            "dir_mode":   self._dir_mode,
+        }
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self._write_log(f"Settings save error: {e}", "alert")
+
+    def _match_device(self, name, default_idx):
+        """Find a device index by saved name; fall back to default_idx."""
+        if name:
+            for i, d in enumerate(self._mic_devices):
+                if d[1].strip() == name:
+                    return i
+        return max(0, min(default_idx, len(self._mic_devices) - 1))
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
@@ -320,7 +363,7 @@ class App(tk.Tk):
         self._mic_combo = ttk.Combobox(mic_row, values=mic_names,
                                         state="readonly", style="T.TCombobox",
                                         font=("Consolas", 9))
-        self._mic_combo.current(0)
+        self._mic_combo.current(self._mic1_idx)
         self._mic_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
         self._mic_combo.bind("<<ComboboxSelected>>", self._on_mic_change)
 
@@ -335,8 +378,7 @@ class App(tk.Tk):
         self._mic2_combo = ttk.Combobox(dir_top, values=mic2_names,
                                          state="readonly", style="T.TCombobox",
                                          font=("Consolas", 9))
-        idx2 = min(1, len(self._mic_devices) - 1)
-        self._mic2_combo.current(idx2)
+        self._mic2_combo.current(self._mic2_idx)
         self._mic2_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
         self._mic2_combo.bind("<<ComboboxSelected>>", self._on_mic2_change)
 
@@ -344,7 +386,7 @@ class App(tk.Tk):
         sep_row.pack(fill=tk.X, pady=(2, 4))
         tk.Label(sep_row, text="SEP(m)", font=("Consolas", 8),
                  fg=C["dim"], bg=C["bg"], width=6).pack(side=tk.LEFT)
-        self._sep_var = tk.StringVar(value="0.5")
+        self._sep_var = tk.StringVar(value=f"{self._mic_sep_m:g}")
         sep_entry = tk.Entry(sep_row, textvariable=self._sep_var, width=6,
                              bg=C["panel"], fg=C["green"], insertbackground=C["green"],
                              font=("Consolas", 9), bd=0,
@@ -432,6 +474,24 @@ class App(tk.Tk):
                                      fg=C["mid"], bg=C["bg"])
         self._dev_status.pack(side=tk.LEFT, padx=8)
 
+        # SENSITIVITY (detection threshold) slider
+        sens_row = tk.Frame(root, bg=C["bg"])
+        sens_row.pack(fill=tk.X, padx=16, pady=(4, 0))
+        tk.Label(sens_row, text="SENS", font=("Consolas", 8),
+                 fg=C["dim"], bg=C["bg"], width=6).pack(side=tk.LEFT)
+        self._sens_scale = tk.Scale(
+            sens_row, from_=0.10, to=0.90, resolution=0.05,
+            orient=tk.HORIZONTAL, showvalue=False,
+            bg=C["bg"], fg=C["green"], troughcolor=C["panel"],
+            highlightthickness=0, bd=0, sliderrelief=tk.FLAT,
+            activebackground=C["green"], command=self._on_sens_change)
+        self._sens_scale.set(self._threshold)
+        self._sens_scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._sens_var = tk.StringVar(value=f"{self._threshold:.0%}")
+        tk.Label(sens_row, textvariable=self._sens_var, width=6,
+                 font=("Consolas", 9, "bold"), fg=C["green"],
+                 bg=C["bg"]).pack(side=tk.LEFT, padx=(8, 0))
+
         # direction mode toggle
         self._dir_btn = tk.Button(root, text="◈  DIRECTION MODE: OFF",
                                   font=("Consolas", 10, "bold"),
@@ -492,6 +552,12 @@ class App(tk.Tk):
 
     def _toggle_dir(self):
         self._dir_mode = not self._dir_mode
+        self._apply_dir_mode_ui()
+        self._save_settings()
+        if self.running:
+            self._restart()
+
+    def _apply_dir_mode_ui(self):
         if self._dir_mode:
             self._dir_frame.pack(fill=tk.X, padx=16, before=self._dir_btn)
             self._dir_btn.configure(text="◈  DIRECTION MODE: ON",
@@ -501,12 +567,16 @@ class App(tk.Tk):
             self._dir_btn.configure(text="◈  DIRECTION MODE: OFF",
                                     fg=C["dim"], bg=C["panel"])
             self._draw_compass(None)
-        if self.running:
-            self._restart()
+
+    def _on_sens_change(self, _=None):
+        self._threshold = float(self._sens_scale.get())
+        self._sens_var.set(f"{self._threshold:.0%}")
+        self._save_settings()
 
     def _on_mic2_change(self, _=None):
         idx = self._mic2_combo.current()
         self._sel_dev2_id = self._mic_devices[idx][0]
+        self._save_settings()
         if self.running and self._dir_mode:
             self._restart()
 
@@ -515,6 +585,7 @@ class App(tk.Tk):
             v = float(self._sep_var.get())
             self._mic_sep_m = max(0.01, min(v, 10.0))
             self._max_delay = self._mic_sep_m / SPEED_SOUND
+            self._save_settings()
         except ValueError:
             pass
 
@@ -815,7 +886,7 @@ class App(tk.Tk):
             try:
                 label, score, dbg = self._run_inference(audio)
                 self.after(0, self._debug_var.set, dbg)
-                if label and score >= THRESHOLD:
+                if label and score >= self._threshold:
                     self._bar_score = score
                     self._bar_label = label
                     self.after(0, self._fire_alert, label, score)
@@ -932,6 +1003,7 @@ class App(tk.Tk):
     def _on_mic_change(self, _=None):
         idx = self._mic_combo.current()
         self._sel_dev_id = self._mic_devices[idx][0]
+        self._save_settings()
         if self.running:
             self._restart()
 

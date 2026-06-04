@@ -35,7 +35,7 @@ WINDOW_SEC  = 1.0
 HOP_SEC     = 0.25
 THRESHOLD   = 0.45
 ENERGY_GATE = 0.003
-CLAP_MARGIN = 0.15   # threat must beat the best neutral label by this much
+CLAP_MARGIN = 0.20   # threat must beat the best neutral label by this much
 
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "mic_settings.json")
 SPEED_SOUND = 343.0   # m/s at ~20 °C

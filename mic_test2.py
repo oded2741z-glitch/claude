@@ -455,6 +455,9 @@ class App(tk.Tk):
         if not self.running or not self._dir_mode:
             self._cal_status_var.set("⚠ Start microphone first")
             return
+        if self.stream2 is None:
+            self._cal_status_var.set("⚠ MIC 2 not active")
+            return
         if self._calibrating:
             return
 

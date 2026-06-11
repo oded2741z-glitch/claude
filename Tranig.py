@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 import subprocess
 import os
 import sys
@@ -11,8 +11,9 @@ import webbrowser
 
 try:
     from PIL import Image, ImageTk
+    HAS_PIL = True
 except ImportError:
-    pass
+    HAS_PIL = False
 
 class TranigStudioApp:
     def __init__(self, root):
@@ -41,6 +42,10 @@ class TranigStudioApp:
         self.auto_model_path = None
         self.selected_audio_files = []
 
+        self.active_process = None
+        self.is_running = False
+        self.restore_win = None
+
         self.root.bind("<F4>", self.toggle_visibility)
 
         self.load_settings()
@@ -49,14 +54,36 @@ class TranigStudioApp:
 
     def toggle_visibility(self, event=None):
         if self.is_hidden:
-            self.root.deiconify()
-            self.root.attributes("-topmost", True)
-            self.root.attributes("-topmost", False)
-            self.root.focus_force()
-            self.is_hidden = False
+            self.show_main_window()
         else:
             self.root.withdraw()
             self.is_hidden = True
+            self.show_restore_window()
+
+    def show_main_window(self, event=None):
+        if self.restore_win is not None:
+            self.restore_win.destroy()
+            self.restore_win = None
+        self.root.deiconify()
+        self.root.attributes("-topmost", True)
+        self.root.attributes("-topmost", False)
+        self.root.focus_force()
+        self.is_hidden = False
+
+    def show_restore_window(self):
+        # A withdrawn overrideredirect window cannot receive key events,
+        # so leave a tiny topmost handle on screen to bring the app back.
+        self.restore_win = tk.Toplevel(self.root)
+        self.restore_win.overrideredirect(True)
+        self.restore_win.attributes("-topmost", True)
+        sw = self.restore_win.winfo_screenwidth()
+        sh = self.restore_win.winfo_screenheight()
+        self.restore_win.geometry(f"30x20+{sw - 40}+{sh - 50}")
+        lbl = tk.Label(self.restore_win, text="oT", bg="#121212", fg="#555555", font=("Arial", 9, "bold"))
+        lbl.pack(fill=tk.BOTH, expand=True)
+        lbl.bind("<Button-1>", self.show_main_window)
+        self.restore_win.bind("<F4>", self.show_main_window)
+        self.restore_win.focus_force()
 
     def load_settings(self):
         if os.path.exists("settings.txt"):
@@ -65,15 +92,55 @@ class TranigStudioApp:
                     saved_path = f.read().strip()
                     if saved_path:
                         self.env_path = saved_path
-            except:
+            except Exception:
                 pass
 
     def save_settings(self):
         try:
             with open("settings.txt", "w", encoding="utf-8") as f:
                 f.write(self.env_path)
-        except:
+        except Exception:
             pass
+
+    # --- Background process helpers ---
+    def start_task(self, target):
+        if self.is_running:
+            self.update_status("Status: Error - Another process is already running")
+            return False
+        self.is_running = True
+
+        def wrapper():
+            try:
+                target()
+            finally:
+                self.is_running = False
+
+        threading.Thread(target=wrapper, daemon=True).start()
+        return True
+
+    def stream_subprocess(self, cmd):
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        self.active_process = process
+        try:
+            for line in iter(process.stdout.readline, ''):
+                if line:
+                    try:
+                        self.root.after(0, self.append_console, line)
+                    except tk.TclError:
+                        break
+            process.stdout.close()
+            process.wait()
+        finally:
+            self.active_process = None
+        return process.returncode
+
+    def quit_app(self):
+        if self.active_process is not None and self.active_process.poll() is None:
+            try:
+                self.active_process.terminate()
+            except Exception:
+                pass
+        self.root.destroy()
 
     def setup_ui(self):
         style = ttk.Style()
@@ -99,7 +166,7 @@ class TranigStudioApp:
         title = tk.Label(top_bar, text="Tranig Studio", bg="#121212", fg="#E07A5F", font=("Arial", 12, "bold"))
         title.pack(side=tk.LEFT, padx=10, pady=5)
 
-        quit_btn = tk.Button(top_bar, text="Quit", bg="#FF6B00", fg="#FFFFFF", relief="flat", borderwidth=0, padx=15, pady=5, command=self.root.destroy)
+        quit_btn = tk.Button(top_bar, text="Quit", bg="#FF6B00", fg="#FFFFFF", relief="flat", borderwidth=0, padx=15, pady=5, command=self.quit_app)
         quit_btn.pack(side=tk.RIGHT, padx=5, pady=5)
 
         help_btn = tk.Button(top_bar, text="Help", bg="#333333", fg="#FFFFFF", relief="flat", borderwidth=0, padx=15, pady=5, command=self.show_help)
@@ -369,22 +436,19 @@ class TranigStudioApp:
             self.update_status("Status: Error - Please activate environment first")
             return
         if os.path.exists(filename):
+            if self.is_running:
+                self.update_status("Status: Error - Another process is already running")
+                return
             self.update_status(f"Status: Running {filename}...")
             self.console.delete("1.0", tk.END)
             self.append_console(f"--- Starting {filename} ---\n")
-            threading.Thread(target=self._run_file_thread, args=(filename,)).start()
+            self.start_task(lambda: self._run_file_thread(filename))
         else:
             self.update_status(f"Status: {filename} not found")
 
     def _run_file_thread(self, filename):
-        command = [self.venv_python, filename]
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                self.root.after(0, self.append_console, line)
-        process.stdout.close()
-        process.wait()
-        self.root.after(0, self.append_console, f"\n--- Process finished with code {process.returncode} ---\n")
+        returncode = self.stream_subprocess([self.venv_python, filename])
+        self.root.after(0, self.append_console, f"\n--- Process finished with code {returncode} ---\n")
 
     # --- Dataset and Splitting Methods ---
     def split_dataset(self):
@@ -441,7 +505,7 @@ class TranigStudioApp:
                 
         yaml_path = "data_split.yaml"
         with open(yaml_path, "w", encoding="utf-8") as f:
-            f.write("path: my_dataset/split\n")
+            f.write(f"path: {os.path.abspath(split_base)}\n")
             f.write("train: train/images\n")
             f.write("val: val/images\n\n")
             f.write("names:\n")
@@ -484,13 +548,17 @@ class TranigStudioApp:
             self.update_status("Status: Error - Invalid Chunk Length")
             return
 
-        self.notebook.select(self.tab_main) 
+        if self.is_running:
+            self.update_status("Status: Error - Another process is already running")
+            return
+
+        self.notebook.select(self.tab_main)
         self.update_status("Status: Cutting and Converting Audio...")
         self.console.delete("1.0", tk.END)
         self.append_console("--- Starting Audio-to-Image Conversion & Chunking ---\n")
         self.append_console("Note: Ensure you clicked 'Install Requirements' first.\n\n")
 
-        threading.Thread(target=self._convert_audio_thread).start()
+        self.start_task(self._convert_audio_thread)
 
     def _convert_audio_thread(self):
         script = f"""
@@ -564,12 +632,7 @@ print(f"\\n--- Conversion Complete! {{success_count}} chunks generated. ---")
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(script)
 
-        cmd = [self.venv_python, script_path]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                self.root.after(0, self.append_console, line)
-        process.wait()
+        self.stream_subprocess([self.venv_python, script_path])
 
         if os.path.exists(script_path):
             os.remove(script_path)
@@ -604,23 +667,24 @@ print(f"\\n--- Conversion Complete! {{success_count}} chunks generated. ---")
         new_model = self.model_var.get().strip()
         if not new_model:
             return
-            
-        if self.current_file in ["train_yolo.py", "run_yolo.py"]:
+
+        # Only train_yolo.py uses the base model; run_yolo.py points at the
+        # user's trained model and must never be overwritten here.
+        if self.current_file == "train_yolo.py":
             content = self.editor.get("1.0", "end-1c")
             updated_content = re.sub(r"YOLO\(['\"].*?['\"]\)", f"YOLO('{new_model}')", content)
             if updated_content != content:
                 self.editor.delete("1.0", tk.END)
                 self.editor.insert(tk.END, updated_content)
                 self.update_status(f"Status: Model updated to {new_model} in editor")
-                
-        for filename in ["train_yolo.py", "run_yolo.py"]:
-            if self.current_file != filename and os.path.exists(filename):
-                with open(filename, "r", encoding="utf-8") as f:
-                    content = f.read()
-                updated_content = re.sub(r"YOLO\(['\"].*?['\"]\)", f"YOLO('{new_model}')", content)
-                if updated_content != content:
-                    with open(filename, "w", encoding="utf-8") as f:
-                        f.write(updated_content)
+        elif os.path.exists("train_yolo.py"):
+            with open("train_yolo.py", "r", encoding="utf-8") as f:
+                content = f.read()
+            updated_content = re.sub(r"YOLO\(['\"].*?['\"]\)", f"YOLO('{new_model}')", content)
+            if updated_content != content:
+                with open("train_yolo.py", "w", encoding="utf-8") as f:
+                    f.write(updated_content)
+                self.update_status(f"Status: Model updated to {new_model} in train_yolo.py (background)")
 
     # --- Auto-Labeling Methods ---
     def select_auto_model(self):
@@ -646,11 +710,15 @@ print(f"\\n--- Conversion Complete! {{success_count}} chunks generated. ---")
             self.update_status("Status: Error - Invalid confidence percentage")
             return
             
-        self.notebook.select(self.tab_main) 
+        if self.is_running:
+            self.update_status("Status: Error - Another process is already running")
+            return
+
+        self.notebook.select(self.tab_main)
         self.update_status("Status: Starting Auto-Labeling...")
         self.console.delete("1.0", tk.END)
         self.append_console("--- Starting Auto-Labeling on Remaining Images ---\n")
-        threading.Thread(target=self._auto_label_thread).start()
+        self.start_task(self._auto_label_thread)
 
     def _auto_label_thread(self):
         script = f"""
@@ -658,7 +726,7 @@ from ultralytics import YOLO
 import os
 
 try:
-    model = YOLO(r'{self.auto_model_path}')
+    model = YOLO({self.auto_model_path!r})
     img_dir = os.path.join('my_dataset', 'images')
     lbl_dir = os.path.join('my_dataset', 'labels')
     conf_thresh = {float(self.conf_pct_var.get()) / 100.0}
@@ -702,14 +770,9 @@ except Exception as e:
 """
         with open("auto_label_script.py", "w", encoding="utf-8") as f:
             f.write(script)
-            
-        cmd = [self.venv_python, "auto_label_script.py"]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                self.root.after(0, self.append_console, line)
-        process.wait()
-        
+
+        self.stream_subprocess([self.venv_python, "auto_label_script.py"])
+
         if os.path.exists("auto_label_script.py"):
             os.remove("auto_label_script.py")
             
@@ -739,18 +802,17 @@ except Exception as e:
                         if hasattr(self, 'auto_tag_cb'):
                             self.auto_tag_cb['values'] = self.tags
                         self.tag_var.set(self.tags[0])
-            except:
+            except Exception:
                 pass
 
     def update_data_yaml(self):
-        if os.path.exists("data.yaml"):
-            with open("data.yaml", "w", encoding="utf-8") as f:
-                f.write("path: my_dataset\n")
-                f.write("train: images\n")
-                f.write("val: images\n\n")
-                f.write("names:\n")
-                for i, t in enumerate(self.tags):
-                    f.write(f"  {i}: {t}\n")
+        with open("data.yaml", "w", encoding="utf-8") as f:
+            f.write(f"path: {os.path.abspath('my_dataset')}\n")
+            f.write("train: images\n")
+            f.write("val: images\n\n")
+            f.write("names:\n")
+            for i, t in enumerate(self.tags):
+                f.write(f"  {i}: {t}\n")
 
     # --- General Utilities ---
     def start_move(self, event):
@@ -764,7 +826,7 @@ except Exception as e:
 
     def show_help(self):
         if os.path.exists("guide.html"):
-            webbrowser.open("guide.html")
+            webbrowser.open("file://" + os.path.abspath("guide.html"))
             self.update_status("Status: Opened guide.html in browser")
         else:
             self.update_status("Status: Error - guide.html not found in folder")
@@ -789,38 +851,38 @@ except Exception as e:
 
     def create_env(self):
         self.update_status("Status: Creating Environment & Dataset Folders...")
-        threading.Thread(target=self._create_env_thread).start()
+        self.start_task(self._create_env_thread)
 
     def _create_env_thread(self):
-        subprocess.run([sys.executable, "-m", "venv", self.env_path])
+        subprocess.run([sys.executable, "-m", "venv", self.env_path], check=False)
         os.makedirs(os.path.join("my_dataset", "images"), exist_ok=True)
         os.makedirs(os.path.join("my_dataset", "labels"), exist_ok=True)
-        
+
         if not os.path.exists("data.yaml"):
-            with open("data.yaml", "w", encoding="utf-8") as f:
-                f.write("path: my_dataset\n")
-                f.write("train: images\n")
-                f.write("val: images\n\n")
-                f.write("names:\n")
-                for i, t in enumerate(self.tags):
-                    f.write(f"  {i}: {t}\n")
-                    
+            self.update_data_yaml()
+
         if not os.path.exists("train_yolo.py"):
             with open("train_yolo.py", "w", encoding="utf-8") as f:
-                f.write("from ultralytics import YOLO\n\n")
+                f.write("from ultralytics import YOLO\n")
+                f.write("import torch\n\n")
+                f.write("# Use GPU if available, otherwise fall back to CPU\n")
+                f.write("device = 0 if torch.cuda.is_available() else 'cpu'\n\n")
                 f.write("# Start from the base model\n")
                 f.write("model = YOLO('yolov8n.pt')\n\n")
                 f.write("# Train the model on your custom dataset\n")
-                f.write("results = model.train(data='data.yaml', epochs=50, imgsz=640, device=0, workers=0)\n")
-                
+                f.write("results = model.train(data='data.yaml', epochs=50, imgsz=640, device=device, workers=0)\n")
+
         if not os.path.exists("run_yolo.py"):
             with open("run_yolo.py", "w", encoding="utf-8") as f:
-                f.write("from ultralytics import YOLO\n\n")
+                f.write("from ultralytics import YOLO\n")
+                f.write("import torch\n\n")
+                f.write("# Use GPU if available, otherwise fall back to CPU\n")
+                f.write("device = 0 if torch.cuda.is_available() else 'cpu'\n\n")
                 f.write("# Load your custom trained model\n")
                 f.write("model = YOLO('My_model.pt')\n\n")
                 f.write("# Run inference on a test image\n")
-                f.write("results = model('test.jpg', save=True, device=0)\n")
-                
+                f.write("results = model('test.jpg', save=True, device=device)\n")
+
         self.root.after(0, lambda: self.update_status("Status: Environment and Folders Created"))
 
     def activate_env(self):
@@ -844,23 +906,13 @@ except Exception as e:
         self.update_status("Status: Installing Requirements...")
         self.console.delete("1.0", tk.END)
         self.append_console("--- Starting Installation ---\n")
-        threading.Thread(target=self._install_requirements_thread).start()
+        self.start_task(self._install_requirements_thread)
 
     def _install_requirements_thread(self):
-        cmd1 = [self.venv_python, "-m", "pip", "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu118"]
-        process1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-        for line in iter(process1.stdout.readline, ''):
-            if line:
-                self.root.after(0, self.append_console, line)
-        process1.wait()
+        self.stream_subprocess([self.venv_python, "-m", "pip", "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu118"])
 
         # Added 'soundfile' for saving wav chunks
-        cmd2 = [self.venv_python, "-m", "pip", "install", "ultralytics", "librosa", "matplotlib", "soundfile"]
-        process2 = subprocess.Popen(cmd2, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-        for line in iter(process2.stdout.readline, ''):
-            if line:
-                self.root.after(0, self.append_console, line)
-        process2.wait()
+        self.stream_subprocess([self.venv_python, "-m", "pip", "install", "ultralytics", "librosa", "matplotlib", "soundfile"])
 
         self.root.after(0, self.append_console, "\n--- Installation Finished ---\n")
         self.root.after(0, lambda: self.update_status("Status: Requirements Installed"))
@@ -872,16 +924,11 @@ except Exception as e:
         self.update_status("Status: Checking GPU...")
         self.console.delete("1.0", tk.END)
         self.append_console("--- Checking GPU / CUDA Status ---\n")
-        threading.Thread(target=self._check_gpu_thread).start()
+        self.start_task(self._check_gpu_thread)
 
     def _check_gpu_thread(self):
         code = "import torch\nprint(f'CUDA Available: {torch.cuda.is_available()}')\nif torch.cuda.is_available():\n    print(f'GPU Name: {torch.cuda.get_device_name(0)}')\n"
-        cmd = [self.venv_python, "-c", code]
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
-        for line in iter(process.stdout.readline, ''):
-            if line:
-                self.root.after(0, self.append_console, line)
-        process.wait()
+        self.stream_subprocess([self.venv_python, "-c", code])
         self.root.after(0, self.append_console, "\n--- Check Finished ---\n")
         self.root.after(0, lambda: self.update_status("Status: GPU Check Complete"))
 
@@ -943,7 +990,7 @@ except Exception as e:
             if hasattr(self, 'auto_img_canvas'):
                 self.auto_img_canvas.delete("all")
             try:
-                if 'PIL.Image' in sys.modules:
+                if HAS_PIL:
                     img = Image.open(img_path)
                     img.thumbnail((400, 400))
                     self.img_width = img.width
@@ -1023,24 +1070,28 @@ except Exception as e:
         wav_path = base_name + ".wav"
         
         if os.path.exists(wav_path):
-            self.update_status(f"Status: Playing {os.path.basename(wav_path)}...")
             if os.name == 'nt':
                 import winsound
                 winsound.PlaySound(wav_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
             else:
-                import subprocess
-                if sys.platform == 'darwin':
-                    subprocess.Popen(['afplay', wav_path])
-                else:
-                    subprocess.Popen(['aplay', wav_path])
+                players = ['afplay'] if sys.platform == 'darwin' else ['aplay', 'paplay', 'ffplay']
+                player = next((p for p in players if shutil.which(p)), None)
+                if player is None:
+                    self.update_status("Status: Error - No audio player found (aplay/paplay/ffplay)")
+                    return
+                args = [player, '-nodisp', '-autoexit', wav_path] if player == 'ffplay' else [player, wav_path]
+                subprocess.Popen(args)
+            self.update_status(f"Status: Playing {os.path.basename(wav_path)}...")
         else:
             self.update_status("Status: Error - No associated .wav file found for this image.")
 
     def delete_current_image(self):
         if not self.image_files or self.current_img_index < 0:
             return
-            
+
         img_path = self.image_files[self.current_img_index]
+        if not messagebox.askyesno("Delete Image", f"Delete {os.path.basename(img_path)} and its .wav and label files?"):
+            return
         base_name = os.path.splitext(img_path)[0]
         wav_path = base_name + ".wav"
         lbl_path = os.path.join("my_dataset", "labels", os.path.basename(base_name) + ".txt")

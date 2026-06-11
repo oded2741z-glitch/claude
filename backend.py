@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 import threading
 import time
 
@@ -15,6 +16,7 @@ COOLDOWN_TIME = 5          # Seconds to wait before sending another alert
 CONFIDENCE_THRESHOLD = 0.3 # Lowered to 30% for higher sensitivity
 MONITOR_INDEX = 1          # mss monitor index (1 = primary monitor)
 SHOW_DEBUG_WINDOW = True   # Set False to run headless (no cv2 window)
+DEBUG_WINDOW_TITLE = "AI Screen Vision Debug"
 HOST = "localhost"
 PORT = 8766
 
@@ -23,6 +25,21 @@ TARGET_CLASSES = {0, 2, 3, 5, 7}
 
 clients = set()
 stop_event = threading.Event()
+
+
+def minimize_debug_window():
+    """Start the debug window minimized so it doesn't cover the screen
+    (and doesn't appear in its own screen capture). Windows only."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        SW_MINIMIZE = 6
+        hwnd = ctypes.windll.user32.FindWindowW(None, DEBUG_WINDOW_TITLE)
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, SW_MINIMIZE)
+    except Exception as e:
+        print(f"Could not minimize debug window: {e}")
 
 
 async def handler(websocket):
@@ -56,6 +73,7 @@ def detection_loop(loop, on_exit):
             print("Press 'q' in the video window to stop.")
 
         last_alert = 0.0
+        debug_window_created = False
         with mss.mss() as sct:
             monitor = sct.monitors[MONITOR_INDEX]
 
@@ -93,8 +111,13 @@ def detection_loop(loop, on_exit):
 
                 if SHOW_DEBUG_WINDOW:
                     debug_frame = cv2.resize(frame, (960, 540))
-                    cv2.imshow("AI Screen Vision Debug", debug_frame)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                    cv2.imshow(DEBUG_WINDOW_TITLE, debug_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if not debug_window_created:
+                        # Minimize once, right after the window first appears
+                        minimize_debug_window()
+                        debug_window_created = True
+                    if key == ord("q"):
                         break
 
                 now = time.monotonic()

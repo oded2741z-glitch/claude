@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoSys - Clean Display Hub</title>
+<style>
+/* Base Reset & Styling */
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #121212; }
+::-webkit-scrollbar-thumb { background: #333333; border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: #389379; }
+* {
+  box-sizing: border-box;
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-drag: none;
+  -o-user-drag: none;
+  user-drag: none;
+  user-select: none;
+}
+
+input[type="text"] {
+    user-select: text;
+}
+
+body {
+  margin: 0; padding: 0;
+  font-family: Consolas, monospace;
+  background: #121212;
+  color: #FFFFFF;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.btn {
+  background: #333333;
+  color: #FFFFFF;
+  border: 1px solid transparent;
+  padding: 5px 15px;
+  cursor: pointer;
+  font-family: Consolas, monospace;
+  font-weight: bold;
+  border-radius: 0;
+  transition: 0.2s;
+}
+.btn:hover { border-color: #389379; }
+.btn-accent { background: #333333; }
+.btn-accent:hover { background: #389379; border-color: #389379; color: #121212; }
+
+/* Display Section */
+#displaySection {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: #121212;
+}
+
+#mainGrid {
+  flex: 1;
+  display: grid;
+  gap: 4px;
+  padding: 4px;
+  overflow: hidden;
+}
+.layout-1x1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.layout-2x1 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+.layout-2x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.layout-3x1 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.layout-3x1 .screen:nth-child(3) { grid-column: 1 / span 2; }
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  background: #1E1E1E;
+  border: 1px solid #333333;
+  overflow: hidden;
+  position: relative;
+  cursor: pointer;
+}
+.screen:hover { border-color: #389379; }
+
+.iframe-wrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000000;
+  overflow: hidden;
+  position: relative;
+  container-type: size;
+}
+
+iframe { pointer-events: none; }
+.iframe-wrapper.ratio-free iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: none; }
+.watermark { position: absolute; bottom: 5px; right: 8px; color: #389379; font-size: 12px; pointer-events: none; opacity: 0.7; font-weight: bold; }
+
+/* Dashboard Section */
+#dashboardSection {
+  border-top: 1px solid #389379;
+  background: #121212;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.layout-grid { display: flex; gap: 5px; }
+.layout-btn {
+  padding: 6px 12px;
+  border: 1px solid #333333;
+  background: #1E1E1E;
+  color: #FFFFFF;
+  cursor: pointer;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  border-radius: 0;
+}
+.layout-btn:hover { border-color: #389379; }
+.layout-btn.active { border-color: #389379; background: #389379; color: #121212; font-weight: bold; }
+
+#screensGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.screen-card {
+  background: #1E1E1E;
+  padding: 5px 10px;
+  border: 1px solid #333333;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.screen-card select {
+  padding: 4px;
+  background: #121212;
+  color: #FFFFFF;
+  border: 1px solid #333;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  border-radius: 0;
+  min-width: 120px;
+}
+.screen-card select:focus { outline: 1px solid #389379; border-color: #389379; }
+
+.ratio-group { display: flex; gap: 4px; }
+.ratio-btn { padding: 3px 6px; background: #121212; border: 1px solid #333; color: #666; cursor: pointer; font-size: 10px; border-radius: 0; }
+.ratio-btn.active { border-color: #389379; color: #389379; font-weight: bold; }
+.max-btn { margin-left: 8px; color: #389379; border-color: #389379; font-weight: bold; }
+
+/* Fullscreen Overlay */
+#fullscreenOverlay { position: fixed; inset: 0; background: #121212; z-index: 1000; display: none; justify-content: center; align-items: center; }
+#fullscreenOverlay.active { display: flex; }
+#fullscreenFrame { width: 100%; height: 100%; border: none; }
+#fullscreenCloseBtn { position: absolute; top: 10px; right: 10px; z-index: 1100; background: #c0392b; color: #fff; font-weight: bold; font-family: Consolas; cursor: pointer; border: none; padding: 5px 15px; }
+#fullscreenCloseBtn:hover { background: #e74c3c; }
+
+/* Motion Popup Alert */
+#motionAlert {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1E1E1E;
+  color: #FFFFFF;
+  padding: 10px 30px;
+  font-size: 16px;
+  font-family: Consolas, monospace;
+  font-weight: bold;
+  border: 2px solid #c0392b;
+  z-index: 2000;
+  display: none;
+  box-shadow: 0 0 15px rgba(192, 57, 43, 0.6);
+  text-transform: uppercase;
+  animation: alertFlash 0.8s infinite;
+}
+
+@keyframes alertFlash {
+  0% { border-color: #c0392b; color: #FFFFFF; }
+  50% { border-color: #FFFFFF; color: #c0392b; }
+  100% { border-color: #c0392b; color: #FFFFFF; }
+}
+</style>
+</head>
+<body id="appBody">
+
+<div id="motionAlert"></div>
+
+<div id="displaySection">
+  <div id="mainGrid" class="layout-2x2"></div>
+  <div class="watermark">oT</div>
+</div>
+
+<div id="dashboardSection">
+  <div class="layout-grid">
+    <button class="layout-btn" onclick="setLayout('1x1',this)">1x1</button>
+    <button class="layout-btn" onclick="setLayout('2x1',this)">2x1</button>
+    <button class="layout-btn" onclick="setLayout('2x2',this)">2x2</button>
+    <button class="layout-btn" onclick="setLayout('3x1',this)">3x1</button>
+  </div>
+
+  <div id="screensGrid"></div>
+</div>
+
+<div id="fullscreenOverlay">
+  <iframe id="fullscreenFrame" scrolling="no"></iframe>
+  <button id="fullscreenCloseBtn" onclick="closeFullscreen()">EXIT FS</button>
+</div>
+
+<script>
+const DEFAULTS = {
+  urls: [],
+  screens: ["","","",""],
+  ratios: ["free","free","free","free"],
+  layout: "2x2"
+};
+
+const screenCount = { '1x1':1, '2x1':2, '2x2':4, '3x1':3 };
+const RATIO_MAP = { 'free':null, '16:9':[16,9], '4:3':[4,3], '1:1':[1,1], '21:9':[21,9], '9:16':[9,16] };
+const RATIOS = [
+  { label: "Free", value: "free" },
+  { label: "16:9", value: "16:9" },
+  { label: "4:3", value: "4:3" }
+];
+
+function getState() {
+  return {
+    urls: JSON.parse(localStorage.getItem('sv_urls') || 'null') || DEFAULTS.urls,
+    screens: JSON.parse(localStorage.getItem('sv_screens') || 'null') || DEFAULTS.screens,
+    ratios: JSON.parse(localStorage.getItem('sv_ratios') || 'null') || DEFAULTS.ratios,
+    layout: localStorage.getItem('sv_layout') || DEFAULTS.layout
+  };
+}
+
+function saveState(state) {
+  localStorage.setItem('sv_screens', JSON.stringify(state.screens));
+  localStorage.setItem('sv_ratios', JSON.stringify(state.ratios));
+  localStorage.setItem('sv_layout', state.layout);
+}
+
+function applyRatio(wrapper, iframe, ratio) {
+  const rDims = RATIO_MAP[ratio];
+  if (!rDims) {
+    wrapper.className = 'iframe-wrapper ratio-free';
+    iframe.removeAttribute('style');
+  } else {
+    wrapper.className = 'iframe-wrapper ratio-fixed';
+    iframe.style.cssText =
+      `border:none;width:100cqw;height:100cqh;` +
+      `max-width:calc(100cqh * (${rDims[0]}/${rDims[1]}));` +
+      `max-height:calc(100cqw * (${rDims[1]}/${rDims[0]}));` +
+      `background:#000;`;
+  }
+}
+
+function createScreenElement(i, state) {
+  const url = state.screens[i] || '';
+  const div = document.createElement('div');
+  div.className = 'screen';
+  div.title = url ? 'Double click to maximize' : '';
+  div.ondblclick = () => {
+    if (getState().screens[i]) openFullscreen(i);
+  };
+
+  const wrapper = document.createElement('div');
+  const iframe = document.createElement('iframe');
+  iframe.id = 'frame' + i;
+  iframe.setAttribute('scrolling', 'no');
+  if (url) iframe.src = url;
+  applyRatio(wrapper, iframe, state.ratios[i] || 'free');
+
+  wrapper.appendChild(iframe);
+  div.appendChild(wrapper);
+  return div;
+}
+
+function buildScreens() {
+  const s = getState();
+  const grid = document.getElementById('mainGrid');
+  const count = screenCount[s.layout] || 4;
+  grid.className = 'layout-' + s.layout;
+  grid.innerHTML = '';
+  for (let i = 0; i < count; i++) {
+    grid.appendChild(createScreenElement(i, s));
+  }
+}
+
+function setLayout(layout, btn) {
+  const s = getState();
+  s.layout = layout;
+  saveState(s);
+  buildScreens();
+  document.querySelectorAll('.layout-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderDashboard();
+}
+
+function renderDashboard() {
+  const s = getState();
+  const count = screenCount[s.layout] || 4;
+  const grid = document.getElementById('screensGrid');
+  grid.innerHTML = '';
+
+  for (let i = 0; i < count; i++) {
+    const currentRatio = s.ratios[i] || 'free';
+    const div = document.createElement('div');
+    div.className = 'screen-card';
+
+    const select = document.createElement('select');
+    select.onchange = () => updateScreen(i, select.value);
+    const offOpt = document.createElement('option');
+    offOpt.value = '';
+    offOpt.textContent = '[ OFF ]';
+    select.appendChild(offOpt);
+    s.urls.forEach((u, idx) => {
+      const isIP = /^https?:\/\/|^\d{1,3}\./.test(u.label);
+      const opt = document.createElement('option');
+      opt.value = u.url;
+      opt.textContent = isIP ? `Source ${idx + 1}` : u.label;
+      opt.selected = s.screens[i] === u.url;
+      select.appendChild(opt);
+    });
+    div.appendChild(select);
+
+    const ratioGroup = document.createElement('div');
+    ratioGroup.className = 'ratio-group';
+    ratioGroup.id = 'ratioGroup' + i;
+    RATIOS.forEach(r => {
+      const b = document.createElement('button');
+      b.className = 'ratio-btn' + (currentRatio === r.value ? ' active' : '');
+      b.textContent = r.label;
+      b.onclick = () => updateRatio(i, r.value);
+      ratioGroup.appendChild(b);
+    });
+    const maxBtn = document.createElement('button');
+    maxBtn.className = 'ratio-btn max-btn';
+    maxBtn.textContent = 'MAX';
+    maxBtn.title = 'Maximize Screen';
+    maxBtn.onclick = () => openFullscreen(i);
+    ratioGroup.appendChild(maxBtn);
+    div.appendChild(ratioGroup);
+
+    grid.appendChild(div);
+  }
+}
+
+function updateScreen(i, url) {
+  const s = getState();
+  s.screens[i] = url;
+  saveState(s);
+  // Replace only the affected screen so other streams keep playing
+  const grid = document.getElementById('mainGrid');
+  if (grid.children[i]) {
+    grid.replaceChild(createScreenElement(i, s), grid.children[i]);
+  }
+}
+
+function updateRatio(i, ratio) {
+  const s = getState();
+  s.ratios[i] = ratio;
+  saveState(s);
+  // Restyle in place - no iframe reload
+  const iframe = document.getElementById('frame' + i);
+  if (iframe) applyRatio(iframe.parentElement, iframe, ratio);
+  renderDashboard();
+}
+
+// --- Fullscreen Logic ---
+let fsActive = false;
+
+function openFullscreen(index) {
+  const s = getState();
+  const count = screenCount[s.layout] || 4;
+  if (index < 0 || index >= count) return;
+  const url = s.screens[index];
+  if (!url) return;
+
+  const overlay = document.getElementById('fullscreenOverlay');
+  const fsFrame = document.getElementById('fullscreenFrame');
+
+  fsFrame.src = url;
+  overlay.classList.add('active');
+  fsActive = true;
+}
+
+function closeFullscreen() {
+  document.getElementById('fullscreenOverlay').classList.remove('active');
+  document.getElementById('fullscreenFrame').src = '';
+  fsActive = false;
+}
+
+window.addEventListener('storage', function(e) {
+  if (e.key === 'sv_urls') {
+    renderDashboard();
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'F4') {
+    e.preventDefault();
+    const body = document.getElementById('appBody');
+    body.style.visibility = body.style.visibility === 'hidden' ? 'visible' : 'hidden';
+  }
+  if (e.key === 'Escape' && fsActive) closeFullscreen();
+});
+
+document.addEventListener('dragstart', function(e) {
+  if (e.target.tagName !== 'INPUT') e.preventDefault();
+});
+
+// --- Audio Alert Function ---
+function playAlertSound() {
+    try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        // Two-tone alarm sound
+        oscillator.type = 'square';
+        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // High pitch
+        oscillator.frequency.setValueAtTime(659, audioCtx.currentTime + 0.2); // Lower pitch
+
+        gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+
+        oscillator.start(audioCtx.currentTime);
+        oscillator.stop(audioCtx.currentTime + 0.5);
+    } catch (e) {
+        console.log("Audio play failed. User interaction needed first.");
+    }
+}
+
+// --- WebSocket Motion Listener ---
+let alertHideTimer = null;
+
+function handleMotionAlert(data) {
+    console.log('Motion detected on source:', data.source_index);
+
+    // 1. Play audio beep
+    playAlertSound();
+
+    // 2. Show UI popup (textContent - no HTML injection from server data)
+    const alertBox = document.getElementById('motionAlert');
+    const objectsDetected = Array.isArray(data.details) && data.details.length > 0
+        ? data.details.join(', ') : 'Target';
+    alertBox.textContent = `[ ALERT: ${objectsDetected} DETECTED ]`;
+    alertBox.style.display = 'block';
+
+    // Hide popup after 5 seconds (reset timer on repeated alerts)
+    clearTimeout(alertHideTimer);
+    alertHideTimer = setTimeout(() => {
+        alertBox.style.display = 'none';
+    }, 5000);
+
+    // 3. Maximize Screen (openFullscreen validates index + url)
+    openFullscreen(data.source_index);
+}
+
+function connectBackend() {
+    const ws = new WebSocket('ws://localhost:8766');
+
+    ws.onopen = () => console.log('Connected to Motion Backend');
+
+    ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.action === 'motion' && typeof data.source_index === 'number') {
+                handleMotionAlert(data);
+            }
+        } catch (e) {
+            console.error("Data error", e);
+        }
+    };
+
+    ws.onclose = () => {
+        console.log('Disconnected from Backend. Reconnecting in 5s...');
+        setTimeout(connectBackend, 5000);
+    };
+
+    ws.onerror = (err) => {
+        console.error('WebSocket Error:', err);
+        ws.close();
+    };
+}
+
+function init() {
+  const s = getState();
+  document.querySelectorAll('.layout-btn').forEach(b => {
+    b.classList.toggle('active', b.textContent.trim() === s.layout);
+  });
+  buildScreens();
+  renderDashboard();
+  connectBackend();
+}
+
+init();
+</script>
+</body>
+</html>

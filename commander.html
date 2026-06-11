@@ -466,9 +466,6 @@ function handleMotionAlert(data) {
     alertHideTimer = setTimeout(() => {
         alertBox.style.display = 'none';
     }, 5000);
-
-    // 3. Maximize Screen (openFullscreen validates index + url)
-    openFullscreen(data.source_index);
 }
 
 function connectBackend() {

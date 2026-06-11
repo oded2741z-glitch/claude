@@ -73,19 +73,42 @@ class EnforcerWindow(tk.Toplevel):
             return pid.value == os.getpid()
         except Exception:
             return False
+    def _is_real_window(self, win):
+        # Keep only windows that actually appear in the taskbar (like Alt-Tab),
+        # filtering out ghost UWP apps (Media Player, Calculator...) that stay
+        # alive as cloaked background processes after being closed.
+        try:
+            hwnd = win._hWnd
+            user32 = ctypes.windll.user32
+            if not user32.IsWindowVisible(hwnd): return False
+            if user32.GetWindow(hwnd, 4): return False  # GW_OWNER: owned popups
+            ex_style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+            if ex_style & 0x00000080: return False  # WS_EX_TOOLWINDOW
+            cloaked = ctypes.c_int(0)
+            ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))  # DWMWA_CLOAKED
+            if cloaked.value and not win.isMinimized: return False
+            if cloaked.value and win.isMinimized:
+                # Minimized UWP windows are cloaked too; ghost (closed) UWP
+                # apps have zero size while real minimized ones keep theirs.
+                if win.width <= 0 or win.height <= 0: return False
+            if win.title in ("Program Manager", "Windows Input Experience", "Microsoft Text Input Application"): return False
+            return True
+        except Exception:
+            return True
     def refresh_list(self):
-        self.listbox.delete(0, tk.END)
+        self.listbox.delete(0, tk.END); self.hwnd_map = []
         if ENFORCER_AVAILABLE:
             for win in gw.getAllWindows():
-                if win.title.strip() and not self._is_own_window(win):
+                if win.title.strip() and not self._is_own_window(win) and self._is_real_window(win):
                     st = "MIN" if win.isMinimized else "ACTV"
                     self.listbox.insert(tk.END, f"[{st}] {win.title}")
+                    self.hwnd_map.append(win._hWnd)
     def on_item_click(self, event):
         sel = self.listbox.curselection()
         if not sel: return
-        title = self.listbox.get(sel[0]).split("] ", 1)[1]
         try:
-            target = gw.getWindowsWithTitle(title)[0]
+            hwnd = self.hwnd_map[sel[0]]
+            target = next(w for w in gw.getAllWindows() if w._hWnd == hwnd)
             if target.isMinimized: target.restore(); target.activate()
             else: target.minimize()
             self.after(200, self.refresh_list)

@@ -55,6 +55,9 @@ DC_RATIOS = ["Free", "16:9", "4:3"]
 
 DRONE_MODEL_PATH = os.path.join(BASE_DIR, "drone.pt")
 
+# Max dimension (px) of the frame fed to YOLO; larger frames are downscaled
+DETECT_MAX_DIM = 640
+
 # --- MUZZLE FLASH DETECTION ---
 FLASH_PERSIST_SECS  = 30    
 FLASH_DIFF_THRESH   = 75    
@@ -221,10 +224,17 @@ class DetectionWorker(QThread):
         self.enable_flash = True
         self.device = "cpu"
 
-    def submit_frame(self, idx, frame_bgr, gray):
+    def submit_frame(self, idx, frame_bgr, gray, drawn_zones=None):
         with self._frames_lock:
-            self._latest_frames[idx] = (frame_bgr, gray)
+            self._latest_frames[idx] = (frame_bgr, gray, drawn_zones or [])
         self._frames_event.set()
+
+    @staticmethod
+    def _in_drawn_zone(x, y, w, h, zones):
+        for (zx, zy, zw, zh) in zones:
+            if x < zx + zw and x + w > zx and y < zy + zh and y + h > zy:
+                return True
+        return False
 
     def run(self):
         if YOLO_AVAILABLE:
@@ -240,32 +250,50 @@ class DetectionWorker(QThread):
                 self._latest_frames = {}
                 self._frames_event.clear()
 
-            for idx, (frame_bgr, gray) in pending.items():
+            for idx, (frame_bgr, gray, drawn_zones) in pending.items():
                 if not self.running:
                     break
                 rects = []
                 now = time.time()
 
+                # Run YOLO on a downscaled copy (max 640px) and scale the
+                # boxes back up — much faster on CPU, same overlay coords.
+                h0, w0 = frame_bgr.shape[:2]
+                scale = min(1.0, DETECT_MAX_DIM / max(h0, w0))
+                if scale < 1.0:
+                    small = cv2.resize(frame_bgr, (max(1, int(w0 * scale)), max(1, int(h0 * scale))))
+                else:
+                    small = frame_bgr
+                inv = 1.0 / scale
+
                 if self.person_model and self.enable_person:
-                    results = self.person_model(frame_bgr, classes=[0], verbose=False, device=self.device)
+                    results = self.person_model(small, classes=[0], verbose=False, device=self.device)
                     for box in results[0].boxes:
                         conf = float(box.conf[0])
                         if conf >= 0.4:
-                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            x1, y1, x2, y2 = int(x1 * inv), int(y1 * inv), int(x2 * inv), int(y2 * inv)
                             rects.append((x1, y1, x2 - x1, y2 - y1, conf, "person"))
 
                 if self.drone_model and self.enable_drone:
-                    results = self.drone_model(frame_bgr, verbose=False, device=self.device)
+                    results = self.drone_model(small, verbose=False, device=self.device)
                     for box in results[0].boxes:
                         conf = float(box.conf[0])
                         if conf >= 0.4:
-                            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            x1, y1, x2, y2 = int(x1 * inv), int(y1 * inv), int(x2 * inv), int(y2 * inv)
                             rects.append((x1, y1, x2 - x1, y2 - y1, conf, "drone"))
 
                 if self.enable_flash:
                     prev_gray = self._prev_frames.get(idx)
                     if prev_gray is not None and prev_gray.shape == gray.shape:
                         for (x, y, fw, fh) in detect_muzzle_flash(prev_gray, gray):
+                            # The screen grab includes our own overlay, so a
+                            # box/label appearing or moving looks like a
+                            # bright change — ignore candidates that overlap
+                            # zones we painted ourselves.
+                            if self._in_drawn_zone(x, y, fw, fh, drawn_zones):
+                                continue
                             self._flash_persist.setdefault(idx, []).append((x, y, fw, fh, now))
                     self._prev_frames[idx] = gray
 
@@ -337,25 +365,87 @@ class DetectionOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setStyleSheet("background: transparent;")
-        self._rects = []
+        # Animated display state: boxes ease toward the latest detection
+        # results instead of jumping, so they follow moving targets smoothly.
+        self._display = []
+        self._anim = QTimer(self)
+        self._anim.setInterval(33)
+        self._anim.timeout.connect(self._animate)
 
     def set_rects(self, rects):
-        self._rects = rects
+        targets = []
+        for item in rects:
+            targets.append({
+                "x": float(item[0]), "y": float(item[1]),
+                "w": float(item[2]), "h": float(item[3]),
+                "conf": item[4] if len(item) > 4 else None,
+                "kind": item[5] if len(item) > 5 else "person",
+                "remaining": item[6] if len(item) > 6 else None,
+            })
+        # Match each new detection to the nearest currently displayed box of
+        # the same kind so it animates there instead of being replaced.
+        used = set()
+        new_display = []
+        for t in targets:
+            tcx, tcy = t["x"] + t["w"] / 2, t["y"] + t["h"] / 2
+            best, best_dist = None, None
+            for i, d in enumerate(self._display):
+                if i in used or d["kind"] != t["kind"]:
+                    continue
+                dcx, dcy = d["x"] + d["w"] / 2, d["y"] + d["h"] / 2
+                dist = abs(dcx - tcx) + abs(dcy - tcy)
+                if dist <= max(t["w"], t["h"], 80) and (best_dist is None or dist < best_dist):
+                    best, best_dist = i, dist
+            if best is not None:
+                used.add(best)
+                d = dict(self._display[best])
+                d["conf"], d["remaining"] = t["conf"], t["remaining"]
+            else:
+                d = dict(t)
+            d["tx"], d["ty"], d["tw"], d["th"] = t["x"], t["y"], t["w"], t["h"]
+            new_display.append(d)
+        self._display = new_display
+        if self._display and not self._anim.isActive():
+            self._anim.start()
         self.update()
 
+    def _animate(self):
+        moving = False
+        for d in self._display:
+            for cur, tgt in (("x", "tx"), ("y", "ty"), ("w", "tw"), ("h", "th")):
+                delta = d[tgt] - d[cur]
+                if abs(delta) > 0.5:
+                    d[cur] += delta * 0.35
+                    moving = True
+                else:
+                    d[cur] = d[tgt]
+        if not moving:
+            self._anim.stop()
+        self.update()
+
+    def drawn_zones(self):
+        # Areas (box border + label) currently painted on screen, in widget
+        # coordinates. The capture grabs the screen *including* this overlay,
+        # so the flash detector must ignore changes inside these zones.
+        zones = []
+        for d in self._display:
+            x, y, w, h = int(d["x"]), int(d["y"]), int(d["w"]), int(d["h"])
+            zones.append((x - 4, y - 20, w + 120, h + 26))
+        return zones
+
     def paintEvent(self, event):
-        if not self._rects:
+        if not self._display:
             return
         p = QPainter(self)
         f = p.font()
         f.setPointSize(8)
         f.setBold(True)
         p.setFont(f)
-        for item in self._rects:
-            x, y, w, h = item[0], item[1], item[2], item[3]
-            conf      = item[4] if len(item) > 4 else None
-            kind      = item[5] if len(item) > 5 else "person"
-            remaining = item[6] if len(item) > 6 else None
+        for d in self._display:
+            x, y, w, h = int(d["x"]), int(d["y"]), int(d["w"]), int(d["h"])
+            conf      = d["conf"]
+            kind      = d["kind"]
+            remaining = d["remaining"]
             if kind == "drone":
                 color, bg_color = QColor(255, 60, 60), QColor(200, 40, 40, 200)
             elif kind == "flash":
@@ -977,7 +1067,7 @@ class CombinedSystemApp(QMainWindow):
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
-                self.detection_worker.submit_frame(idx, frame_bgr, gray)
+                self.detection_worker.submit_frame(idx, frame_bgr, gray, overlay.drawn_zones())
 
             except Exception:
                 pass

@@ -163,6 +163,16 @@ iframe { pointer-events: none; }
 #fullscreenCloseBtn { position: absolute; top: 10px; right: 10px; z-index: 1100; background: #c0392b; color: #fff; font-weight: bold; font-family: Consolas; cursor: pointer; border: none; padding: 5px 15px; }
 #fullscreenCloseBtn:hover { background: #e74c3c; }
 
+/* Detection Box Overlay */
+#detectionOverlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1500;
+  pointer-events: none;
+}
+
 /* Motion Popup Alert */
 #motionAlert {
   position: fixed;
@@ -193,6 +203,7 @@ iframe { pointer-events: none; }
 <body id="appBody">
 
 <div id="motionAlert"></div>
+<canvas id="detectionOverlay"></canvas>
 
 <div id="displaySection">
   <div id="mainGrid" class="layout-2x2"></div>
@@ -445,6 +456,53 @@ function playAlertSound() {
     }
 }
 
+// --- Detection Box Overlay ---
+// The backend captures the whole monitor, so box coordinates are scaled
+// from the captured frame size to the browser window. Boxes line up when
+// the commander runs fullscreen (F11/kiosk) on the captured monitor.
+let boxClearTimer = null;
+
+function drawDetectionBoxes(data) {
+    const canvas = document.getElementById('detectionOverlay');
+    if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!Array.isArray(data.boxes) || !Array.isArray(data.frame_size)) return;
+    const [fw, fh] = data.frame_size;
+    if (!fw || !fh) return;
+    const sx = canvas.width / fw;
+    const sy = canvas.height / fh;
+
+    ctx.lineWidth = 2;
+    ctx.font = 'bold 13px Consolas, monospace';
+
+    data.boxes.forEach(b => {
+        const x = b.x1 * sx, y = b.y1 * sy;
+        const w = (b.x2 - b.x1) * sx, h = (b.y2 - b.y1) * sy;
+        const color = b.label === 'person' ? '#c0392b' : '#389379';
+
+        ctx.strokeStyle = color;
+        ctx.strokeRect(x, y, w, h);
+
+        const text = `${b.label} ${typeof b.conf === 'number' ? b.conf.toFixed(2) : ''}`.trim();
+        const tw = ctx.measureText(text).width;
+        ctx.fillStyle = color;
+        ctx.fillRect(x, Math.max(0, y - 16), tw + 8, 16);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillText(text, x + 4, Math.max(12, y - 4));
+    });
+
+    // Clear the overlay shortly after updates stop arriving
+    clearTimeout(boxClearTimer);
+    boxClearTimer = setTimeout(() => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }, 1000);
+}
+
 // --- WebSocket Motion Listener ---
 let alertHideTimer = null;
 
@@ -478,6 +536,8 @@ function connectBackend() {
             const data = JSON.parse(event.data);
             if (data.action === 'motion' && typeof data.source_index === 'number') {
                 handleMotionAlert(data);
+            } else if (data.action === 'boxes') {
+                drawDetectionBoxes(data);
             }
         } catch (e) {
             console.error("Data error", e);

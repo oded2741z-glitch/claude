@@ -62,8 +62,10 @@ def detection_loop(loop, on_exit):
             while not stop_event.is_set():
                 frame = np.array(sct.grab(monitor))
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                frame_h, frame_w = frame.shape[:2]
 
                 detected_objects = []
+                boxes_payload = []
                 for r in model(frame, stream=True, verbose=False):
                     for box in r.boxes:
                         cls_id = int(box.cls[0])
@@ -71,10 +73,23 @@ def detection_loop(loop, on_exit):
                         if cls_id in TARGET_CLASSES and conf > CONFIDENCE_THRESHOLD:
                             detected_objects.append(model.names[cls_id])
                             x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            boxes_payload.append({
+                                "label": model.names[cls_id],
+                                "conf": round(conf, 2),
+                                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                            })
                             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             label = f"{model.names[cls_id]} {conf:.2f}"
                             cv2.putText(frame, label, (x1, y1 - 10),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                # Live bounding boxes for the commander overlay (no cooldown)
+                if boxes_payload:
+                    asyncio.run_coroutine_threadsafe(broadcast({
+                        "action": "boxes",
+                        "frame_size": [frame_w, frame_h],
+                        "boxes": boxes_payload,
+                    }), loop)
 
                 if SHOW_DEBUG_WINDOW:
                     debug_frame = cv2.resize(frame, (960, 540))

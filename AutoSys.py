@@ -64,11 +64,20 @@ class EnforcerWindow(tk.Toplevel):
         self.log_box = tk.Text(self.main_frame, bg="#000000", fg="#FFA500", font=("Consolas", 9), height=5, bd=0); self.log_box.pack(fill="x", padx=10, pady=5)
         self.main_frame.bind("<Button-1>", self.start_drag); self.main_frame.bind("<B1-Motion>", self.on_drag)
         self.refresh_list()
+    def _is_own_window(self, win):
+        # Identify windows belonging to this app by process ID, so the
+        # enforcer never lists its own GUI windows (which show up as "tk").
+        try:
+            pid = ctypes.c_ulong()
+            ctypes.windll.user32.GetWindowThreadProcessId(win._hWnd, ctypes.byref(pid))
+            return pid.value == os.getpid()
+        except Exception:
+            return False
     def refresh_list(self):
         self.listbox.delete(0, tk.END)
         if ENFORCER_AVAILABLE:
             for win in gw.getAllWindows():
-                if win.title.strip() and "ENFORCER" not in win.title and "AutoSys" not in win.title:
+                if win.title.strip() and not self._is_own_window(win):
                     st = "MIN" if win.isMinimized else "ACTV"
                     self.listbox.insert(tk.END, f"[{st}] {win.title}")
     def on_item_click(self, event):

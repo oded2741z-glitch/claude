@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>מוריד סרטוני YouTube</title>
+  <style>
+    :root {
+      --bg: #0f0f17;
+      --card: #1b1b2b;
+      --accent: #ff3b5c;
+      --accent-2: #6c5ce7;
+      --text: #f1f1f5;
+      --muted: #9a9ab0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      background: radial-gradient(circle at top, #1d1d30, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 20px;
+      padding: 36px;
+      width: 100%;
+      max-width: 520px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    h1 { font-size: 1.6rem; margin-bottom: 6px; text-align: center; }
+    .sub { color: var(--muted); text-align: center; font-size: .9rem; margin-bottom: 24px; }
+    .row { display: flex; gap: 10px; margin-bottom: 16px; }
+    input[type="text"] {
+      flex: 1;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1px solid #33334d;
+      background: #12121d;
+      color: var(--text);
+      font-size: 1rem;
+    }
+    input[type="text"]:focus { outline: none; border-color: var(--accent-2); }
+    .formats { display: flex; gap: 10px; margin-bottom: 20px; }
+    .formats label {
+      flex: 1;
+      text-align: center;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid #33334d;
+      cursor: pointer;
+      transition: .2s;
+      user-select: none;
+    }
+    .formats input { display: none; }
+    .formats input:checked + span {
+      color: var(--accent);
+      font-weight: bold;
+    }
+    .formats label:has(input:checked) {
+      border-color: var(--accent);
+      background: rgba(255,59,92,.1);
+    }
+    button {
+      width: 100%;
+      padding: 15px;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff;
+      font-size: 1.05rem;
+      font-weight: bold;
+      cursor: pointer;
+      transition: .2s;
+    }
+    button:hover { opacity: .9; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .preview {
+      display: none;
+      margin-top: 22px;
+      padding: 16px;
+      background: #12121d;
+      border-radius: 14px;
+      gap: 14px;
+      align-items: center;
+    }
+    .preview img { width: 120px; border-radius: 10px; }
+    .preview .meta h3 { font-size: 1rem; margin-bottom: 6px; }
+    .preview .meta p { color: var(--muted); font-size: .85rem; }
+    .status { margin-top: 16px; text-align: center; font-size: .9rem; min-height: 20px; }
+    .status.err { color: var(--accent); }
+    .status.ok { color: #4caf50; }
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.3); border-top-color: #fff;
+      border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .disclaimer { margin-top: 22px; font-size: .72rem; color: var(--muted); text-align: center; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎬 מוריד סרטוני YouTube</h1>
+    <p class="sub">הדבק קישור, בחר פורמט והורד</p>
+
+    <div class="row">
+      <input type="text" id="url" placeholder="https://www.youtube.com/watch?v=..." dir="ltr" />
+    </div>
+
+    <div class="formats">
+      <label><input type="radio" name="fmt" value="video" checked /><span>🎥 וידאו (MP4)</span></label>
+      <label><input type="radio" name="fmt" value="audio" /><span>🎵 אודיו (MP3)</span></label>
+    </div>
+
+    <button id="btn">הורד</button>
+
+    <div class="preview" id="preview">
+      <img id="thumb" src="" alt="" />
+      <div class="meta">
+        <h3 id="title"></h3>
+        <p id="uploader"></p>
+        <p id="duration"></p>
+      </div>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <p class="disclaimer">
+      הורדת תוכן מוגן בזכויות יוצרים עשויה להפר את תנאי השימוש של YouTube.
+      השתמש רק בתוכן שלך, בתוכן ברישיון חופשי, או באישור בעל הזכויות.
+    </p>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const btn = $("btn"), status = $("status"), preview = $("preview");
+    let debounce;
+
+    function fmtDuration(sec) {
+      if (!sec) return "";
+      const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+      const p = (n) => String(n).padStart(2, "0");
+      return (h ? h + ":" : "") + p(m) + ":" + p(s);
+    }
+
+    function setStatus(msg, cls = "") {
+      status.className = "status " + cls;
+      status.innerHTML = msg;
+    }
+
+    // תצוגה מקדימה אוטומטית כשמדביקים קישור
+    $("url").addEventListener("input", () => {
+      clearTimeout(debounce);
+      const url = $("url").value.trim();
+      preview.style.display = "none";
+      if (!url) return;
+      debounce = setTimeout(() => fetchInfo(url), 600);
+    });
+
+    async function fetchInfo(url) {
+      try {
+        const res = await fetch("/api/info", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+        if (!res.ok) { setStatus(data.error || "שגיאה", "err"); return; }
+        $("thumb").src = data.thumbnail || "";
+        $("title").textContent = data.title || "";
+        $("uploader").textContent = data.uploader || "";
+        $("duration").textContent = fmtDuration(data.duration);
+        preview.style.display = "flex";
+        setStatus("");
+      } catch (e) { /* התעלם – נטפל בהורדה עצמה */ }
+    }
+
+    btn.addEventListener("click", async () => {
+      const url = $("url").value.trim();
+      const fmt = document.querySelector('input[name="fmt"]:checked').value;
+      if (!url) { setStatus("הדבק קישור YouTube", "err"); return; }
+
+      btn.disabled = true;
+      setStatus('<span class="spinner"></span> מוריד... זה יכול לקחת כמה רגעים');
+
+      try {
+        const res = await fetch("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url, format: fmt }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setStatus(data.error || "ההורדה נכשלה", "err");
+          return;
+        }
+
+        // שמירת הקובץ
+        const blob = await res.blob();
+        const disposition = res.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^"';]+)/i);
+        const filename = match ? decodeURIComponent(match[1]) : (fmt === "audio" ? "audio.mp3" : "video.mp4");
+
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+        setStatus("✓ ההורדה הושלמה!", "ok");
+      } catch (e) {
+        setStatus("שגיאת רשת – ודא שהשרת פועל", "err");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

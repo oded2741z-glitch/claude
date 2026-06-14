@@ -31,9 +31,27 @@ python app.py
 ## מבנה הפרויקט
 
 ```
-app.py                 # שרת Flask + לוגיקת ההורדה
+app.py                 # שרת Flask + לוגיקת ההורדה (yt-dlp)
 templates/index.html   # ממשק המשתמש (HTML/CSS/JS)
+record.py              # חלופה: הקלטת מסך של הסרטון המתנגן
 requirements.txt       # תלויות Python
+```
+
+## חלופה: הקלטת מסך (`record.py`)
+
+במקום להוריד את הזרם, אפשר **לפתוח את הסרטון בדפדפן אוטומטי, לנגן אותו,
+ולהקליט את המסך + הקול** ל-MP4. איטי יותר (הקלטה בזמן אמת) ובאיכות נמוכה
+יותר, אבל "מצלם" את מה שמתנגן בפועל.
+
+דרישות נוספות (Linux):
+```bash
+sudo apt install ffmpeg xvfb pulseaudio
+pip install playwright && playwright install chromium
+```
+
+הרצה:
+```bash
+python record.py "https://www.youtube.com/watch?v=..." --out video.mp4
 ```
 
 ## ⚠️ הבהרה משפטית

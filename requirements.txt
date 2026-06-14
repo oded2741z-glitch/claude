@@ -1,2 +1,4 @@
 Flask>=3.0
 yt-dlp>=2024.1.1
+# נדרש רק עבור record.py (הקלטת מסך):
+playwright>=1.40

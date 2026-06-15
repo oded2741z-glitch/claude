@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FrameSyncPro</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app">
+        <header class="top-bar">
+            <h1 class="title">FrameSyncPro</h1>
+            <button id="help-btn" class="btn btn-grey">Help</button>
+        </header>
+
+        <!-- ============ SETTINGS VIEW ============ -->
+        <section id="settings-view" class="card">
+            <div class="form-row">
+                <label>Source Video</label>
+                <input type="file" id="video-input" accept=".mp4,.avi,.mkv,.mov">
+            </div>
+
+            <div class="form-row">
+                <label>New Folder</label>
+                <input type="text" id="folder-name" value="extracted_frames">
+            </div>
+
+            <div class="form-row">
+                <label>Interval (Sec)</label>
+                <input type="number" id="interval" value="1" min="0.1" step="0.1">
+            </div>
+
+            <div class="form-row">
+                <label>Load History</label>
+                <div class="inline">
+                    <select id="folder-select"></select>
+                    <button id="load-btn" class="btn btn-grey accent">Load</button>
+                </div>
+            </div>
+
+            <button id="extract-btn" class="btn btn-primary">Start Extraction</button>
+
+            <div class="progress-wrap hidden" id="progress-wrap">
+                <div class="progress-bar"><div id="progress-fill"></div></div>
+            </div>
+            <p id="status" class="status">Waiting for input...</p>
+        </section>
+
+        <!-- ============ VIEWER VIEW ============ -->
+        <section id="viewer-view" class="card hidden">
+            <p id="image-counter" class="counter"></p>
+
+            <div class="canvas-wrap">
+                <canvas id="canvas"></canvas>
+            </div>
+
+            <div class="edit-controls">
+                <label class="accent">Active Tag:</label>
+                <input type="text" id="active-tag" value="object">
+                <button id="update-tag-btn" class="btn btn-grey">Update Tag</button>
+                <button id="delete-box-btn" class="btn btn-danger">Delete Box</button>
+                <button id="delete-image-btn" class="btn btn-grey">Delete Image</button>
+            </div>
+
+            <button id="mode-btn" class="btn btn-grey accent mode-btn">Mode: DRAW</button>
+
+            <div class="nav-controls">
+                <button id="prev-btn" class="btn btn-grey">Previous</button>
+                <button id="back-btn" class="btn btn-grey">Back to Settings</button>
+                <button id="next-btn" class="btn btn-grey">Next</button>
+            </div>
+        </section>
+
+        <span class="watermark">oT</span>
+    </div>
+
+    <!-- Help modal -->
+    <div id="help-modal" class="modal hidden">
+        <div class="modal-content">
+            <h2>Help</h2>
+            <ol>
+                <li><b>DRAW mode:</b> Click and drag to create new boxes.</li>
+                <li><b>EDIT mode:</b> Click to select a box (turns white). Drag the center to move, or corners to resize.</li>
+                <li>Type in Active Tag and click 'Update Tag' to rename.</li>
+                <li>Click 'Delete Box' to remove it.</li>
+                <li>Use arrow keys ← → to navigate images.</li>
+            </ol>
+            <button id="help-close" class="btn btn-primary">Got it</button>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

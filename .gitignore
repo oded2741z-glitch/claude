@@ -5,6 +5,9 @@ runs/
 datasets/
 dataset/
 
+# Local app (kept local per request, delivered via file upload)
+Tranig.py
+
 # Python
 __pycache__/
 *.pyc

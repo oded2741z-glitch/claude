@@ -1,0 +1,24 @@
+# תבנית הגדרת דאטהסט לאימון Instance Segmentation משלך.
+#
+# מבנה התיקיות הצפוי:
+#   dataset/
+#     images/
+#       train/   *.jpg
+#       val/     *.jpg
+#     labels/
+#       train/   *.txt   (פורמט YOLO-seg)
+#       val/     *.txt
+#
+# כל שורה בקובץ label היא מופע (instance) בפורמט:
+#   <class_id> <x1> <y1> <x2> <y2> ... <xn> <yn>
+# כאשר הקואורדינטות מנורמלות (0..1) ומתארות את הפוליגון של המסכה.
+
+path: ./dataset        # נתיב שורש לדאטהסט
+train: images/train    # יחסית ל-path
+val: images/val        # יחסית ל-path
+
+# שמות המחלקות (אינדקס -> שם)
+names:
+  0: person
+  1: car
+  # הוסף כאן את המחלקות שלך...

@@ -1,0 +1,13 @@
+# Ultralytics / training artifacts
+runs/
+*.pt
+!yolo11n-seg.pt.placeholder
+datasets/
+dataset/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

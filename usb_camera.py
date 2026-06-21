@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Display the image from a USB-connected camera.
 
-Requires OpenCV (and NumPy for the sphere viewer):
-    pip install opencv-python numpy
+Single self-contained file: command-line viewer, 360 inner-sphere viewer,
+and an optional Tkinter GUI.
+
+Requirements:
+    pip install opencv-python numpy            # CLI + sphere viewer
+    pip install pillow                         # also needed for the GUI
 
 Usage:
     python usb_camera.py                        # default camera (index 0)
     python usb_camera.py --camera 1             # select another camera
     python usb_camera.py --snapshot photo.jpg   # save a single image to a file
     python usb_camera.py --sphere               # 360 view projected on an inner sphere
+    python usb_camera.py --gui                  # graphical interface (Tkinter)
 
 Keys while running (live feed):
     q / Esc  - quit
@@ -216,6 +221,179 @@ def sphere_view(cap: "cv2.VideoCapture") -> None:
             viewer.pitch = viewer._clamp_pitch(viewer.pitch - step)
 
 
+# ----------------------------------------------------------------------------
+# Graphical interface (Tkinter)
+# ----------------------------------------------------------------------------
+class CameraGUI:
+    """Tkinter application that shows a USB camera feed with optional 360 view."""
+
+    REFRESH_MS = 15  # ~66 fps cap for the update loop
+
+    def __init__(self, root, tk, ttk, messagebox, Image, ImageTk):
+        self.root = root
+        self.tk = tk
+        self.messagebox = messagebox
+        self.Image = Image
+        self.ImageTk = ImageTk
+
+        self.root.title("USB Camera Viewer")
+        self.cap = None
+        self.sphere = None  # SphereViewer instance when sphere mode is active
+
+        # --- controls ---
+        bar = ttk.Frame(self.root, padding=8)
+        bar.pack(side=tk.TOP, fill=tk.X)
+
+        ttk.Label(bar, text="Camera:").pack(side=tk.LEFT)
+        self.camera_index = tk.IntVar(value=0)
+        ttk.Spinbox(
+            bar, from_=0, to=10, width=4, textvariable=self.camera_index
+        ).pack(side=tk.LEFT, padx=(2, 12))
+
+        self.mode = tk.StringVar(value="normal")
+        ttk.Radiobutton(
+            bar, text="Normal", value="normal", variable=self.mode,
+            command=self._on_mode_change,
+        ).pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            bar, text="360 Sphere", value="sphere", variable=self.mode,
+            command=self._on_mode_change,
+        ).pack(side=tk.LEFT, padx=(0, 12))
+
+        self.start_btn = ttk.Button(bar, text="Start", command=self.start)
+        self.start_btn.pack(side=tk.LEFT)
+        self.stop_btn = ttk.Button(
+            bar, text="Stop", command=self.stop, state=tk.DISABLED
+        )
+        self.stop_btn.pack(side=tk.LEFT, padx=(4, 12))
+
+        ttk.Button(bar, text="Snapshot", command=self.snapshot).pack(side=tk.LEFT)
+
+        self.zoom_in_btn = ttk.Button(
+            bar, text="Zoom +", command=lambda: self._zoom(-1), state=tk.DISABLED
+        )
+        self.zoom_in_btn.pack(side=tk.LEFT, padx=(12, 2))
+        self.zoom_out_btn = ttk.Button(
+            bar, text="Zoom -", command=lambda: self._zoom(1), state=tk.DISABLED
+        )
+        self.zoom_out_btn.pack(side=tk.LEFT)
+
+        # --- view ---
+        self.canvas = tk.Label(self.root, background="black")
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
+        self.canvas.bind("<B1-Motion>", self._on_drag_move)
+
+        self.status = ttk.Label(self.root, text="Stopped", anchor=tk.W, padding=4)
+        self.status.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def start(self) -> None:
+        if self.cap is not None:
+            return
+        index = self.camera_index.get()
+        cap = cv2.VideoCapture(index)
+        if not cap.isOpened():
+            cap.release()
+            self.messagebox.showerror(
+                "Camera error",
+                f"Could not open camera at index {index}.\n"
+                "Make sure it is connected and not used by another app.",
+            )
+            return
+        self.cap = cap
+        self.sphere = SphereViewer() if self.mode.get() == "sphere" else None
+        self.start_btn.configure(state=self.tk.DISABLED)
+        self.stop_btn.configure(state=self.tk.NORMAL)
+        self.status.configure(text=f"Running (camera {index})")
+        self._update_frame()
+
+    def stop(self) -> None:
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+        self.start_btn.configure(state=self.tk.NORMAL)
+        self.stop_btn.configure(state=self.tk.DISABLED)
+        self.status.configure(text="Stopped")
+
+    def _update_frame(self) -> None:
+        if self.cap is None:
+            return
+        ok, frame = self.cap.read()
+        if not ok:
+            self.status.configure(text="Failed to read from camera")
+            self.stop()
+            return
+
+        display = self.sphere.render(frame) if self.sphere is not None else frame
+        self._last_display = display
+
+        rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+        image = self.Image.fromarray(rgb)
+        self._photo = self.ImageTk.PhotoImage(image)  # keep a reference
+        self.canvas.configure(image=self._photo)
+
+        self.root.after(self.REFRESH_MS, self._update_frame)
+
+    def _on_mode_change(self) -> None:
+        sphere_on = self.mode.get() == "sphere"
+        state = self.tk.NORMAL if sphere_on else self.tk.DISABLED
+        self.zoom_in_btn.configure(state=state)
+        self.zoom_out_btn.configure(state=state)
+        if self.cap is not None:
+            self.sphere = SphereViewer() if sphere_on else None
+
+    def _zoom(self, direction: int) -> None:
+        if self.sphere is not None:
+            self.sphere.zoom(direction)
+
+    def _on_drag_start(self, event) -> None:
+        if self.sphere is not None:
+            self.sphere.dragging = True
+            self.sphere.last_xy = (event.x, event.y)
+
+    def _on_drag_move(self, event) -> None:
+        if self.sphere is None:
+            return
+        dx = event.x - self.sphere.last_xy[0]
+        dy = event.y - self.sphere.last_xy[1]
+        self.sphere.last_xy = (event.x, event.y)
+        self.sphere.yaw += dx * 0.005
+        self.sphere.pitch = self.sphere._clamp_pitch(self.sphere.pitch + dy * 0.005)
+
+    def snapshot(self) -> None:
+        display = getattr(self, "_last_display", None)
+        if display is None:
+            self.messagebox.showinfo("Snapshot", "Start the camera first.")
+            return
+        name = datetime.now().strftime("snapshot_%Y%m%d_%H%M%S.jpg")
+        cv2.imwrite(name, display)
+        self.status.configure(text=f"Saved {name}")
+
+    def on_close(self) -> None:
+        self.stop()
+        self.root.destroy()
+
+
+def run_gui() -> None:
+    """Launch the Tkinter GUI."""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except ImportError:
+        sys.exit("Tkinter is not available in this Python installation.")
+    try:
+        from PIL import Image, ImageTk
+    except ImportError:
+        sys.exit("Pillow is not installed. Install it with: pip install pillow")
+
+    root = tk.Tk()
+    root.geometry("960x640")
+    CameraGUI(root, tk, ttk, messagebox, Image, ImageTk)
+    root.mainloop()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Display the image from a USB camera")
     parser.add_argument(
@@ -231,7 +409,16 @@ def main() -> None:
         action="store_true",
         help="project a 360 (equirectangular) feed onto an inner sphere viewer",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="launch the graphical interface (Tkinter)",
+    )
     args = parser.parse_args()
+
+    if args.gui:
+        run_gui()
+        return
 
     cap = open_camera(args.camera)
     try:

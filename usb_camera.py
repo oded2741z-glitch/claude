@@ -9,11 +9,11 @@ Requirements:
     pip install pillow                         # also needed for the GUI
 
 Usage:
-    python usb_camera.py                        # default camera (index 0)
+    python usb_camera.py                        # graphical interface (default)
+    python usb_camera.py --live                 # plain command-line live view
     python usb_camera.py --camera 1             # select another camera
     python usb_camera.py --snapshot photo.jpg   # save a single image to a file
     python usb_camera.py --sphere               # 360 view projected on an inner sphere
-    python usb_camera.py --gui                  # graphical interface (Tkinter)
 
 Keys while running (live feed):
     q / Esc  - quit
@@ -382,11 +382,25 @@ def run_gui() -> None:
         import tkinter as tk
         from tkinter import messagebox, ttk
     except ImportError:
-        sys.exit("Tkinter is not available in this Python installation.")
+        sys.exit(
+            "Tkinter is not available in this Python installation.\n"
+            "On Windows reinstall Python with the 'tcl/tk' option enabled; "
+            "on Linux run: sudo apt install python3-tk"
+        )
+
+    # Pillow is missing? Tkinter works, so show the error in a popup window
+    # (a double-clicked script has no console to read a printed message from).
     try:
         from PIL import Image, ImageTk
     except ImportError:
-        sys.exit("Pillow is not installed. Install it with: pip install pillow")
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Missing dependency",
+            "Pillow is not installed.\n\nInstall it with:\n    pip install pillow",
+        )
+        root.destroy()
+        return
 
     root = tk.Tk()
     root.geometry("960x640")
@@ -412,11 +426,18 @@ def main() -> None:
     parser.add_argument(
         "--gui",
         action="store_true",
-        help="launch the graphical interface (Tkinter)",
+        help="launch the graphical interface (Tkinter) - this is the default",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="plain command-line live view instead of the GUI",
     )
     args = parser.parse_args()
 
-    if args.gui:
+    # The GUI is the default. The command-line modes need an explicit flag so
+    # that simply running the file (or double-clicking it) opens the GUI.
+    if not (args.snapshot or args.sphere or args.live):
         run_gui()
         return
 

@@ -555,18 +555,22 @@ class OllamaChatApp:
         toolbar = tk.Frame(card, bg=self.INPUT_BG)
         toolbar.pack(fill=tk.X, padx=10, pady=(0, 8))
 
-        # Mic button (left side of toolbar, vertically centred)
-        self.mic_btn = tk.Button(
-            toolbar, text="🎤",
-            command=self._start_stt,
-            bg=self.INPUT_BG, fg=self.MUTED_FG,
-            activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
-            relief=tk.FLAT, bd=0, font=("Segoe UI", 13),
-            padx=4, pady=0,
-            cursor="hand2" if _STT_AVAILABLE else "arrow",
-            state=tk.NORMAL if _STT_AVAILABLE else tk.DISABLED,
+        # Mic button — canvas-drawn icon (left side of toolbar)
+        self._mic_canvas = tk.Canvas(
+            toolbar, width=34, height=34,
+            bg=self.INPUT_BG, highlightthickness=0,
         )
-        self.mic_btn.pack(side=tk.LEFT, pady=0)
+        self._mic_canvas.pack(side=tk.LEFT, padx=(2, 0))
+        self._mic_recording = False
+        self._mic_anim_id = None
+        self._draw_mic_icon(recording=False)
+        if _STT_AVAILABLE:
+            self._mic_canvas.configure(cursor="hand2")
+            self._mic_canvas.bind("<Button-1>", lambda e: self._start_stt())
+        else:
+            self._mic_canvas.configure(cursor="arrow")
+        # keep .mic_btn alias so existing re-enable calls work
+        self.mic_btn = self._mic_canvas
 
         # Send / Stop button (circular) — packed FIRST so it sits at far right
         self._send_canvas = tk.Canvas(
@@ -641,6 +645,56 @@ class OllamaChatApp:
             17, 15, 17, 25, fill="white", width=3,
             capstyle=tk.ROUND, tags="arrow",
         )
+
+    def _draw_mic_icon(self, recording=False):
+        """Draw a clean microphone icon on _mic_canvas. Red when recording."""
+        c = self._mic_canvas
+        c.delete("all")
+        body_color   = "#ef4444" if recording else "#6b7280"
+        detail_color = "#ef4444" if recording else "#9ca3af"
+
+        # capsule body of the mic
+        c.create_arc(10, 5, 24, 19, start=0, extent=180, fill=body_color,
+                     outline=body_color, style=tk.CHORD)
+        c.create_rectangle(10, 12, 24, 22, fill=body_color, outline=body_color)
+        c.create_arc(10, 15, 24, 29, start=180, extent=180, fill=body_color,
+                     outline=body_color, style=tk.CHORD)
+
+        # stand arc
+        c.create_arc(7, 16, 27, 32, start=0, extent=-180,
+                     outline=detail_color, width=2, style=tk.ARC)
+        # stem line
+        c.create_line(17, 28, 17, 32, fill=detail_color, width=2,
+                      capstyle=tk.ROUND)
+        # base line
+        c.create_line(12, 32, 22, 32, fill=detail_color, width=2,
+                      capstyle=tk.ROUND)
+
+    def _set_mic_recording(self, recording: bool):
+        """Switch mic icon between idle and recording states."""
+        self._mic_recording = recording
+        self._draw_mic_icon(recording=recording)
+        if recording:
+            self._animate_mic()
+        else:
+            if self._mic_anim_id:
+                self.root.after_cancel(self._mic_anim_id)
+                self._mic_anim_id = None
+
+    def _animate_mic(self):
+        """Pulse the mic icon while recording."""
+        if not self._mic_recording:
+            return
+        self._draw_mic_icon(recording=True)
+        # draw a pulsing ring
+        phase = (getattr(self, "_mic_phase", 0) + 1) % 8
+        self._mic_phase = phase
+        r = 4 + phase
+        self._mic_canvas.create_oval(
+            17 - r, 17 - r, 17 + r, 17 + r,
+            outline="#fca5a5", width=1,
+        )
+        self._mic_anim_id = self.root.after(180, self._animate_mic)
 
     def _on_send_click(self):
         if self.streaming:
@@ -1545,11 +1599,13 @@ class OllamaChatApp:
                     self._hide_placeholder()
                     self.entry.insert(tk.END, payload)
                     self.entry.focus_set()
-                    self.mic_btn.configure(state=tk.NORMAL)
+                    self._set_mic_recording(False)
                     self.set_status("Ready")
                 elif kind == "stt_error":
-                    self.mic_btn.configure(state=tk.NORMAL)
+                    self._set_mic_recording(False)
                     self.set_status(f"שגיאת זיהוי: {payload}")
+                    if payload:
+                        messagebox.showwarning("שגיאת מיקרופון", payload)
                 elif kind == "error":
                     self._append(f"\n[Error] {payload}\n", "body")
                     if self.streaming and self.workspace:
@@ -2109,25 +2165,35 @@ class OllamaChatApp:
                 "התקן את החבילות הנדרשות:\n\npip install SpeechRecognition pyaudio",
             )
             return
-        if self.streaming:
+        if self.streaming or self._mic_recording:
             return
-        self.set_status("מקשיב… דבר עכשיו")
-        self.mic_btn.configure(state=tk.DISABLED)
+        self.set_status("🎙 מקשיב… דבר עכשיו")
+        self._set_mic_recording(True)
 
         lang = self.stt_lang
 
         def work():
             try:
                 r = _sr.Recognizer()
-                with _sr.Microphone() as source:
-                    r.adjust_for_ambient_noise(source, duration=0.4)
-                    audio = r.listen(source, timeout=8, phrase_time_limit=60)
+                try:
+                    mic = _sr.Microphone()
+                except OSError as exc:
+                    self.ui_queue.put((
+                        "stt_error",
+                        f"אין גישה למיקרופון: {exc}\n"
+                        "ודא ש-pyaudio מותקן (pip install pyaudio) "
+                        "ושמיקרופון מחובר."
+                    ))
+                    return
+                with mic as source:
+                    r.adjust_for_ambient_noise(source, duration=0.3)
+                    audio = r.listen(source, timeout=10, phrase_time_limit=60)
                 text = r.recognize_google(audio, language=lang)
                 self.ui_queue.put(("stt_result", text))
             except _sr.WaitTimeoutError:
-                self.ui_queue.put(("stt_error", "לא זוהה קול"))
+                self.ui_queue.put(("stt_error", "לא זוהה קול — נסה שוב"))
             except _sr.UnknownValueError:
-                self.ui_queue.put(("stt_error", "לא ניתן להבין את הקול"))
+                self.ui_queue.put(("stt_error", "לא ניתן להבין — דבר בבירור"))
             except Exception as exc:  # noqa: BLE001
                 self.ui_queue.put(("stt_error", str(exc)))
 

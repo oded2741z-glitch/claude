@@ -277,17 +277,19 @@ class _TTSWorker:
 # GUI
 # --------------------------------------------------------------------------- #
 class OllamaChatApp:
-    # Light "Chatbox"-style palette
-    BG = "#ffffff"          # main chat background
-    PANEL = "#f4f5f7"       # top bar / panels
-    BORDER = "#e3e5e8"      # subtle separators
-    USER_FG = "#2563eb"     # user name accent (blue)
-    BOT_FG = "#16a34a"      # assistant name accent (green)
-    TEXT_FG = "#1f2328"     # primary text (near-black)
-    MUTED_FG = "#8a8f98"    # hints / secondary text
-    USER_BUBBLE = "#eef4ff"  # user message background
-    BOT_BUBBLE = "#f6f7f9"   # assistant message background
-    INPUT_BG = "#ffffff"    # input field background
+    # Clean minimal palette matching the screenshot
+    BG        = "#f7f7f8"    # app background (light gray)
+    CHAT_BG   = "#f7f7f8"   # chat transcript background
+    PANEL     = "#ffffff"    # surfaces / cards
+    BORDER    = "#e5e5e5"    # subtle separators
+    USER_FG   = "#2563eb"    # user name accent (blue)
+    BOT_FG    = "#16a34a"    # assistant name accent (green)
+    TEXT_FG   = "#1a1a1a"    # primary text
+    MUTED_FG  = "#9ca3af"    # hints / secondary text
+    USER_BUBBLE  = "#eff6ff" # user message background
+    BOT_BUBBLE   = "#ffffff" # assistant message background
+    INPUT_BG  = "#ffffff"    # input field / card background
+    SEND_BTN  = "#1a1a1a"    # send button circle color
 
     def __init__(self, root):
         self.root = root
@@ -327,149 +329,245 @@ class OllamaChatApp:
 
     # ----- layout --------------------------------------------------------- #
     def _build_ui(self):
+        self.root.configure(bg=self.BG)
+
         style = ttk.Style()
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
         style.configure(
-            "TButton", padding=6, relief="flat",
+            "TButton", padding=4, relief="flat",
             background=self.PANEL, foreground=self.TEXT_FG,
-            borderwidth=1, focuscolor=self.PANEL,
+            borderwidth=0, focuscolor=self.PANEL,
         )
         style.map(
             "TButton",
-            background=[("active", "#e7e9ec"), ("pressed", "#dcdfe3")],
+            background=[("active", "#ececec"), ("pressed", "#e0e0e0")],
         )
         style.configure(
-            "TCombobox", fieldbackground=self.BG, background=self.BG,
-            foreground=self.TEXT_FG, arrowcolor=self.TEXT_FG,
+            "TCombobox", fieldbackground=self.PANEL, background=self.PANEL,
+            foreground=self.TEXT_FG, arrowcolor=self.MUTED_FG,
             bordercolor=self.BORDER, lightcolor=self.BORDER,
             darkcolor=self.BORDER,
         )
         style.configure(
-            "Vertical.TScrollbar", background=self.PANEL,
-            troughcolor=self.BG, bordercolor=self.BG, arrowcolor=self.MUTED_FG,
+            "Vertical.TScrollbar", background=self.BG,
+            troughcolor=self.BG, bordercolor=self.BG, arrowcolor=self.BG,
+            width=6,
+        )
+        style.map(
+            "Vertical.TScrollbar",
+            background=[("active", "#c7c7c7")],
         )
 
-        # Top bar: model selector + actions
-        top = tk.Frame(self.root, bg=self.PANEL)
+        # ── Top bar ───────────────────────────────────────────────────────── #
+        top = tk.Frame(self.root, bg=self.PANEL, pady=0)
         top.pack(side=tk.TOP, fill=tk.X)
 
-        tk.Label(
-            top, text="Model:", bg=self.PANEL, fg=self.TEXT_FG,
-            font=("Segoe UI", 10, "bold"),
-        ).pack(side=tk.LEFT, padx=(10, 4), pady=8)
+        # left cluster: New chat + Settings + Workspace
+        left = tk.Frame(top, bg=self.PANEL)
+        left.pack(side=tk.LEFT, padx=6, pady=6)
 
-        self.model_var = tk.StringVar()
-        self.model_combo = ttk.Combobox(
-            top, textvariable=self.model_var, state="readonly", width=28
-        )
-        self.model_combo.pack(side=tk.LEFT, padx=4, pady=8)
+        for label, cmd in (
+            ("✦  New chat",     self.clear_chat),
+            ("⚙",              self.open_settings),
+            ("📁",             self.choose_workspace),
+        ):
+            tk.Button(
+                left, text=label, command=cmd,
+                bg=self.PANEL, fg=self.TEXT_FG,
+                activebackground="#ececec", activeforeground=self.TEXT_FG,
+                relief=tk.FLAT, bd=0, padx=8, pady=4,
+                font=("Segoe UI", 9), cursor="hand2",
+            ).pack(side=tk.LEFT, padx=2)
 
-        ttk.Button(top, text="↻ Refresh", command=self.refresh_models).pack(
-            side=tk.LEFT, padx=4
-        )
-        ttk.Button(top, text="New chat", command=self.clear_chat).pack(
-            side=tk.LEFT, padx=4
-        )
-        ttk.Button(top, text="⚙ Settings", command=self.open_settings).pack(
-            side=tk.LEFT, padx=4
-        )
-        ttk.Button(top, text="📁 Workspace", command=self.choose_workspace).pack(
-            side=tk.LEFT, padx=4
-        )
         self.ws_label = tk.Label(
             top, text="", bg=self.PANEL, fg=self.BOT_FG,
             font=("Segoe UI", 9), cursor="hand2",
         )
-        self.ws_label.pack(side=tk.LEFT, padx=6)
+        self.ws_label.pack(side=tk.LEFT, padx=4)
         self.ws_label.bind("<Button-1>", lambda e: self.clear_workspace())
 
+        # right cluster: status
         self.status = tk.Label(
-            top, text="", bg=self.PANEL, fg=self.MUTED_FG, font=("Segoe UI", 9)
+            top, text="", bg=self.PANEL, fg=self.MUTED_FG, font=("Segoe UI", 8)
         )
-        self.status.pack(side=tk.RIGHT, padx=10)
+        self.status.pack(side=tk.RIGHT, padx=12)
 
-        # subtle divider under the top bar
         tk.Frame(self.root, bg=self.BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
 
-        # Chat transcript
-        chat_frame = tk.Frame(self.root, bg=self.BG)
-        chat_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(8, 4))
+        # ── Chat transcript ────────────────────────────────────────────────── #
+        chat_wrap = tk.Frame(self.root, bg=self.CHAT_BG)
+        chat_wrap.pack(fill=tk.BOTH, expand=True)
+
+        scroll = ttk.Scrollbar(chat_wrap, orient=tk.VERTICAL)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 2))
 
         self.chat = tk.Text(
-            chat_frame, wrap=tk.WORD, bg=self.BG, fg=self.TEXT_FG,
-            insertbackground=self.TEXT_FG, relief=tk.FLAT,
-            font=("Segoe UI", 11), padx=10, pady=10, state=tk.DISABLED,
+            chat_wrap, wrap=tk.WORD, bg=self.CHAT_BG, fg=self.TEXT_FG,
+            insertbackground=self.TEXT_FG, relief=tk.FLAT, bd=0,
+            font=("Segoe UI", 11), padx=24, pady=16, state=tk.DISABLED,
+            yscrollcommand=scroll.set,
         )
         self.chat.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scroll = ttk.Scrollbar(chat_frame, command=self.chat.yview)
-        scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.chat.configure(yscrollcommand=scroll.set)
+        scroll.configure(command=self.chat.yview)
 
         self.chat.tag_configure(
-            "user", foreground=self.USER_FG, font=("Segoe UI", 10, "bold"),
-            spacing1=12, spacing3=2, lmargin1=8, lmargin2=8,
+            "user", foreground=self.USER_FG,
+            font=("Segoe UI", 9, "bold"),
+            spacing1=16, spacing3=2,
         )
         self.chat.tag_configure(
-            "bot", foreground=self.BOT_FG, font=("Segoe UI", 10, "bold"),
-            spacing1=12, spacing3=2, lmargin1=8, lmargin2=8,
+            "bot", foreground=self.MUTED_FG,
+            font=("Segoe UI", 9, "bold"),
+            spacing1=16, spacing3=2,
         )
         self.chat.tag_configure(
             "user_body", foreground=self.TEXT_FG, background=self.USER_BUBBLE,
-            spacing1=4, spacing3=8, lmargin1=8, lmargin2=8, rmargin=8,
+            spacing1=4, spacing3=10, lmargin1=0, lmargin2=0, rmargin=0,
         )
         self.chat.tag_configure(
             "body", foreground=self.TEXT_FG, background=self.BOT_BUBBLE,
-            spacing1=4, spacing3=8, lmargin1=8, lmargin2=8, rmargin=8,
+            spacing1=4, spacing3=10, lmargin1=0, lmargin2=0, rmargin=0,
         )
-        self.chat.tag_configure("spacer", background=self.BG)
+        self.chat.tag_configure("spacer", background=self.CHAT_BG)
         self.chat.tag_configure(
-            "tool", foreground="#9a6700", font=("Consolas", 9),
-            lmargin1=8, lmargin2=8, spacing1=2,
+            "tool", foreground="#b45309", font=("Consolas", 9),
+            spacing1=2,
         )
 
         self._add_context_menu(self.chat)
         self.chat.bind("<Control-c>", lambda e: self._copy_selection(self.chat))
         self.chat.bind("<Control-C>", lambda e: self._copy_selection(self.chat))
 
-        # Input area
-        bottom = tk.Frame(self.root, bg=self.BG)
-        bottom.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
+        # ── Input card ────────────────────────────────────────────────────── #
+        # Outer padding frame (gray background shows as page bg)
+        pad = tk.Frame(self.root, bg=self.BG)
+        pad.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(8, 16))
 
-        self.entry = tk.Text(
-            bottom, height=3, wrap=tk.WORD, bg=self.INPUT_BG, fg=self.TEXT_FG,
-            insertbackground=self.TEXT_FG, relief=tk.SOLID, borderwidth=1,
+        # White card with border
+        card = tk.Frame(
+            pad, bg=self.INPUT_BG,
             highlightthickness=1, highlightbackground=self.BORDER,
-            highlightcolor=self.USER_FG,
-            font=("Segoe UI", 11), padx=8, pady=8,
+            highlightcolor="#a5b4fc",
         )
-        self.entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.entry.bind("<Return>", self._on_return)
-        self.entry.bind("<Shift-Return>", lambda e: None)  # allow newline
+        card.pack(fill=tk.X)
 
-        btns = tk.Frame(bottom, bg=self.BG)
-        btns.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
-        self.send_btn = ttk.Button(btns, text="Send", command=self.send)
-        self.send_btn.pack(fill=tk.X)
-        self.stop_btn = ttk.Button(
-            btns, text="Stop", command=self.stop, state=tk.DISABLED
+        # Text area
+        self.entry = tk.Text(
+            card, height=3, wrap=tk.WORD,
+            bg=self.INPUT_BG, fg=self.TEXT_FG,
+            insertbackground=self.TEXT_FG,
+            relief=tk.FLAT, bd=0,
+            font=("Segoe UI", 11), padx=14, pady=12,
         )
-        self.stop_btn.pack(fill=tk.X, pady=(6, 0))
-        self.mic_btn = ttk.Button(
-            btns, text="🎤",
+        self.entry.pack(fill=tk.BOTH, expand=True)
+        self.entry.bind("<Return>", self._on_return)
+        self.entry.bind("<Shift-Return>", lambda e: None)
+
+        # placeholder
+        self._placeholder_active = False
+        self._show_placeholder()
+        self.entry.bind("<FocusIn>",  self._hide_placeholder)
+        self.entry.bind("<FocusOut>", self._show_placeholder)
+
+        # Bottom toolbar inside the card
+        toolbar = tk.Frame(card, bg=self.INPUT_BG)
+        toolbar.pack(fill=tk.X, padx=10, pady=(0, 8))
+
+        # Mic button (left)
+        self.mic_btn = tk.Button(
+            toolbar, text="🎤",
             command=self._start_stt,
+            bg=self.INPUT_BG, fg=self.MUTED_FG,
+            activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
+            relief=tk.FLAT, bd=0, font=("Segoe UI", 13),
+            cursor="hand2" if _STT_AVAILABLE else "arrow",
             state=tk.NORMAL if _STT_AVAILABLE else tk.DISABLED,
         )
-        self.mic_btn.pack(fill=tk.X, pady=(6, 0))
+        self.mic_btn.pack(side=tk.LEFT)
 
-        hint = tk.Label(
-            self.root,
-            text="Enter = send   |   Shift+Enter = new line",
-            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 8),
+        # Model selector (right side, before send button)
+        self.model_var = tk.StringVar()
+        model_frame = tk.Frame(toolbar, bg=self.INPUT_BG)
+        model_frame.pack(side=tk.RIGHT, padx=(0, 6))
+
+        self.model_combo = ttk.Combobox(
+            model_frame, textvariable=self.model_var,
+            state="readonly", width=18,
+            font=("Segoe UI", 9),
         )
-        hint.pack(side=tk.BOTTOM, pady=(0, 4))
+        self.model_combo.pack(side=tk.LEFT)
+
+        # Refresh button next to model
+        tk.Button(
+            model_frame, text="↻",
+            command=self.refresh_models,
+            bg=self.INPUT_BG, fg=self.MUTED_FG,
+            activebackground="#f3f4f6",
+            relief=tk.FLAT, bd=0, font=("Segoe UI", 11),
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        # Send / Stop button (circular look via canvas)
+        self._send_canvas = tk.Canvas(
+            toolbar, width=32, height=32,
+            bg=self.INPUT_BG, highlightthickness=0,
+        )
+        self._send_canvas.pack(side=tk.RIGHT, padx=(6, 0))
+        self._draw_send_btn(active=True)
+        self._send_canvas.bind("<Button-1>", lambda e: self._on_send_click())
+        self._send_canvas.bind("<Enter>",
+            lambda e: self._send_canvas.itemconfig("circle", fill="#333333"))
+        self._send_canvas.bind("<Leave>",
+            lambda e: self._send_canvas.itemconfig(
+                "circle", fill=self.SEND_BTN if not self.streaming else "#ef4444"))
+
+        # stop functionality wired through same canvas button
+        self.send_btn  = self._send_canvas   # keep API compat (state changes below)
+        self.stop_btn  = self._send_canvas   # same widget
+
+    def _draw_send_btn(self, active=True):
+        c = self._send_canvas
+        c.delete("all")
+        color = self.SEND_BTN if active else "#ef4444"
+        c.create_oval(1, 1, 31, 31, fill=color, outline="", tags="circle")
+        # up-arrow  ↑
+        c.create_line(16, 22, 16, 10, fill="white", width=2, tags="arrow")
+        c.create_line(10, 16, 16, 10, fill="white", width=2, tags="arrow")
+        c.create_line(22, 16, 16, 10, fill="white", width=2, tags="arrow")
+
+    def _on_send_click(self):
+        if self.streaming:
+            self.stop()
+        else:
+            self.send()
+
+    def _set_busy(self, busy: bool):
+        """Toggle the send/stop canvas button appearance."""
+        c = self._send_canvas
+        c.delete("all")
+        if busy:
+            c.create_oval(1, 1, 31, 31, fill="#ef4444", outline="", tags="circle")
+            c.create_rectangle(11, 11, 21, 21, fill="white", outline="", tags="arrow")
+        else:
+            c.create_oval(1, 1, 31, 31, fill=self.SEND_BTN, outline="", tags="circle")
+            c.create_line(16, 22, 16, 10, fill="white", width=2, tags="arrow")
+            c.create_line(10, 16, 16, 10, fill="white", width=2, tags="arrow")
+            c.create_line(22, 16, 16, 10, fill="white", width=2, tags="arrow")
+
+    def _show_placeholder(self, event=None):
+        if not self.entry.get("1.0", "end-1c"):
+            self._placeholder_active = True
+            self.entry.insert("1.0", "Type your question here...")
+            self.entry.configure(fg="#b0b0b0")
+
+    def _hide_placeholder(self, event=None):
+        if self._placeholder_active:
+            self.entry.delete("1.0", tk.END)
+            self.entry.configure(fg=self.TEXT_FG)
+            self._placeholder_active = False
 
     # ----- model handling ------------------------------------------------- #
     def refresh_models(self):
@@ -1048,11 +1146,14 @@ class OllamaChatApp:
         if not model:
             messagebox.showwarning("No model", "Please select a model first.")
             return
+        if self._placeholder_active:
+            return
         text = self.entry.get("1.0", tk.END).strip()
         if not text:
             return
 
         self.entry.delete("1.0", tk.END)
+        self._placeholder_active = False
         self.messages.append({"role": "user", "content": text})
         self._append("You\n", "user")
         self._append(text + "\n", "user_body")
@@ -1072,8 +1173,8 @@ class OllamaChatApp:
 
         self.streaming = True
         self.stop_event.clear()
-        self.send_btn.configure(state=tk.DISABLED)
-        self.stop_btn.configure(state=tk.NORMAL)
+        self._set_busy(True)
+        
         self.set_status("Generating...")
         self._bot_reply = ""
 
@@ -1157,8 +1258,8 @@ class OllamaChatApp:
                     if self.streaming and self.workspace:
                         self._append("\n", "spacer")
                         self.streaming = False
-                        self.send_btn.configure(state=tk.NORMAL)
-                        self.stop_btn.configure(state=tk.DISABLED)
+                        self._set_busy(False)
+                        
                         self.set_status("Finished with error")
                     else:
                         self._finish_reply(error=True)
@@ -1175,8 +1276,8 @@ class OllamaChatApp:
             )
         self._append("\n\n", "spacer")
         self.streaming = False
-        self.send_btn.configure(state=tk.NORMAL)
-        self.stop_btn.configure(state=tk.DISABLED)
+        self._set_busy(False)
+        
         self.set_status("Ready" if not error else "Finished with error")
         if not error:
             self._maybe_auto_update()
@@ -1430,8 +1531,8 @@ class OllamaChatApp:
         self._append(f"{model}  ·  📁 workspace\n", "bot")
         self.streaming = True
         self.stop_event.clear()
-        self.send_btn.configure(state=tk.DISABLED)
-        self.stop_btn.configure(state=tk.NORMAL)
+        self._set_busy(True)
+        
         self.set_status("Working in workspace…")
 
         system = self.build_system_prompt()
@@ -1575,8 +1676,8 @@ class OllamaChatApp:
         if text.strip():
             self.messages.append({"role": "assistant", "content": text})
         self.streaming = False
-        self.send_btn.configure(state=tk.NORMAL)
-        self.stop_btn.configure(state=tk.DISABLED)
+        self._set_busy(False)
+        
         self.set_status("Ready")
         self._maybe_auto_update()
         if self.tts_auto and text.strip():

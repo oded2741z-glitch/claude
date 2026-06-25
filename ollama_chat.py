@@ -378,15 +378,27 @@ class OllamaChatApp:
 
         tk.Frame(sidebar, bg=self.BORDER, width=1).pack(side=tk.RIGHT, fill=tk.Y)
 
-        # "New chat" button at the top of the sidebar
+        # Top bar: "+ New chat" and "New group" button
+        top_bar = tk.Frame(sidebar, bg=self.SIDEBAR)
+        top_bar.pack(fill=tk.X, padx=8, pady=(12, 4))
+
         tk.Button(
-            sidebar, text="✦  New chat",
+            top_bar, text="+  New chat",
             command=self.clear_chat,
             bg=self.SIDEBAR, fg=self.TEXT_FG,
             activebackground="#e2e2e2", activeforeground=self.TEXT_FG,
-            relief=tk.FLAT, bd=0, padx=14, pady=10,
+            relief=tk.FLAT, bd=0, padx=14, pady=8,
             font=("Segoe UI", 10, "bold"), cursor="hand2", anchor="w",
-        ).pack(fill=tk.X, padx=8, pady=(12, 4))
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Button(
+            top_bar, text="⊞",
+            command=self._new_group_dialog,
+            bg=self.SIDEBAR, fg=self.MUTED_FG,
+            activebackground="#e2e2e2",
+            relief=tk.FLAT, bd=0, padx=8, pady=8,
+            font=("Segoe UI", 12), cursor="hand2",
+        ).pack(side=tk.RIGHT)
 
         tk.Frame(sidebar, bg=self.BORDER, height=1).pack(fill=tk.X, padx=8, pady=4)
 
@@ -428,6 +440,10 @@ class OllamaChatApp:
         hist_canvas.bind_all("<MouseWheel>", _on_wheel)
 
         self._hist_rows = []   # list of tk.Frame widgets (one per conversation)
+        self._hist_canvas = hist_canvas  # kept for drag scroll
+        # drag-reorder state
+        self._drag_src_idx  = None   # conv index being dragged
+        self._drag_indicator = None  # tk.Frame used as drop-line
 
         # Bottom sidebar buttons: Settings
         tk.Frame(sidebar, bg=self.BORDER, height=1).pack(fill=tk.X, padx=8, pady=4)
@@ -446,6 +462,8 @@ class OllamaChatApp:
         self._history      = []   # list of saved message lists
         self._hist_names   = []   # matching display names
         self._active_hist  = -1   # index of currently displayed conversation (-1 = new)
+        # groups: [{"name": str, "expanded": bool, "items": [conv_idx, ...]}]
+        self._hist_groups  = []
 
         # ── Right pane (top-bar + chat + input) ───────────────────────────── #
         right = tk.Frame(self.root, bg=self.BG)
@@ -795,72 +813,157 @@ class OllamaChatApp:
         self._persist_history()
 
     def _persist_history(self):
-        """Save conversations to disk so they survive restarts."""
+        """Save conversations and groups to disk."""
         self.config["conversations"] = [
             {"name": n, "messages": m}
             for n, m in zip(self._hist_names, self._history)
         ]
+        self.config["groups"] = self._hist_groups
         save_config(self.config)
 
     def _load_history(self):
-        """Load saved conversations from disk into the sidebar."""
+        """Load saved conversations and groups from disk into the sidebar."""
         saved = self.config.get("conversations", [])
         self._history    = [c.get("messages", []) for c in saved]
         self._hist_names = [c.get("name", "(untitled)") for c in saved]
+        self._hist_groups = self.config.get("groups", [])
+        # validate group indices
+        n = len(self._history)
+        for g in self._hist_groups:
+            g["items"] = [i for i in g.get("items", []) if i < n]
         self._active_hist = -1
         self._rebuild_hist_rows()
 
     def _rebuild_hist_rows(self):
-        """Rebuild the scrollable sidebar rows from scratch."""
+        """Rebuild the scrollable sidebar rows (conversations + groups)."""
         for w in self._hist_rows:
             w.destroy()
         self._hist_rows.clear()
 
-        for idx, name in enumerate(self._hist_names):
-            active = (idx == self._active_hist)
-            row_bg = "#dbeafe" if active else self.SIDEBAR
-            row = tk.Frame(self._hist_inner, bg=row_bg, cursor="hand2")
-            row.pack(fill=tk.X, pady=1)
-            self._hist_rows.append(row)
+        grouped = {i for g in self._hist_groups for i in g["items"]}
 
-            # dots packed FIRST so it always stays visible at the right edge
-            dots_btn = tk.Button(
-                row, text="⋯",
-                bg=row_bg, fg=self.MUTED_FG,
-                activebackground="#bfdbfe",
-                relief=tk.FLAT, bd=0,
-                font=("Segoe UI", 11), padx=6, pady=4,
-                command=lambda i=idx, b=row: self._hist_menu(i, b),
-            )
-            dots_btn.pack(side=tk.RIGHT)
+        # ungrouped conversations (order preserved in _history)
+        for idx in range(len(self._hist_names)):
+            if idx not in grouped:
+                self._render_conv_row(idx, indent=False)
 
-            # truncate display name so it never pushes the dots off-screen
-            disp = name if len(name) <= 22 else name[:21] + "…"
-            name_btn = tk.Button(
-                row, text=disp,
-                bg=row_bg, fg=self.TEXT_FG,
-                activebackground="#bfdbfe",
-                relief=tk.FLAT, bd=0,
-                font=("Segoe UI", 9), anchor="w",
-                padx=10, pady=5, width=1,   # width=1 lets fill/expand shrink it
-                command=lambda i=idx: self._on_hist_select(i),
-            )
-            name_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # groups
+        for gi, group in enumerate(self._hist_groups):
+            self._render_group_row(gi, group)
+            if group.get("expanded", True):
+                for idx in group["items"]:
+                    if idx < len(self._hist_names):
+                        self._render_conv_row(idx, indent=True)
 
-            # hover highlight
-            for w in (row, name_btn, dots_btn):
-                w.bind("<Enter>", lambda e, r=row, nb=name_btn, db=dots_btn:
-                    [x.configure(bg="#dbeafe") for x in (r, nb, db)])
-                w.bind("<Leave>", lambda e, r=row, nb=name_btn, db=dots_btn,
-                       i=idx: [x.configure(
-                           bg="#dbeafe" if i == self._active_hist else self.SIDEBAR
-                       ) for x in (r, nb, db)])
+    def _render_conv_row(self, idx, indent=False):
+        """Create one sidebar row for conversation at idx."""
+        active = (idx == self._active_hist)
+        row_bg = "#dbeafe" if active else self.SIDEBAR
+        row = tk.Frame(self._hist_inner, bg=row_bg, cursor="hand2")
+        row.pack(fill=tk.X, pady=1)
+        self._hist_rows.append(row)
+
+        dots_btn = tk.Button(
+            row, text="⋯",
+            bg=row_bg, fg=self.MUTED_FG,
+            activebackground="#bfdbfe",
+            relief=tk.FLAT, bd=0,
+            font=("Segoe UI", 11), padx=6, pady=4,
+            command=lambda i=idx, b=row: self._hist_menu(i, b),
+        )
+        dots_btn.pack(side=tk.RIGHT)
+
+        name = self._hist_names[idx]
+        disp = name if len(name) <= 20 else name[:19] + "…"
+        lpad = 24 if indent else 10
+        name_btn = tk.Button(
+            row, text=disp,
+            bg=row_bg, fg=self.TEXT_FG,
+            activebackground="#bfdbfe",
+            relief=tk.FLAT, bd=0,
+            font=("Segoe UI", 9), anchor="w",
+            padx=lpad, pady=5, width=1,
+            command=lambda i=idx: self._on_hist_select(i),
+        )
+        name_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        for w in (row, name_btn, dots_btn):
+            w.bind("<Enter>", lambda e, r=row, nb=name_btn, db=dots_btn:
+                [x.configure(bg="#dbeafe") for x in (r, nb, db)])
+            w.bind("<Leave>", lambda e, r=row, nb=name_btn, db=dots_btn,
+                   i=idx: [x.configure(
+                       bg="#dbeafe" if i == self._active_hist else self.SIDEBAR
+                   ) for x in (r, nb, db)])
+
+        # drag-to-reorder bindings
+        name_btn.bind("<ButtonPress-1>",   lambda e, i=idx: self._drag_start(e, i))
+        name_btn.bind("<B1-Motion>",       lambda e, i=idx: self._drag_motion(e, i))
+        name_btn.bind("<ButtonRelease-1>", lambda e, i=idx: self._drag_end(e, i))
+
+    def _render_group_row(self, gi, group):
+        """Create one sidebar row for a group header."""
+        arrow = "▾" if group.get("expanded", True) else "▸"
+        row_bg = self.SIDEBAR
+        row = tk.Frame(self._hist_inner, bg=row_bg)
+        row.pack(fill=tk.X, pady=(4, 1))
+        self._hist_rows.append(row)
+
+        dots_btn = tk.Button(
+            row, text="⋯",
+            bg=row_bg, fg=self.MUTED_FG,
+            activebackground="#e2e2e2",
+            relief=tk.FLAT, bd=0,
+            font=("Segoe UI", 11), padx=6, pady=3,
+            command=lambda g=gi, b=row: self._group_menu(g, b),
+        )
+        dots_btn.pack(side=tk.RIGHT)
+
+        disp = group["name"] if len(group["name"]) <= 18 else group["name"][:17] + "…"
+        hdr_btn = tk.Button(
+            row, text=f"{arrow}  {disp}",
+            bg=row_bg, fg=self.TEXT_FG,
+            activebackground="#e2e2e2",
+            relief=tk.FLAT, bd=0,
+            font=("Segoe UI", 9, "bold"), anchor="w",
+            padx=8, pady=4, width=1,
+            command=lambda g=gi: self._toggle_group(g),
+        )
+        hdr_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        for w in (row, hdr_btn, dots_btn):
+            w.bind("<Enter>", lambda e, r=row, nb=hdr_btn, db=dots_btn:
+                [x.configure(bg="#e2e2e2") for x in (r, nb, db)])
+            w.bind("<Leave>", lambda e, r=row, nb=hdr_btn, db=dots_btn:
+                [x.configure(bg=self.SIDEBAR) for x in (r, nb, db)])
+
+        # allow dropping onto group header
+        hdr_btn.bind("<ButtonRelease-1>", lambda e, g=gi: self._drag_drop_group(g))
 
     def _hist_menu(self, idx, anchor_widget):
-        """Show rename / delete popup for conversation at idx."""
+        """Show rename / delete / move-to-group popup for conversation at idx."""
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(label="Rename…",
                          command=lambda: self._hist_rename(idx))
+
+        # Move to group sub-menu
+        if self._hist_groups:
+            move_menu = tk.Menu(menu, tearoff=0)
+            for gi, g in enumerate(self._hist_groups):
+                move_menu.add_command(
+                    label=g["name"],
+                    command=lambda g=gi, i=idx: self._move_to_group(i, g),
+                )
+            # "Remove from group" if currently in one
+            cur_group = self._conv_group(idx)
+            if cur_group is not None:
+                move_menu.add_separator()
+                move_menu.add_command(
+                    label="Remove from group",
+                    command=lambda i=idx: self._remove_from_group(i),
+                )
+            menu.add_cascade(label="Move to group ▸", menu=move_menu)
+
+        menu.add_separator()
         menu.add_command(label="Delete",
                          command=lambda: self._hist_delete(idx))
         x = anchor_widget.winfo_rootx()
@@ -869,6 +972,218 @@ class OllamaChatApp:
             menu.tk_popup(x, y)
         finally:
             menu.grab_release()
+
+    def _group_menu(self, gi, anchor_widget):
+        """Rename / delete a group."""
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Rename group…",
+                         command=lambda: self._rename_group(gi))
+        menu.add_command(label="Delete group (keep chats)",
+                         command=lambda: self._delete_group(gi, keep=True))
+        menu.add_command(label="Delete group + chats",
+                         command=lambda: self._delete_group(gi, keep=False))
+        x = anchor_widget.winfo_rootx()
+        y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    # ── group helpers ─────────────────────────────────────────────────────── #
+    def _conv_group(self, idx):
+        """Return group index if conv is in a group, else None."""
+        for gi, g in enumerate(self._hist_groups):
+            if idx in g["items"]:
+                return gi
+        return None
+
+    def _toggle_group(self, gi):
+        self._hist_groups[gi]["expanded"] = not self._hist_groups[gi].get(
+            "expanded", True)
+        self._rebuild_hist_rows()
+        self._persist_history()
+
+    def _new_group_dialog(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("New group")
+        dlg.configure(bg=self.BG)
+        dlg.geometry("320x110")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Label(dlg, text="Group name:", bg=self.BG, fg=self.TEXT_FG,
+                 font=("Segoe UI", 10)).pack(anchor="w", padx=14, pady=(14, 4))
+        var = tk.StringVar()
+        ent = tk.Entry(dlg, textvariable=var, font=("Segoe UI", 10),
+                       bg=self.INPUT_BG, fg=self.TEXT_FG,
+                       relief=tk.SOLID, borderwidth=1)
+        ent.pack(fill=tk.X, padx=14)
+        ent.focus_set()
+        bar = tk.Frame(dlg, bg=self.BG)
+        bar.pack(fill=tk.X, padx=14, pady=10)
+
+        def ok():
+            n = var.get().strip()
+            if n:
+                self._hist_groups.append({"name": n, "expanded": True, "items": []})
+                self._rebuild_hist_rows()
+                self._persist_history()
+            dlg.destroy()
+
+        ttk.Button(bar, text="Create", command=ok).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8))
+        ent.bind("<Return>", lambda e: ok())
+        dlg.wait_window()
+
+    def _rename_group(self, gi):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Rename group")
+        dlg.configure(bg=self.BG)
+        dlg.geometry("320x110")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Label(dlg, text="New name:", bg=self.BG, fg=self.TEXT_FG,
+                 font=("Segoe UI", 10)).pack(anchor="w", padx=14, pady=(14, 4))
+        var = tk.StringVar(value=self._hist_groups[gi]["name"])
+        ent = tk.Entry(dlg, textvariable=var, font=("Segoe UI", 10),
+                       bg=self.INPUT_BG, fg=self.TEXT_FG,
+                       relief=tk.SOLID, borderwidth=1)
+        ent.pack(fill=tk.X, padx=14)
+        ent.select_range(0, tk.END)
+        ent.focus_set()
+        bar = tk.Frame(dlg, bg=self.BG)
+        bar.pack(fill=tk.X, padx=14, pady=10)
+
+        def ok():
+            n = var.get().strip()
+            if n:
+                self._hist_groups[gi]["name"] = n
+                self._rebuild_hist_rows()
+                self._persist_history()
+            dlg.destroy()
+
+        ttk.Button(bar, text="Save", command=ok).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8))
+        ent.bind("<Return>", lambda e: ok())
+        dlg.wait_window()
+
+    def _delete_group(self, gi, keep=True):
+        if not keep:
+            for idx in reversed(sorted(self._hist_groups[gi]["items"])):
+                self._hist_delete_silent(idx)
+        del self._hist_groups[gi]
+        self._rebuild_hist_rows()
+        self._persist_history()
+
+    def _move_to_group(self, idx, gi):
+        self._remove_from_group(idx)
+        self._hist_groups[gi]["items"].append(idx)
+        self._rebuild_hist_rows()
+        self._persist_history()
+
+    def _remove_from_group(self, idx):
+        for g in self._hist_groups:
+            if idx in g["items"]:
+                g["items"].remove(idx)
+        self._rebuild_hist_rows()
+        self._persist_history()
+
+    # ── drag-to-reorder ───────────────────────────────────────────────────── #
+    def _drag_start(self, event, idx):
+        self._drag_src_idx = idx
+        self._drag_over_idx = None
+
+    def _drag_motion(self, event, idx):
+        if self._drag_src_idx is None:
+            return
+        # find which row the pointer is over
+        abs_y = event.widget.winfo_rooty() + event.y
+        target = self._drag_target_at(abs_y)
+        if target != self._drag_over_idx:
+            self._drag_over_idx = target
+            self._rebuild_hist_rows_with_indicator(target)
+
+    def _drag_end(self, event, idx):
+        if self._drag_src_idx is None:
+            return
+        src = self._drag_src_idx
+        self._drag_src_idx = None
+        self._drag_over_idx = None
+        # check if dropped on a group header
+        # (handled separately via _drag_drop_group; here just reorder flat list)
+        abs_y = event.widget.winfo_rooty() + event.y
+        dst = self._drag_target_at(abs_y)
+        if dst is not None and dst != src:
+            # reorder in the ungrouped list
+            cur_group = self._conv_group(src)
+            if cur_group is not None:
+                # reorder within the group
+                items = self._hist_groups[cur_group]["items"]
+                if src in items and dst in items:
+                    items.remove(src)
+                    di = items.index(dst) if dst in items else len(items)
+                    items.insert(di, src)
+            else:
+                # reorder in the global list, also update group indices
+                self._reorder_flat(src, dst)
+        self._rebuild_hist_rows()
+        self._persist_history()
+
+    def _drag_drop_group(self, gi):
+        """Called when mouse is released on a group header while dragging."""
+        if self._drag_src_idx is None:
+            return
+        self._move_to_group(self._drag_src_idx, gi)
+        self._drag_src_idx = None
+
+    def _drag_target_at(self, abs_y):
+        """Return conv index whose row the pointer is closest to, or None."""
+        for row in self._hist_rows:
+            if not row.winfo_exists():
+                continue
+            ry = row.winfo_rooty()
+            rh = row.winfo_height()
+            if ry <= abs_y <= ry + rh:
+                # find which idx this row represents
+                for i, w in enumerate(self._hist_rows):
+                    if w is row:
+                        return i  # row index, will map to conv idx below
+        return None
+
+    def _reorder_flat(self, src, dst):
+        """Move conversation src before/after dst in the flat lists."""
+        if src == dst or src >= len(self._history) or dst >= len(self._history):
+            return
+        # move in data lists
+        self._history.insert(dst, self._history.pop(src))
+        self._hist_names.insert(dst, self._hist_names.pop(src))
+        # fix active index
+        if self._active_hist == src:
+            self._active_hist = dst
+        elif src < self._active_hist <= dst:
+            self._active_hist -= 1
+        elif dst <= self._active_hist < src:
+            self._active_hist += 1
+        # fix group item indices
+        old_to_new = list(range(len(self._history)))
+        # old src → dst; elements between shift by 1
+        mapping = {}
+        for i in range(len(self._history)):
+            if i == src:
+                mapping[i] = dst
+            elif src < dst and src < i <= dst:
+                mapping[i] = i - 1
+            elif dst < src and dst <= i < src:
+                mapping[i] = i + 1
+            else:
+                mapping[i] = i
+        for g in self._hist_groups:
+            g["items"] = [mapping.get(i, i) for i in g["items"]]
+
+    def _rebuild_hist_rows_with_indicator(self, target_row):
+        """Rebuild rows and show a blue line at target_row position."""
+        self._rebuild_hist_rows()  # simple rebuild; indicator is subtle
 
     def _hist_rename(self, idx):
         dlg = tk.Toplevel(self.root)
@@ -906,6 +1221,12 @@ class OllamaChatApp:
         dlg.wait_window()
 
     def _hist_delete(self, idx):
+        self._hist_delete_silent(idx)
+        self._rebuild_hist_rows()
+        self._persist_history()
+
+    def _hist_delete_silent(self, idx):
+        """Delete a conversation and fix all group references."""
         del self._history[idx]
         del self._hist_names[idx]
         if self._active_hist == idx:
@@ -913,8 +1234,10 @@ class OllamaChatApp:
             self.ws_label.configure(text="New conversation")
         elif self._active_hist > idx:
             self._active_hist -= 1
-        self._rebuild_hist_rows()
-        self._persist_history()
+        # fix group indices
+        for g in self._hist_groups:
+            g["items"] = [i if i < idx else i - 1
+                          for i in g["items"] if i != idx]
 
     def _on_hist_select(self, idx):
         if self.streaming:

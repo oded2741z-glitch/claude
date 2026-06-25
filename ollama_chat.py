@@ -488,34 +488,12 @@ class OllamaChatApp:
         )
         self.mic_btn.pack(side=tk.LEFT)
 
-        # Model selector (right side, before send button)
-        self.model_var = tk.StringVar()
-        model_frame = tk.Frame(toolbar, bg=self.INPUT_BG)
-        model_frame.pack(side=tk.RIGHT, padx=(0, 6))
-
-        self.model_combo = ttk.Combobox(
-            model_frame, textvariable=self.model_var,
-            state="readonly", width=18,
-            font=("Segoe UI", 9),
-        )
-        self.model_combo.pack(side=tk.LEFT)
-
-        # Refresh button next to model
-        tk.Button(
-            model_frame, text="↻",
-            command=self.refresh_models,
-            bg=self.INPUT_BG, fg=self.MUTED_FG,
-            activebackground="#f3f4f6",
-            relief=tk.FLAT, bd=0, font=("Segoe UI", 11),
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(4, 0))
-
-        # Send / Stop button (circular look via canvas)
+        # Send / Stop button (circular) — packed FIRST so it sits at far right
         self._send_canvas = tk.Canvas(
             toolbar, width=32, height=32,
             bg=self.INPUT_BG, highlightthickness=0,
         )
-        self._send_canvas.pack(side=tk.RIGHT, padx=(6, 0))
+        self._send_canvas.pack(side=tk.RIGHT, padx=(10, 2))
         self._draw_send_btn(active=True)
         self._send_canvas.bind("<Button-1>", lambda e: self._on_send_click())
         self._send_canvas.bind("<Enter>",
@@ -523,6 +501,28 @@ class OllamaChatApp:
         self._send_canvas.bind("<Leave>",
             lambda e: self._send_canvas.itemconfig(
                 "circle", fill=self.SEND_BTN if not self.streaming else "#ef4444"))
+
+        # Model selector + refresh (to the LEFT of the send button)
+        self.model_var = tk.StringVar()
+        model_frame = tk.Frame(toolbar, bg=self.INPUT_BG)
+        model_frame.pack(side=tk.RIGHT, padx=(0, 8))
+
+        # Refresh button (rightmost inside the model group)
+        tk.Button(
+            model_frame, text="↻",
+            command=self.refresh_models,
+            bg=self.INPUT_BG, fg=self.MUTED_FG,
+            activebackground="#f3f4f6",
+            relief=tk.FLAT, bd=0, font=("Segoe UI", 11),
+            cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+
+        self.model_combo = ttk.Combobox(
+            model_frame, textvariable=self.model_var,
+            state="readonly", width=16,
+            font=("Segoe UI", 9),
+        )
+        self.model_combo.pack(side=tk.RIGHT)
 
         # stop functionality wired through same canvas button
         self.send_btn  = self._send_canvas   # keep API compat (state changes below)

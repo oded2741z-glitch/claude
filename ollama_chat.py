@@ -449,9 +449,17 @@ class OllamaChatApp:
 
         self.ws_label = tk.Label(
             top, text="New conversation", bg=self.PANEL, fg=self.MUTED_FG,
-            font=("Segoe UI", 9), cursor="hand2",
+            font=("Segoe UI", 9),
         )
         self.ws_label.pack(side=tk.LEFT, padx=14, pady=8)
+
+        # workspace status chip (right side of top bar)
+        self._ws_chip = tk.Label(
+            top, text="", bg=self.PANEL, fg=self.BOT_FG,
+            font=("Segoe UI", 9, "bold"), cursor="hand2",
+        )
+        self._ws_chip.pack(side=tk.RIGHT, padx=(0, 6))
+        self._ws_chip.bind("<Button-1>", lambda e: self.open_settings())
 
         self.status = tk.Label(
             top, text="", bg=self.PANEL, fg=self.MUTED_FG, font=("Segoe UI", 8)
@@ -1792,8 +1800,11 @@ class OllamaChatApp:
         self.set_status("Workspace disabled")
 
     def _update_ws_label(self):
-        # ws_label in new design shows conversation title, not workspace path
-        pass
+        if self.workspace:
+            name = os.path.basename(self.workspace.rstrip("/\\")) or self.workspace
+            self._ws_chip.configure(text=f"📁 {name}  ✓")
+        else:
+            self._ws_chip.configure(text="")
 
     def _build_workspace_tab(self, nb):
         tab = tk.Frame(nb, bg=self.BG)
@@ -1833,8 +1844,9 @@ class OllamaChatApp:
             self.workspace = p
             self.config["workspace"] = p
             save_config(self.config)
+            self._update_ws_label()
             ws_name = os.path.basename(p.rstrip("/\\")) if p else ""
-            self.set_status(f"📁 Workspace: {ws_name}" if p else "Workspace disabled")
+            self.set_status(f"📁 Workspace active: {ws_name}" if p else "Workspace disabled")
 
         def clear_ws():
             path_var.set("")
@@ -1890,10 +1902,14 @@ class OllamaChatApp:
 
         system = self.build_system_prompt()
         ws_note = (
-            "You can work with files in the user's working folder using the "
-            "tools list_files, read_file and write_file. All paths are RELATIVE "
-            "to that folder. Never assume file contents — inspect them with the "
-            f"tools. Workspace path: {self.workspace}"
+            f"WORKSPACE FOLDER: {self.workspace}\n"
+            "You have access to the user's workspace folder via these tools: "
+            "list_files, read_file, write_file. All paths must be RELATIVE to the workspace.\n"
+            "IMPORTANT RULES:\n"
+            "- When asked to create, write, or save ANY file or code, you MUST call "
+            "write_file to save it to the workspace. Do NOT just show the code as text.\n"
+            "- Always confirm to the user which file you wrote and its relative path.\n"
+            "- Never assume a file exists — use list_files or read_file first."
         )
         system = f"{system}\n\n{ws_note}".strip() if system else ws_note
         convo = [{"role": "system", "content": system}] + list(self.messages)

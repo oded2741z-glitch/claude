@@ -361,44 +361,82 @@ class OllamaChatApp:
             background=[("active", "#c7c7c7")],
         )
 
-        # ── Top bar ───────────────────────────────────────────────────────── #
-        top = tk.Frame(self.root, bg=self.PANEL, pady=0)
-        top.pack(side=tk.TOP, fill=tk.X)
+        # ── Sidebar (left) ────────────────────────────────────────────────── #
+        self.SIDEBAR  = "#f0f0f0"
+        sidebar = tk.Frame(self.root, bg=self.SIDEBAR, width=200)
+        sidebar.pack(side=tk.LEFT, fill=tk.Y)
+        sidebar.pack_propagate(False)
 
-        # left cluster: New chat + Settings + Workspace
-        left = tk.Frame(top, bg=self.PANEL)
-        left.pack(side=tk.LEFT, padx=6, pady=6)
+        tk.Frame(sidebar, bg=self.BORDER, width=1).pack(side=tk.RIGHT, fill=tk.Y)
 
+        # "New chat" button at the top of the sidebar
+        tk.Button(
+            sidebar, text="✦  New chat",
+            command=self.clear_chat,
+            bg=self.SIDEBAR, fg=self.TEXT_FG,
+            activebackground="#e2e2e2", activeforeground=self.TEXT_FG,
+            relief=tk.FLAT, bd=0, padx=14, pady=10,
+            font=("Segoe UI", 10, "bold"), cursor="hand2", anchor="w",
+        ).pack(fill=tk.X, padx=8, pady=(12, 4))
+
+        tk.Frame(sidebar, bg=self.BORDER, height=1).pack(fill=tk.X, padx=8, pady=4)
+
+        # Conversation history label
+        tk.Label(
+            sidebar, text="Recent chats", bg=self.SIDEBAR, fg=self.MUTED_FG,
+            font=("Segoe UI", 8), anchor="w",
+        ).pack(fill=tk.X, padx=14, pady=(4, 2))
+
+        # History listbox
+        self._hist_lb = tk.Listbox(
+            sidebar, bg=self.SIDEBAR, fg=self.TEXT_FG,
+            selectbackground="#dbeafe", selectforeground=self.TEXT_FG,
+            relief=tk.FLAT, bd=0, highlightthickness=0,
+            font=("Segoe UI", 9), activestyle="none",
+        )
+        self._hist_lb.pack(fill=tk.BOTH, expand=True, padx=4)
+        self._hist_lb.bind("<<ListboxSelect>>", self._on_hist_select)
+
+        # Bottom sidebar buttons: Settings
+        tk.Frame(sidebar, bg=self.BORDER, height=1).pack(fill=tk.X, padx=8, pady=4)
         for label, cmd in (
-            ("✦  New chat",     self.clear_chat),
-            ("⚙",              self.open_settings),
-            ("📁",             self.choose_workspace),
+            ("⚙  Settings", self.open_settings),
         ):
             tk.Button(
-                left, text=label, command=cmd,
-                bg=self.PANEL, fg=self.TEXT_FG,
-                activebackground="#ececec", activeforeground=self.TEXT_FG,
-                relief=tk.FLAT, bd=0, padx=8, pady=4,
-                font=("Segoe UI", 9), cursor="hand2",
-            ).pack(side=tk.LEFT, padx=2)
+                sidebar, text=label, command=cmd,
+                bg=self.SIDEBAR, fg=self.TEXT_FG,
+                activebackground="#e2e2e2",
+                relief=tk.FLAT, bd=0, padx=14, pady=8,
+                font=("Segoe UI", 9), cursor="hand2", anchor="w",
+            ).pack(fill=tk.X, padx=8, pady=(0, 4))
+
+        # conversation history storage
+        self._history = []       # list of saved message lists
+        self._hist_names = []    # matching display names
+
+        # ── Right pane (top-bar + chat + input) ───────────────────────────── #
+        right = tk.Frame(self.root, bg=self.BG)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # ── Top bar ───────────────────────────────────────────────────────── #
+        top = tk.Frame(right, bg=self.PANEL, pady=0)
+        top.pack(side=tk.TOP, fill=tk.X)
 
         self.ws_label = tk.Label(
-            top, text="", bg=self.PANEL, fg=self.BOT_FG,
+            top, text="New conversation", bg=self.PANEL, fg=self.MUTED_FG,
             font=("Segoe UI", 9), cursor="hand2",
         )
-        self.ws_label.pack(side=tk.LEFT, padx=4)
-        self.ws_label.bind("<Button-1>", lambda e: self.clear_workspace())
+        self.ws_label.pack(side=tk.LEFT, padx=14, pady=8)
 
-        # right cluster: status
         self.status = tk.Label(
             top, text="", bg=self.PANEL, fg=self.MUTED_FG, font=("Segoe UI", 8)
         )
         self.status.pack(side=tk.RIGHT, padx=12)
 
-        tk.Frame(self.root, bg=self.BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
+        tk.Frame(right, bg=self.BORDER, height=1).pack(side=tk.TOP, fill=tk.X)
 
         # ── Chat transcript ────────────────────────────────────────────────── #
-        chat_wrap = tk.Frame(self.root, bg=self.CHAT_BG)
+        chat_wrap = tk.Frame(right, bg=self.CHAT_BG)
         chat_wrap.pack(fill=tk.BOTH, expand=True)
 
         scroll = ttk.Scrollbar(chat_wrap, orient=tk.VERTICAL)
@@ -443,7 +481,7 @@ class OllamaChatApp:
 
         # ── Input card ────────────────────────────────────────────────────── #
         # Outer padding frame (gray background shows as page bg)
-        pad = tk.Frame(self.root, bg=self.BG)
+        pad = tk.Frame(right, bg=self.BG)
         pad.pack(side=tk.BOTTOM, fill=tk.X, padx=20, pady=(8, 16))
 
         # White card with border
@@ -626,11 +664,63 @@ class OllamaChatApp:
     def clear_chat(self):
         if self.streaming:
             return
+        # save current conversation to history if it has content
+        if self.messages:
+            self._save_to_history()
         self.messages.clear()
         self.chat.configure(state=tk.NORMAL)
         self.chat.delete("1.0", tk.END)
         self.chat.configure(state=tk.DISABLED)
+        self.ws_label.configure(text="New conversation")
         self.set_status("New conversation")
+
+    def _save_to_history(self):
+        """Snapshot the current conversation into the sidebar history."""
+        # title = first user message, truncated
+        first_user = next(
+            (m["content"] for m in self.messages if m["role"] == "user"), None
+        )
+        if not first_user:
+            return
+        title = first_user[:40].replace("\n", " ")
+        if len(first_user) > 40:
+            title += "…"
+        self._history.insert(0, list(self.messages))
+        self._hist_names.insert(0, title)
+        # keep last 30
+        self._history    = self._history[:30]
+        self._hist_names = self._hist_names[:30]
+        self._refresh_hist_lb()
+
+    def _refresh_hist_lb(self):
+        self._hist_lb.delete(0, tk.END)
+        for name in self._hist_names:
+            self._hist_lb.insert(tk.END, f"  {name}")
+
+    def _on_hist_select(self, event):
+        sel = self._hist_lb.curselection()
+        if not sel or self.streaming:
+            return
+        idx = sel[0]
+        if idx >= len(self._history):
+            return
+        self.messages = list(self._history[idx])
+        self.chat.configure(state=tk.NORMAL)
+        self.chat.delete("1.0", tk.END)
+        self.chat.configure(state=tk.DISABLED)
+        # re-render the saved messages
+        for m in self.messages:
+            if m["role"] == "user":
+                self._append("You\n", "user")
+                self._append(m["content"] + "\n", "user_body")
+            elif m["role"] == "assistant":
+                self._append("Assistant\n", "bot")
+                self._insert_markdown(m["content"])
+                self.chat.configure(state=tk.NORMAL)
+                self.chat.insert(tk.END, "\n")
+                self.chat.configure(state=tk.DISABLED)
+            self._append("\n", "spacer")
+        self.ws_label.configure(text=self._hist_names[idx])
 
     # ----- settings: persistence & prompt building ------------------------ #
     def _persist(self):
@@ -709,6 +799,7 @@ class OllamaChatApp:
         self._build_skills_tab(nb)
         self._build_sources_tab(nb)
         self._build_voice_tab(nb)
+        self._build_workspace_tab(nb)
 
         ttk.Button(win, text="Close", command=win.destroy).pack(
             side=tk.BOTTOM, anchor="e", padx=14, pady=(0, 12)
@@ -1545,11 +1636,77 @@ class OllamaChatApp:
         self.set_status("Workspace disabled")
 
     def _update_ws_label(self):
-        if self.workspace:
-            name = os.path.basename(self.workspace.rstrip("\\/")) or self.workspace
-            self.ws_label.configure(text=f"📁 {name}  (click to disable)")
-        else:
-            self.ws_label.configure(text="")
+        # ws_label in new design shows conversation title, not workspace path
+        pass
+
+    def _build_workspace_tab(self, nb):
+        tab = tk.Frame(nb, bg=self.BG)
+        nb.add(tab, text="Workspace")
+        tk.Label(
+            tab,
+            text="תיקיית עבודה — המודל יוכל לקרוא ולכתוב קבצים בתיקייה זו.",
+            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
+            wraplength=520, justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        path_var = tk.StringVar(value=self.workspace or "")
+        path_entry = tk.Entry(
+            tab, textvariable=path_var,
+            bg=self.INPUT_BG, fg=self.TEXT_FG,
+            insertbackground=self.TEXT_FG, relief=tk.SOLID, borderwidth=1,
+            font=("Segoe UI", 10),
+        )
+        path_entry.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        bar = tk.Frame(tab, bg=self.BG)
+        bar.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        def browse():
+            path = filedialog.askdirectory(parent=tab.winfo_toplevel(),
+                                           title="Choose workspace folder")
+            if path:
+                path_var.set(path)
+
+        def save_ws():
+            p = path_var.get().strip()
+            if p and not os.path.isdir(p):
+                messagebox.showwarning("Not found", f"Directory not found:\n{p}",
+                                       parent=tab.winfo_toplevel())
+                return
+            self.workspace = p
+            self.config["workspace"] = p
+            save_config(self.config)
+            self.set_status(f"Workspace: {p}" if p else "Workspace disabled")
+
+        def clear_ws():
+            path_var.set("")
+            save_ws()
+
+        ttk.Button(bar, text="Browse…", command=browse).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Save", command=save_ws).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="Clear", command=clear_ws).pack(side=tk.LEFT)
+
+        # write mode
+        tk.Frame(tab, bg=self.BORDER, height=1).pack(fill=tk.X, padx=12, pady=8)
+        tk.Label(tab, text="Write permission", bg=self.BG, fg=self.TEXT_FG,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(0, 4))
+        _wm = tk.StringVar(value=self.write_mode)
+        for val, label in (
+            ("confirm",  "Ask before every write (safe)"),
+            ("free",     "Allow writes without asking"),
+            ("readonly", "Read-only — no writes"),
+        ):
+            tk.Radiobutton(
+                tab, text=label, variable=_wm, value=val,
+                bg=self.BG, fg=self.TEXT_FG, activebackground=self.BG,
+                selectcolor=self.PANEL, font=("Segoe UI", 9), anchor="w",
+                command=lambda v=val: self._set_write_mode(v),
+            ).pack(anchor="w", padx=22)
+
+    def _set_write_mode(self, mode):
+        self.write_mode = mode
+        self.config["write_mode"] = mode
+        save_config(self.config)
 
     def _start_agent(self, model):
         self._append(f"{model}  ·  📁 workspace\n", "bot")

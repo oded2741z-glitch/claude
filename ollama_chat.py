@@ -1493,6 +1493,14 @@ class OllamaChatApp:
                     self._finish_reply()
                 elif kind == "tool_call":
                     self._append(f"🔧 {payload}\n", "tool")
+                elif kind == "tool_code":
+                    path, content = payload
+                    lang = self._lang_from_path(path)
+                    self.chat.configure(state=tk.NORMAL)
+                    self._append(f"📄 {path}\n", "tool")
+                    self._insert_code_block(content, lang)
+                    self.chat.configure(state=tk.DISABLED)
+                    self.chat.see(tk.END)
                 elif kind == "confirm_write":
                     full, content, event, holder = payload
                     preview = content if len(content) <= 1500 \
@@ -1945,6 +1953,12 @@ class OllamaChatApp:
                         except ValueError:
                             args = {}
                     self.ui_queue.put(("tool_call", self._format_call(name, args)))
+                    # show the file content being written, as a code block
+                    if name == "write_file":
+                        self.ui_queue.put((
+                            "tool_code",
+                            (args.get("path", ""), args.get("content", "")),
+                        ))
                     result = self._exec_tool(name, args)
                     convo.append(
                         {"role": "tool", "content": result, "tool_name": name}
@@ -1954,6 +1968,18 @@ class OllamaChatApp:
             self.ui_queue.put(("error", f"Connection error: {exc.reason}"))
         except Exception as exc:  # noqa: BLE001
             self.ui_queue.put(("error", f"Agent error: {exc}"))
+
+    @staticmethod
+    def _lang_from_path(path):
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        return {
+            "py": "python", "js": "javascript", "ts": "typescript",
+            "jsx": "javascript", "tsx": "typescript", "html": "html",
+            "css": "css", "json": "json", "sh": "bash", "bash": "bash",
+            "java": "java", "c": "c", "cpp": "cpp", "h": "c", "go": "go",
+            "rs": "rust", "rb": "ruby", "php": "php", "sql": "sql",
+            "yml": "yaml", "yaml": "yaml", "xml": "xml", "md": "markdown",
+        }.get(ext, ext or "text")
 
     @staticmethod
     def _format_call(name, args):

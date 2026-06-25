@@ -305,7 +305,7 @@ class OllamaChatApp:
         self.workspace = self.config.get("workspace", "") or ""
         if self.workspace and not os.path.isdir(self.workspace):
             self.workspace = ""
-        self.write_mode = self.config.get("write_mode", "confirm")  # confirm|readonly|free
+        self.write_mode = self.config.get("write_mode", "free")  # confirm|readonly|free
         self.tts_auto = bool(self.config.get("tts_auto", False))
         self.tts_rate = int(self.config.get("tts_rate", 175))
         self.stt_lang = self.config.get("stt_lang", "he-IL")
@@ -1489,11 +1489,16 @@ class OllamaChatApp:
                     full, content, event, holder = payload
                     preview = content if len(content) <= 1500 \
                         else content[:1500] + "\n...[truncated]"
+                    self.root.lift()
+                    self.root.focus_force()
                     holder["approved"] = messagebox.askyesno(
-                        "Allow file write?",
-                        f"The model wants to write this file:\n\n{full}\n\n"
-                        f"----- content -----\n{preview}",
+                        "אישור כתיבה לקובץ",
+                        f"המודל רוצה לכתוב לקובץ:\n\n{full}\n\n"
+                        f"── תוכן ──\n{preview}",
+                        default=messagebox.NO,
                     )
+                    if not holder["approved"]:
+                        self.set_status("כתיבה נדחתה על ידי המשתמש")
                     event.set()
                 elif kind == "agent_done":
                     self._finish_agent(payload)
@@ -1817,6 +1822,7 @@ class OllamaChatApp:
                                            title="Choose workspace folder")
             if path:
                 path_var.set(path)
+                save_ws()   # apply immediately after browsing
 
         def save_ws():
             p = path_var.get().strip()
@@ -1827,15 +1833,30 @@ class OllamaChatApp:
             self.workspace = p
             self.config["workspace"] = p
             save_config(self.config)
-            self.set_status(f"Workspace: {p}" if p else "Workspace disabled")
+            ws_name = os.path.basename(p.rstrip("/\\")) if p else ""
+            self.set_status(f"📁 Workspace: {ws_name}" if p else "Workspace disabled")
 
         def clear_ws():
             path_var.set("")
             save_ws()
 
         ttk.Button(bar, text="Browse…", command=browse).pack(side=tk.LEFT)
-        ttk.Button(bar, text="Save", command=save_ws).pack(side=tk.LEFT, padx=6)
-        ttk.Button(bar, text="Clear", command=clear_ws).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Save",    command=save_ws).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="Clear",   command=clear_ws).pack(side=tk.LEFT)
+
+        # active-workspace indicator
+        ind = tk.Label(tab, text="", bg=self.BG, fg=self.BOT_FG,
+                       font=("Segoe UI", 9))
+        ind.pack(anchor="w", padx=12, pady=(0, 4))
+
+        def _update_ind():
+            if self.workspace:
+                ind.configure(text=f"✔  Active: {self.workspace}")
+            else:
+                ind.configure(text="(no workspace set)")
+
+        _update_ind()
+        path_var.trace_add("write", lambda *_: _update_ind())
 
         # write mode
         tk.Frame(tab, bg=self.BORDER, height=1).pack(fill=tk.X, padx=12, pady=8)
@@ -1843,8 +1864,8 @@ class OllamaChatApp:
                  font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(0, 4))
         _wm = tk.StringVar(value=self.write_mode)
         for val, label in (
+            ("free",     "Allow writes without asking (default)"),
             ("confirm",  "Ask before every write (safe)"),
-            ("free",     "Allow writes without asking"),
             ("readonly", "Read-only — no writes"),
         ):
             tk.Radiobutton(

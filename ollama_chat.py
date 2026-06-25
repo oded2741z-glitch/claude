@@ -294,9 +294,17 @@ class OllamaChatApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Ollama Chat")
-        self.root.geometry("820x680")
+        self.root.geometry("1100x780")
         self.root.configure(bg=self.BG)
         self.root.minsize(560, 460)
+        # Maximize the window on startup
+        try:
+            self.root.state("zoomed")        # Windows / some Linux WMs
+        except tk.TclError:
+            try:
+                self.root.attributes("-zoomed", True)   # Linux (most WMs)
+            except tk.TclError:
+                pass
 
         self.config = load_config()
         self.system_prompt = self.config.get("instructions", "")
@@ -547,17 +555,18 @@ class OllamaChatApp:
         toolbar = tk.Frame(card, bg=self.INPUT_BG)
         toolbar.pack(fill=tk.X, padx=10, pady=(0, 8))
 
-        # Mic button (left)
+        # Mic button (left side of toolbar, vertically centred)
         self.mic_btn = tk.Button(
             toolbar, text="🎤",
             command=self._start_stt,
             bg=self.INPUT_BG, fg=self.MUTED_FG,
             activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
             relief=tk.FLAT, bd=0, font=("Segoe UI", 13),
+            padx=4, pady=0,
             cursor="hand2" if _STT_AVAILABLE else "arrow",
             state=tk.NORMAL if _STT_AVAILABLE else tk.DISABLED,
         )
-        self.mic_btn.pack(side=tk.LEFT)
+        self.mic_btn.pack(side=tk.LEFT, pady=0)
 
         # Send / Stop button (circular) — packed FIRST so it sits at far right
         self._send_canvas = tk.Canvas(
@@ -1533,7 +1542,9 @@ class OllamaChatApp:
                     self._updating_instructions = False
                     self.set_status("Ready")
                 elif kind == "stt_result":
+                    self._hide_placeholder()
                     self.entry.insert(tk.END, payload)
+                    self.entry.focus_set()
                     self.mic_btn.configure(state=tk.NORMAL)
                     self.set_status("Ready")
                 elif kind == "stt_error":
@@ -1916,8 +1927,13 @@ class OllamaChatApp:
             "IMPORTANT RULES:\n"
             "- When asked to create, write, or save ANY file or code, you MUST call "
             "write_file to save it to the workspace. Do NOT just show the code as text.\n"
-            "- Always confirm to the user which file you wrote and its relative path.\n"
-            "- Never assume a file exists — use list_files or read_file first."
+            "- When asked to MODIFY, UPDATE, EDIT, or ADD TO an existing file, you MUST "
+            "first call read_file to get the current content, then produce the complete "
+            "updated content and call write_file to overwrite the file. "
+            "write_file always overwrites — include ALL content, not just the changed parts.\n"
+            "- Use list_files to discover what files already exist before deciding whether "
+            "to create a new file or update an existing one.\n"
+            "- Always confirm to the user which file you wrote and its relative path."
         )
         system = f"{system}\n\n{ws_note}".strip() if system else ws_note
         convo = [{"role": "system", "content": system}] + list(self.messages)

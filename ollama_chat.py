@@ -490,17 +490,24 @@ class OllamaChatApp:
 
         # Send / Stop button (circular) — packed FIRST so it sits at far right
         self._send_canvas = tk.Canvas(
-            toolbar, width=32, height=32,
+            toolbar, width=34, height=34,
             bg=self.INPUT_BG, highlightthickness=0,
         )
         self._send_canvas.pack(side=tk.RIGHT, padx=(10, 2))
         self._draw_send_btn(active=True)
         self._send_canvas.bind("<Button-1>", lambda e: self._on_send_click())
-        self._send_canvas.bind("<Enter>",
-            lambda e: self._send_canvas.itemconfig("circle", fill="#333333"))
-        self._send_canvas.bind("<Leave>",
-            lambda e: self._send_canvas.itemconfig(
-                "circle", fill=self.SEND_BTN if not self.streaming else "#ef4444"))
+        self._send_canvas.configure(cursor="hand2")
+
+        def _hover(_):
+            col = "#ef4444" if self.streaming else "#404040"
+            self._send_canvas.itemconfig("circle", fill=col, outline=col)
+
+        def _leave(_):
+            col = "#ef4444" if self.streaming else self.SEND_BTN
+            self._send_canvas.itemconfig("circle", fill=col, outline=col)
+
+        self._send_canvas.bind("<Enter>", _hover)
+        self._send_canvas.bind("<Leave>", _leave)
 
         # Model selector + refresh (to the LEFT of the send button)
         self.model_var = tk.StringVar()
@@ -528,15 +535,24 @@ class OllamaChatApp:
         self.send_btn  = self._send_canvas   # keep API compat (state changes below)
         self.stop_btn  = self._send_canvas   # same widget
 
+    def _draw_circle(self, color):
+        """Draw a smooth-ish filled circle (1px lighter ring softens the edge)."""
+        c = self._send_canvas
+        c.create_oval(2, 2, 32, 32, fill=color, outline=color, tags="circle")
+
     def _draw_send_btn(self, active=True):
         c = self._send_canvas
         c.delete("all")
-        color = self.SEND_BTN if active else "#ef4444"
-        c.create_oval(1, 1, 31, 31, fill=color, outline="", tags="circle")
-        # up-arrow  ↑
-        c.create_line(16, 22, 16, 10, fill="white", width=2, tags="arrow")
-        c.create_line(10, 16, 16, 10, fill="white", width=2, tags="arrow")
-        c.create_line(22, 16, 16, 10, fill="white", width=2, tags="arrow")
+        self._draw_circle(self.SEND_BTN if active else "#ef4444")
+        # clean up-arrow: filled triangle head + rounded stem
+        c.create_polygon(
+            17, 9, 11, 17, 23, 17,
+            fill="white", outline="white", tags="arrow",
+        )
+        c.create_line(
+            17, 15, 17, 25, fill="white", width=3,
+            capstyle=tk.ROUND, tags="arrow",
+        )
 
     def _on_send_click(self):
         if self.streaming:
@@ -549,13 +565,13 @@ class OllamaChatApp:
         c = self._send_canvas
         c.delete("all")
         if busy:
-            c.create_oval(1, 1, 31, 31, fill="#ef4444", outline="", tags="circle")
-            c.create_rectangle(11, 11, 21, 21, fill="white", outline="", tags="arrow")
+            self._draw_circle("#ef4444")
+            # rounded stop square
+            c.create_rectangle(
+                12, 12, 22, 22, fill="white", outline="white", tags="arrow",
+            )
         else:
-            c.create_oval(1, 1, 31, 31, fill=self.SEND_BTN, outline="", tags="circle")
-            c.create_line(16, 22, 16, 10, fill="white", width=2, tags="arrow")
-            c.create_line(10, 16, 16, 10, fill="white", width=2, tags="arrow")
-            c.create_line(22, 16, 16, 10, fill="white", width=2, tags="arrow")
+            self._draw_send_btn(active=True)
 
     def _show_placeholder(self, event=None):
         if not self.entry.get("1.0", "end-1c"):

@@ -324,6 +324,7 @@ class OllamaChatApp:
 
         self._build_ui()
         self._update_ws_label()
+        self._load_history()
         self._poll_queue()
         self.refresh_models()
 
@@ -711,15 +712,31 @@ class OllamaChatApp:
             title += "…"
 
         if self._active_hist >= 0:
-            # update existing slot
-            self._history[self._active_hist]    = list(self.messages)
-            self._hist_names[self._active_hist] = title
+            # update messages in place, keep any custom/renamed title
+            self._history[self._active_hist] = list(self.messages)
         else:
             self._history.insert(0, list(self.messages))
             self._hist_names.insert(0, title)
             self._history    = self._history[:30]
             self._hist_names = self._hist_names[:30]
             self._active_hist = 0
+        self._rebuild_hist_rows()
+        self._persist_history()
+
+    def _persist_history(self):
+        """Save conversations to disk so they survive restarts."""
+        self.config["conversations"] = [
+            {"name": n, "messages": m}
+            for n, m in zip(self._hist_names, self._history)
+        ]
+        save_config(self.config)
+
+    def _load_history(self):
+        """Load saved conversations from disk into the sidebar."""
+        saved = self.config.get("conversations", [])
+        self._history    = [c.get("messages", []) for c in saved]
+        self._hist_names = [c.get("name", "(untitled)") for c in saved]
+        self._active_hist = -1
         self._rebuild_hist_rows()
 
     def _rebuild_hist_rows(self):
@@ -735,17 +752,7 @@ class OllamaChatApp:
             row.pack(fill=tk.X, pady=1)
             self._hist_rows.append(row)
 
-            name_btn = tk.Button(
-                row, text=name,
-                bg=row_bg, fg=self.TEXT_FG,
-                activebackground="#bfdbfe",
-                relief=tk.FLAT, bd=0,
-                font=("Segoe UI", 9), anchor="w",
-                padx=10, pady=5,
-                command=lambda i=idx: self._on_hist_select(i),
-            )
-            name_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
-
+            # dots packed FIRST so it always stays visible at the right edge
             dots_btn = tk.Button(
                 row, text="⋯",
                 bg=row_bg, fg=self.MUTED_FG,
@@ -755,6 +762,19 @@ class OllamaChatApp:
                 command=lambda i=idx, b=row: self._hist_menu(i, b),
             )
             dots_btn.pack(side=tk.RIGHT)
+
+            # truncate display name so it never pushes the dots off-screen
+            disp = name if len(name) <= 22 else name[:21] + "…"
+            name_btn = tk.Button(
+                row, text=disp,
+                bg=row_bg, fg=self.TEXT_FG,
+                activebackground="#bfdbfe",
+                relief=tk.FLAT, bd=0,
+                font=("Segoe UI", 9), anchor="w",
+                padx=10, pady=5, width=1,   # width=1 lets fill/expand shrink it
+                command=lambda i=idx: self._on_hist_select(i),
+            )
+            name_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
             # hover highlight
             for w in (row, name_btn, dots_btn):
@@ -803,6 +823,7 @@ class OllamaChatApp:
             if n:
                 self._hist_names[idx] = n
                 self._rebuild_hist_rows()
+                self._persist_history()
                 if idx == self._active_hist:
                     self.ws_label.configure(text=n)
             dlg.destroy()
@@ -822,6 +843,7 @@ class OllamaChatApp:
         elif self._active_hist > idx:
             self._active_hist -= 1
         self._rebuild_hist_rows()
+        self._persist_history()
 
     def _on_hist_select(self, idx):
         if self.streaming:

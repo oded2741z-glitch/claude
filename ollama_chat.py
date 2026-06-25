@@ -381,21 +381,44 @@ class OllamaChatApp:
 
         tk.Frame(sidebar, bg=self.BORDER, height=1).pack(fill=tk.X, padx=8, pady=4)
 
-        # Conversation history label
+        # Conversation history — scrollable frame of custom rows
         tk.Label(
             sidebar, text="Recent chats", bg=self.SIDEBAR, fg=self.MUTED_FG,
             font=("Segoe UI", 8), anchor="w",
         ).pack(fill=tk.X, padx=14, pady=(4, 2))
 
-        # History listbox
-        self._hist_lb = tk.Listbox(
-            sidebar, bg=self.SIDEBAR, fg=self.TEXT_FG,
-            selectbackground="#dbeafe", selectforeground=self.TEXT_FG,
-            relief=tk.FLAT, bd=0, highlightthickness=0,
-            font=("Segoe UI", 9), activestyle="none",
+        hist_outer = tk.Frame(sidebar, bg=self.SIDEBAR)
+        hist_outer.pack(fill=tk.BOTH, expand=True, padx=4)
+
+        hist_canvas = tk.Canvas(
+            hist_outer, bg=self.SIDEBAR, highlightthickness=0, bd=0,
         )
-        self._hist_lb.pack(fill=tk.BOTH, expand=True, padx=4)
-        self._hist_lb.bind("<<ListboxSelect>>", self._on_hist_select)
+        hist_scroll = ttk.Scrollbar(hist_outer, orient=tk.VERTICAL,
+                                    command=hist_canvas.yview)
+        hist_canvas.configure(yscrollcommand=hist_scroll.set)
+        hist_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        hist_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._hist_inner = tk.Frame(hist_canvas, bg=self.SIDEBAR)
+        self._hist_canvas_win = hist_canvas.create_window(
+            (0, 0), window=self._hist_inner, anchor="nw",
+        )
+
+        def _on_inner_resize(e):
+            hist_canvas.configure(scrollregion=hist_canvas.bbox("all"))
+            hist_canvas.itemconfig(self._hist_canvas_win, width=e.width)
+
+        self._hist_inner.bind("<Configure>", _on_inner_resize)
+        hist_canvas.bind("<Configure>",
+            lambda e: hist_canvas.itemconfig(
+                self._hist_canvas_win, width=e.width))
+
+        # mousewheel scroll inside the history area
+        def _on_wheel(e):
+            hist_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        hist_canvas.bind_all("<MouseWheel>", _on_wheel)
+
+        self._hist_rows = []   # list of tk.Frame widgets (one per conversation)
 
         # Bottom sidebar buttons: Settings
         tk.Frame(sidebar, bg=self.BORDER, height=1).pack(fill=tk.X, padx=8, pady=4)
@@ -411,8 +434,9 @@ class OllamaChatApp:
             ).pack(fill=tk.X, padx=8, pady=(0, 4))
 
         # conversation history storage
-        self._history = []       # list of saved message lists
-        self._hist_names = []    # matching display names
+        self._history      = []   # list of saved message lists
+        self._hist_names   = []   # matching display names
+        self._active_hist  = -1   # index of currently displayed conversation (-1 = new)
 
         # ── Right pane (top-bar + chat + input) ───────────────────────────── #
         right = tk.Frame(self.root, bg=self.BG)
@@ -664,63 +688,167 @@ class OllamaChatApp:
     def clear_chat(self):
         if self.streaming:
             return
-        # save current conversation to history if it has content
         if self.messages:
             self._save_to_history()
         self.messages.clear()
+        self._active_hist = -1
         self.chat.configure(state=tk.NORMAL)
         self.chat.delete("1.0", tk.END)
         self.chat.configure(state=tk.DISABLED)
         self.ws_label.configure(text="New conversation")
         self.set_status("New conversation")
+        self._rebuild_hist_rows()
 
     def _save_to_history(self):
-        """Snapshot the current conversation into the sidebar history."""
-        # title = first user message, truncated
+        """Snapshot current conversation. If already editing one, update in place."""
         first_user = next(
             (m["content"] for m in self.messages if m["role"] == "user"), None
         )
         if not first_user:
             return
-        title = first_user[:40].replace("\n", " ")
-        if len(first_user) > 40:
+        title = first_user[:38].replace("\n", " ")
+        if len(first_user) > 38:
             title += "…"
-        self._history.insert(0, list(self.messages))
-        self._hist_names.insert(0, title)
-        # keep last 30
-        self._history    = self._history[:30]
-        self._hist_names = self._hist_names[:30]
-        self._refresh_hist_lb()
 
-    def _refresh_hist_lb(self):
-        self._hist_lb.delete(0, tk.END)
-        for name in self._hist_names:
-            self._hist_lb.insert(tk.END, f"  {name}")
+        if self._active_hist >= 0:
+            # update existing slot
+            self._history[self._active_hist]    = list(self.messages)
+            self._hist_names[self._active_hist] = title
+        else:
+            self._history.insert(0, list(self.messages))
+            self._hist_names.insert(0, title)
+            self._history    = self._history[:30]
+            self._hist_names = self._hist_names[:30]
+            self._active_hist = 0
+        self._rebuild_hist_rows()
 
-    def _on_hist_select(self, event):
-        sel = self._hist_lb.curselection()
-        if not sel or self.streaming:
+    def _rebuild_hist_rows(self):
+        """Rebuild the scrollable sidebar rows from scratch."""
+        for w in self._hist_rows:
+            w.destroy()
+        self._hist_rows.clear()
+
+        for idx, name in enumerate(self._hist_names):
+            active = (idx == self._active_hist)
+            row_bg = "#dbeafe" if active else self.SIDEBAR
+            row = tk.Frame(self._hist_inner, bg=row_bg, cursor="hand2")
+            row.pack(fill=tk.X, pady=1)
+            self._hist_rows.append(row)
+
+            name_btn = tk.Button(
+                row, text=name,
+                bg=row_bg, fg=self.TEXT_FG,
+                activebackground="#bfdbfe",
+                relief=tk.FLAT, bd=0,
+                font=("Segoe UI", 9), anchor="w",
+                padx=10, pady=5,
+                command=lambda i=idx: self._on_hist_select(i),
+            )
+            name_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            dots_btn = tk.Button(
+                row, text="⋯",
+                bg=row_bg, fg=self.MUTED_FG,
+                activebackground="#bfdbfe",
+                relief=tk.FLAT, bd=0,
+                font=("Segoe UI", 11), padx=6, pady=4,
+                command=lambda i=idx, b=row: self._hist_menu(i, b),
+            )
+            dots_btn.pack(side=tk.RIGHT)
+
+            # hover highlight
+            for w in (row, name_btn, dots_btn):
+                w.bind("<Enter>", lambda e, r=row, nb=name_btn, db=dots_btn:
+                    [x.configure(bg="#dbeafe") for x in (r, nb, db)])
+                w.bind("<Leave>", lambda e, r=row, nb=name_btn, db=dots_btn,
+                       i=idx: [x.configure(
+                           bg="#dbeafe" if i == self._active_hist else self.SIDEBAR
+                       ) for x in (r, nb, db)])
+
+    def _hist_menu(self, idx, anchor_widget):
+        """Show rename / delete popup for conversation at idx."""
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Rename…",
+                         command=lambda: self._hist_rename(idx))
+        menu.add_command(label="Delete",
+                         command=lambda: self._hist_delete(idx))
+        x = anchor_widget.winfo_rootx()
+        y = anchor_widget.winfo_rooty() + anchor_widget.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _hist_rename(self, idx):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Rename conversation")
+        dlg.configure(bg=self.BG)
+        dlg.geometry("360x120")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Label(dlg, text="New name:", bg=self.BG, fg=self.TEXT_FG,
+                 font=("Segoe UI", 10)).pack(anchor="w", padx=14, pady=(14, 4))
+        var = tk.StringVar(value=self._hist_names[idx])
+        ent = tk.Entry(dlg, textvariable=var, font=("Segoe UI", 10),
+                       bg=self.INPUT_BG, fg=self.TEXT_FG,
+                       relief=tk.SOLID, borderwidth=1)
+        ent.pack(fill=tk.X, padx=14)
+        ent.select_range(0, tk.END)
+        ent.focus_set()
+        bar = tk.Frame(dlg, bg=self.BG)
+        bar.pack(fill=tk.X, padx=14, pady=10)
+
+        def ok():
+            n = var.get().strip()
+            if n:
+                self._hist_names[idx] = n
+                self._rebuild_hist_rows()
+                if idx == self._active_hist:
+                    self.ws_label.configure(text=n)
+            dlg.destroy()
+
+        ttk.Button(bar, text="Save", command=ok).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8))
+        ent.bind("<Return>", lambda e: ok())
+        dlg.wait_window()
+
+    def _hist_delete(self, idx):
+        del self._history[idx]
+        del self._hist_names[idx]
+        if self._active_hist == idx:
+            self._active_hist = -1
+            self.ws_label.configure(text="New conversation")
+        elif self._active_hist > idx:
+            self._active_hist -= 1
+        self._rebuild_hist_rows()
+
+    def _on_hist_select(self, idx):
+        if self.streaming:
             return
-        idx = sel[0]
         if idx >= len(self._history):
             return
+        # auto-save current unsaved work before switching
+        if self.messages and self._active_hist == -1:
+            self._save_to_history()
+        self._active_hist = idx
         self.messages = list(self._history[idx])
         self.chat.configure(state=tk.NORMAL)
         self.chat.delete("1.0", tk.END)
         self.chat.configure(state=tk.DISABLED)
-        # re-render the saved messages
         for m in self.messages:
             if m["role"] == "user":
                 self._append("You\n", "user")
                 self._append(m["content"] + "\n", "user_body")
             elif m["role"] == "assistant":
                 self._append("Assistant\n", "bot")
-                self._insert_markdown(m["content"])
                 self.chat.configure(state=tk.NORMAL)
+                self._insert_markdown(m["content"])
                 self.chat.insert(tk.END, "\n")
                 self.chat.configure(state=tk.DISABLED)
             self._append("\n", "spacer")
         self.ws_label.configure(text=self._hist_names[idx])
+        self._rebuild_hist_rows()   # update highlight
 
     # ----- settings: persistence & prompt building ------------------------ #
     def _persist(self):
@@ -1395,6 +1523,7 @@ class OllamaChatApp:
         
         self.set_status("Ready" if not error else "Finished with error")
         if not error:
+            self._save_to_history()   # update sidebar after each reply
             self._maybe_auto_update()
             if self.tts_auto and self._bot_reply.strip():
                 self._speak(self._bot_reply)

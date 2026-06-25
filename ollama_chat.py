@@ -1235,6 +1235,15 @@ class OllamaChatApp:
         )
         header = tk.Frame(container, bg="#eaeef2")
         header.pack(fill=tk.X)
+
+        # collapse / expand toggle
+        toggle_btn = tk.Button(
+            header, text="▼", relief=tk.FLAT, bg="#eaeef2", fg="#57606a",
+            activebackground="#dfe3e8", font=("Segoe UI", 8, "bold"),
+            cursor="hand2", bd=0, padx=4,
+        )
+        toggle_btn.pack(side=tk.LEFT, padx=(6, 0), pady=1)
+
         tk.Label(
             header, text=(lang or "code"), bg="#eaeef2", fg="#57606a",
             font=("Segoe UI", 8, "bold"),
@@ -1252,12 +1261,91 @@ class OllamaChatApp:
             width=width, height=height,
         )
         body.insert("1.0", code)
+        self._highlight_code(body, code, (lang or "").lower())
         body.configure(state=tk.DISABLED)
         body.pack(fill=tk.BOTH, expand=True)
+
+        # wire up collapse/expand
+        state = {"open": True}
+
+        def toggle():
+            if state["open"]:
+                body.pack_forget()
+                toggle_btn.configure(text="▶")
+                state["open"] = False
+            else:
+                body.pack(fill=tk.BOTH, expand=True)
+                toggle_btn.configure(text="▼")
+                state["open"] = True
+
+        toggle_btn.configure(command=toggle)
 
         self.chat.insert(tk.END, "\n")
         self.chat.window_create(tk.END, window=container, padx=6, pady=4)
         self.chat.insert(tk.END, "\n")
+
+    # GitHub-light-ish syntax palette
+    _SYNTAX_COLORS = {
+        "keyword": "#cf222e",   # red
+        "string": "#0a3069",    # dark blue
+        "comment": "#6e7781",   # gray
+        "number": "#0550ae",    # blue
+        "function": "#8250df",  # purple
+        "builtin": "#0550ae",   # blue
+    }
+
+    _KEYWORDS = {
+        "def", "class", "return", "if", "elif", "else", "for", "while", "in",
+        "import", "from", "as", "try", "except", "finally", "with", "lambda",
+        "yield", "pass", "break", "continue", "and", "or", "not", "is", "None",
+        "True", "False", "global", "nonlocal", "raise", "assert", "del", "async",
+        "await", "function", "const", "let", "var", "new", "this", "typeof",
+        "instanceof", "void", "public", "private", "protected", "static", "final",
+        "int", "float", "double", "char", "bool", "boolean", "string", "str",
+        "switch", "case", "default", "do", "throw", "catch", "extends",
+        "implements", "interface", "package", "struct", "enum", "func", "type",
+        "fn", "let", "mut", "use", "match", "self", "super", "export", "default",
+    }
+
+    def _highlight_code(self, widget, code, lang):
+        """Apply lightweight regex-based syntax highlighting to a Text widget."""
+        for tag, color in self._SYNTAX_COLORS.items():
+            widget.tag_configure(tag, foreground=color)
+
+        # comment styles by language
+        if lang in ("py", "python", "rb", "ruby", "sh", "bash", "yaml", "yml",
+                    "toml", "ini", "r", "perl", "pl"):
+            line_comment = "#"
+        else:
+            line_comment = "//"
+
+        def add_tags(pattern, tag, flags=0):
+            for m in re.finditer(pattern, code, flags):
+                start = f"1.0+{m.start()}c"
+                end = f"1.0+{m.end()}c"
+                widget.tag_add(tag, start, end)
+
+        # strings (single, double, backtick) - tag first so keywords inside skip
+        add_tags(r"(\"[^\"\\\n]*(?:\\.[^\"\\\n]*)*\")", "string")
+        add_tags(r"('[^'\\\n]*(?:\\.[^'\\\n]*)*')", "string")
+        add_tags(r"(`[^`\\]*(?:\\.[^`\\]*)*`)", "string")
+        # numbers
+        add_tags(r"\b\d+\.?\d*\b", "number")
+        # function names: word followed by (
+        add_tags(r"\b([A-Za-z_]\w*)\s*(?=\()", "function")
+        # keywords
+        for kw in self._KEYWORDS:
+            add_tags(r"\b" + re.escape(kw) + r"\b", "keyword")
+        # comments last so they win over everything on the line
+        add_tags(re.escape(line_comment) + r"[^\n]*", "comment")
+        add_tags(r"/\*.*?\*/", "comment", re.DOTALL)
+
+        # priority: comments/strings should override keywords & numbers
+        widget.tag_raise("function")
+        widget.tag_raise("number")
+        widget.tag_raise("keyword")
+        widget.tag_raise("string")
+        widget.tag_raise("comment")
 
     # ----- copy helpers --------------------------------------------------- #
     def _copy_text(self, text, status="Copied"):

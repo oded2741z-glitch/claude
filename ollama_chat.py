@@ -536,9 +536,17 @@ class OllamaChatApp:
         self.stop_btn  = self._send_canvas   # same widget
 
     def _draw_circle(self, color):
-        """Draw a smooth-ish filled circle (1px lighter ring softens the edge)."""
+        """Draw a filled rounded square (smooth spline corners)."""
         c = self._send_canvas
-        c.create_oval(2, 2, 32, 32, fill=color, outline=color, tags="circle")
+        x0, y0, x1, y1, r = 3, 3, 31, 31, 9
+        pts = [
+            x0 + r, y0,  x1 - r, y0,  x1, y0,  x1, y0 + r,
+            x1, y1 - r,  x1, y1,  x1 - r, y1,  x0 + r, y1,
+            x0, y1,  x0, y1 - r,  x0, y0 + r,  x0, y0,
+        ]
+        c.create_polygon(
+            pts, fill=color, outline=color, smooth=True, tags="circle",
+        )
 
     def _draw_send_btn(self, active=True):
         c = self._send_canvas

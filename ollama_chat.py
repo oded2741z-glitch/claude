@@ -293,7 +293,13 @@ class OllamaChatApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Ollama Chat")
+        self.root.title("AI Chat")
+        # Replace the default Tk feather icon with a blank 1x1 transparent image
+        try:
+            self._blank_icon = tk.PhotoImage(width=1, height=1)
+            self.root.iconphoto(True, self._blank_icon)
+        except tk.TclError:
+            pass
         self.root.geometry("1100x780")
         self.root.configure(bg=self.BG)
         self.root.minsize(560, 460)

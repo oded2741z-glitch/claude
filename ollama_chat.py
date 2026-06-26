@@ -577,12 +577,12 @@ class OllamaChatApp:
         toolbar = tk.Frame(card, bg=self.INPUT_BG)
         toolbar.pack(fill=tk.X, padx=10, pady=(0, 8))
 
-        # Mic button — simple text button (like ⚙ Settings)
+        # Mic button — simple flat text button (like ⚙ Settings)
         self._mic_recording = False
         self._mic_anim_id = None
-        self._mic_canvas = None  # not used but keeps _draw_mic_icon guard happy
+        self._mic_canvas = None
         self.mic_btn = tk.Button(
-            toolbar, text="⏺",
+            toolbar, text="🎤",
             command=self._start_stt,
             bg=self.INPUT_BG, fg=self.MUTED_FG,
             activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
@@ -593,26 +593,17 @@ class OllamaChatApp:
         )
         self.mic_btn.pack(side=tk.LEFT, padx=(2, 0))
 
-        # Send / Stop button (circular) — packed FIRST so it sits at far right
-        self._send_canvas = tk.Canvas(
-            toolbar, width=34, height=34,
-            bg=self.INPUT_BG, highlightthickness=0,
+        # Send / Stop button — simple flat text button (like ⚙ Settings)
+        self._send_canvas = None  # legacy guard
+        self.send_text_btn = tk.Button(
+            toolbar, text="➤",
+            command=self._on_send_click,
+            bg=self.INPUT_BG, fg=self.TEXT_FG,
+            activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
+            relief=tk.FLAT, bd=0, font=("Segoe UI", 15),
+            padx=8, pady=4, cursor="hand2",
         )
-        self._send_canvas.pack(side=tk.RIGHT, padx=(10, 2))
-        self._draw_send_btn(active=True)
-        self._send_canvas.bind("<Button-1>", lambda e: self._on_send_click())
-        self._send_canvas.configure(cursor="hand2")
-
-        def _hover(_):
-            col = "#ef4444" if self.streaming else "#404040"
-            self._send_canvas.itemconfig("circle", fill=col, outline=col)
-
-        def _leave(_):
-            col = "#ef4444" if self.streaming else self.SEND_BTN
-            self._send_canvas.itemconfig("circle", fill=col, outline=col)
-
-        self._send_canvas.bind("<Enter>", _hover)
-        self._send_canvas.bind("<Leave>", _leave)
+        self.send_text_btn.pack(side=tk.RIGHT, padx=(10, 2))
 
         # Model selector + refresh (to the LEFT of the send button)
         self.model_var = tk.StringVar()
@@ -636,9 +627,9 @@ class OllamaChatApp:
         )
         self.model_combo.pack(side=tk.RIGHT)
 
-        # stop functionality wired through same canvas button
-        self.send_btn  = self._send_canvas   # keep API compat (state changes below)
-        self.stop_btn  = self._send_canvas   # same widget
+        # stop functionality wired through same text button
+        self.send_btn  = self.send_text_btn   # keep API compat
+        self.stop_btn  = self.send_text_btn   # same widget
 
     def _draw_circle(self, color):
         """Draw a filled rounded square (smooth spline corners)."""
@@ -718,10 +709,10 @@ class OllamaChatApp:
         """Toggle mic button colour between idle and recording."""
         self._mic_recording = recording
         if recording:
-            self.mic_btn.configure(fg="#ef4444", text="⏺")
+            self.mic_btn.configure(fg="#ef4444", text="🎤")
             self._animate_mic()
         else:
-            self.mic_btn.configure(fg=self.MUTED_FG, text="⏺")
+            self.mic_btn.configure(fg=self.MUTED_FG, text="🎤")
             if self._mic_anim_id:
                 self.root.after_cancel(self._mic_anim_id)
                 self._mic_anim_id = None
@@ -742,17 +733,11 @@ class OllamaChatApp:
             self.send()
 
     def _set_busy(self, busy: bool):
-        """Toggle the send/stop canvas button appearance."""
-        c = self._send_canvas
-        c.delete("all")
+        """Toggle the send/stop text button appearance."""
         if busy:
-            self._draw_circle("#ef4444")
-            # rounded stop square
-            c.create_rectangle(
-                12, 12, 22, 22, fill="white", outline="white", tags="arrow",
-            )
+            self.send_text_btn.configure(text="■", fg="#ef4444")
         else:
-            self._draw_send_btn(active=True)
+            self.send_text_btn.configure(text="➤", fg=self.TEXT_FG)
 
     # ── Thinking animation ────────────────────────────────────────────────── #
     _THINK_FRAMES = ["●  ○  ○", "●  ●  ○", "●  ●  ●", "○  ●  ●", "○  ○  ●", "○  ○  ○"]

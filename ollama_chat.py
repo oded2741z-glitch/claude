@@ -579,9 +579,25 @@ class OllamaChatApp:
         self.entry.bind("<FocusIn>",  self._hide_placeholder)
         self.entry.bind("<FocusOut>", self._show_placeholder)
 
+        # Attachment chips area (shows above the toolbar when files are added)
+        self._attach_bar = tk.Frame(card, bg=self.INPUT_BG)
+        self._attach_bar.pack(fill=tk.X, padx=12, pady=(0, 0))
+
         # Bottom toolbar inside the card
         toolbar = tk.Frame(card, bg=self.INPUT_BG)
         toolbar.pack(fill=tk.X, padx=10, pady=(0, 8))
+
+        # Attach (+) button — add files / screenshots
+        self._attachments = []   # list of {"name", "kind": "image"|"text", "data"|"text"}
+        self.attach_btn = tk.Button(
+            toolbar, text="+",
+            command=self._attach_file,
+            bg=self.INPUT_BG, fg=self.MUTED_FG,
+            activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
+            relief=tk.FLAT, bd=0, font=("Segoe UI", 16),
+            padx=6, pady=2, cursor="hand2",
+        )
+        self.attach_btn.pack(side=tk.LEFT, padx=(2, 0))
 
         # Mic button — simple flat text button (like ⚙ Settings)
         self._mic_recording = False
@@ -731,6 +747,69 @@ class OllamaChatApp:
         next_col = self.MUTED_FG if current == "#ef4444" else "#ef4444"
         self.mic_btn.configure(fg=next_col)
         self._mic_anim_id = self.root.after(500, self._animate_mic)
+
+    # ── attachments (files / screenshots) ─────────────────────────────────── #
+    IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
+
+    def _attach_file(self):
+        """Open a file dialog and attach one or more files (images or text)."""
+        import base64
+        paths = filedialog.askopenfilenames(
+            title="צרף קבצים",
+            filetypes=[
+                ("All supported", "*.png *.jpg *.jpeg *.gif *.bmp *.webp "
+                                  "*.txt *.py *.js *.json *.md *.csv *.html "
+                                  "*.css *.c *.cpp *.java *.cs *.go *.rs"),
+                ("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
+                ("Text/code", "*.txt *.py *.js *.json *.md *.csv *.html *.css"),
+                ("All files", "*.*"),
+            ],
+        )
+        for path in paths:
+            name = os.path.basename(path)
+            ext = os.path.splitext(name)[1].lower()
+            try:
+                if ext in self.IMAGE_EXTS:
+                    with open(path, "rb") as fh:
+                        b64 = base64.b64encode(fh.read()).decode("ascii")
+                    self._attachments.append(
+                        {"name": name, "kind": "image", "data": b64})
+                else:
+                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        text = fh.read()
+                    if len(text) > 100_000:
+                        text = text[:100_000] + "\n...[truncated]"
+                    self._attachments.append(
+                        {"name": name, "kind": "text", "text": text})
+            except OSError as exc:
+                messagebox.showerror("שגיאה", f"לא ניתן לקרוא את {name}:\n{exc}")
+        self._render_attachments()
+
+    def _render_attachments(self):
+        """Redraw the chip row showing currently attached files."""
+        for w in self._attach_bar.winfo_children():
+            w.destroy()
+        if not self._attachments:
+            self._attach_bar.configure(pady=0)
+            return
+        self._attach_bar.configure(pady=4)
+        for i, att in enumerate(self._attachments):
+            icon = "🖼" if att["kind"] == "image" else "📄"
+            chip = tk.Frame(self._attach_bar, bg="#eef2ff",
+                            highlightthickness=1, highlightbackground="#c7d2fe")
+            chip.pack(side=tk.LEFT, padx=(0, 6), pady=2)
+            tk.Label(chip, text=f"{icon} {att['name']}", bg="#eef2ff",
+                     fg=self.TEXT_FG, font=("Segoe UI", 8),
+                     padx=6, pady=2).pack(side=tk.LEFT)
+            tk.Button(chip, text="✕", command=lambda i=i: self._remove_attachment(i),
+                      bg="#eef2ff", fg=self.MUTED_FG, activebackground="#e0e7ff",
+                      relief=tk.FLAT, bd=0, font=("Segoe UI", 8),
+                      padx=4, cursor="hand2").pack(side=tk.LEFT)
+
+    def _remove_attachment(self, idx):
+        if 0 <= idx < len(self._attachments):
+            del self._attachments[idx]
+        self._render_attachments()
 
     def _on_send_click(self):
         if self.streaming:
@@ -1876,17 +1955,44 @@ class OllamaChatApp:
             messagebox.showwarning("No model", "Please select a model first.")
             return
         if self._placeholder_active:
-            return
-        text = self.entry.get("1.0", tk.END).strip()
-        if not text:
+            text = ""
+        else:
+            text = self.entry.get("1.0", tk.END).strip()
+        # allow sending if there is text OR at least one attachment
+        if not text and not self._attachments:
             return
 
         self.entry.delete("1.0", tk.END)
         self._placeholder_active = False
-        self.messages.append({"role": "user", "content": text})
+
+        # build the message content: user text + any attached text files
+        content = text
+        images = []
+        attach_summary = []
+        for att in self._attachments:
+            if att["kind"] == "image":
+                images.append(att["data"])
+                attach_summary.append(f"🖼 {att['name']}")
+            else:
+                content += (f"\n\n--- קובץ מצורף: {att['name']} ---\n"
+                            f"{att['text']}")
+                attach_summary.append(f"📄 {att['name']}")
+
+        user_msg = {"role": "user", "content": content or "(see attachment)"}
+        if images:
+            user_msg["images"] = images
+        self.messages.append(user_msg)
+
         self._append("You\n", "user")
-        self._append(text + "\n", "user_body")
+        if text:
+            self._append(text + "\n", "user_body")
+        if attach_summary:
+            self._append("  ".join(attach_summary) + "\n", "user_body")
         self._append("\n", "spacer")
+
+        # clear attachments now that they've been sent
+        self._attachments = []
+        self._render_attachments()
 
         if self.workspace:
             self._start_agent(model)

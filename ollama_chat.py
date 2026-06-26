@@ -1124,6 +1124,15 @@ class OllamaChatApp:
         dlg.wait_window()
 
     def _delete_group(self, gi, keep=True):
+        name = self._hist_groups[gi]["name"]
+        n = len(self._hist_groups[gi]["items"])
+        if keep:
+            msg = f"למחוק את הקבוצה '{name}'?\nהשיחות יישארו ברשימה."
+        else:
+            msg = (f"למחוק את הקבוצה '{name}' ואת {n} השיחות שבתוכה?\n"
+                   "פעולה זו אינה הפיכה.")
+        if not messagebox.askyesno("מחיקת קבוצה", msg):
+            return
         if not keep:
             for idx in reversed(sorted(self._hist_groups[gi]["items"])):
                 self._hist_delete_silent(idx)

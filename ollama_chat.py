@@ -758,13 +758,15 @@ class OllamaChatApp:
     _THINK_FRAMES = ["●  ○  ○", "●  ●  ○", "●  ●  ●", "○  ●  ●", "○  ○  ●", "○  ○  ○"]
 
     def _start_thinking_anim(self):
-        self._thinking_active = True
-        self._thinking_phase  = 0
+        self._thinking_active  = True
+        self._thinking_phase   = 0
         self._thinking_anim_id = None
+        self._thinking_line    = None
+        frame = self._THINK_FRAMES[0]
         self.chat.configure(state=tk.NORMAL)
-        self.chat.insert(tk.END, self._THINK_FRAMES[0], "thinking")
-        self.chat.mark_set("th_end", "end-1c")
-        self.chat.mark_set("th_start", f"th_end - {len(self._THINK_FRAMES[0])}c")
+        self.chat.insert(tk.END, frame, "thinking")
+        # record which line we're on (reliable: line number of last char)
+        self._thinking_line = int(self.chat.index("end-1c").split(".")[0])
         self.chat.configure(state=tk.DISABLED)
         self.chat.see(tk.END)
         self._thinking_anim_id = self.root.after(220, self._tick_thinking)
@@ -774,24 +776,29 @@ class OllamaChatApp:
             return
         self._thinking_phase = (self._thinking_phase + 1) % len(self._THINK_FRAMES)
         frame = self._THINK_FRAMES[self._thinking_phase]
+        ln = self._thinking_line
         self.chat.configure(state=tk.NORMAL)
         try:
-            self.chat.delete("th_start", "th_end")
-            self.chat.insert("th_start", frame, "thinking")
-            self.chat.mark_set("th_end", f"th_start + {len(frame)}c")
+            self.chat.delete(f"{ln}.0", f"{ln}.end")
+            self.chat.insert(f"{ln}.0", frame, "thinking")
         except tk.TclError:
-            pass
+            self._thinking_active = False
         self.chat.configure(state=tk.DISABLED)
-        self._thinking_anim_id = self.root.after(220, self._tick_thinking)
+        if self._thinking_active:
+            self._thinking_anim_id = self.root.after(220, self._tick_thinking)
 
     def _stop_thinking_anim(self):
         self._thinking_active = False
         if self._thinking_anim_id:
             self.root.after_cancel(self._thinking_anim_id)
             self._thinking_anim_id = None
+        ln = getattr(self, "_thinking_line", None)
+        if ln is None:
+            return
         self.chat.configure(state=tk.NORMAL)
         try:
-            self.chat.delete("th_start", "th_end")
+            # delete the whole line including the preceding newline
+            self.chat.delete(f"{ln}.0 - 1c", f"{ln}.end")
         except tk.TclError:
             pass
         self.chat.configure(state=tk.DISABLED)

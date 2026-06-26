@@ -703,12 +703,12 @@ class OllamaChatApp:
         self._provider_btn = tk.Button(
             model_frame, textvariable=self._provider_var,
             command=self._toggle_provider,
-            bg=self.INPUT_BG, fg=self.MUTED_FG,
-            activebackground="#f3f4f6",
-            relief=tk.FLAT, bd=0, font=("Segoe UI", 8),
-            padx=6, pady=2, cursor="hand2",
+            bg="#e0e7ff", fg="#3730a3",
+            activebackground="#c7d2fe", activeforeground="#3730a3",
+            relief=tk.FLAT, bd=0, font=("Segoe UI", 9, "bold"),
+            padx=8, pady=3, cursor="hand2",
         )
-        self._provider_btn.pack(side=tk.RIGHT, padx=(0, 6))
+        self._provider_btn.pack(side=tk.RIGHT, padx=(0, 8))
 
         # stop functionality wired through same text button
         self.send_btn  = self.send_text_btn   # keep API compat

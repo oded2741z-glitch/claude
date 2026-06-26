@@ -596,7 +596,7 @@ class OllamaChatApp:
         # Send / Stop button — simple flat text button (like ⚙ Settings)
         self._send_canvas = None  # legacy guard
         self.send_text_btn = tk.Button(
-            toolbar, text="➤",
+            toolbar, text="💬",
             command=self._on_send_click,
             bg=self.INPUT_BG, fg=self.TEXT_FG,
             activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
@@ -737,7 +737,7 @@ class OllamaChatApp:
         if busy:
             self.send_text_btn.configure(text="■", fg="#ef4444")
         else:
-            self.send_text_btn.configure(text="➤", fg=self.TEXT_FG)
+            self.send_text_btn.configure(text="💬", fg=self.TEXT_FG)
 
     # ── Thinking animation ────────────────────────────────────────────────── #
     _THINK_FRAMES = ["●  ○  ○", "●  ●  ○", "●  ●  ●", "○  ●  ●", "○  ○  ●", "○  ○  ○"]

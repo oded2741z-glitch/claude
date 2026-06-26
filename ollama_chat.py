@@ -665,28 +665,51 @@ class OllamaChatApp:
         )
 
     def _draw_mic_icon(self, recording=False):
-        """Draw a clean microphone icon on _mic_canvas. Red when recording."""
+        """Draw mic icon matching heroicons outline SVG (viewBox 0-24, scale to 34px)."""
         c = self._mic_canvas
         c.delete("all")
-        body_color   = "#ef4444" if recording else "#6b7280"
-        detail_color = "#ef4444" if recording else "#9ca3af"
+        col = "#ef4444" if recording else "#6b7280"
+        lw  = 1.6   # stroke width
 
-        # capsule body of the mic
-        c.create_arc(10, 5, 24, 19, start=0, extent=180, fill=body_color,
-                     outline=body_color, style=tk.CHORD)
-        c.create_rectangle(10, 12, 24, 22, fill=body_color, outline=body_color)
-        c.create_arc(10, 15, 24, 29, start=180, extent=180, fill=body_color,
-                     outline=body_color, style=tk.CHORD)
+        # Scale viewBox 24→28px inside the 34px canvas, centred
+        s  = 1.2
+        ox, oy = 3.2, 1.5
 
-        # stand arc
-        c.create_arc(7, 16, 27, 32, start=0, extent=-180,
-                     outline=detail_color, width=2, style=tk.ARC)
-        # stem line
-        c.create_line(17, 28, 17, 32, fill=detail_color, width=2,
-                      capstyle=tk.ROUND)
-        # base line
-        c.create_line(12, 32, 22, 32, fill=detail_color, width=2,
-                      capstyle=tk.ROUND)
+        def sx(x): return x * s + ox
+        def sy(y): return y * s + oy
+
+        # ── Capsule body ──────────────────────────────────────────────────── #
+        # Top semicircle: circle centred at (12,4.5) r=3, upper half
+        c.create_arc(sx(9), sy(1.5), sx(15), sy(7.5),
+                     start=0, extent=180,
+                     outline=col, width=lw, style=tk.ARC)
+        # Left vertical side
+        c.create_line(sx(9), sy(4.5), sx(9), sy(12.75),
+                      fill=col, width=lw)
+        # Right vertical side
+        c.create_line(sx(15), sy(4.5), sx(15), sy(12.75),
+                      fill=col, width=lw)
+        # Bottom semicircle: circle centred at (12,12.75) r=3, lower half
+        c.create_arc(sx(9), sy(9.75), sx(15), sy(15.75),
+                     start=0, extent=-180,
+                     outline=col, width=lw, style=tk.ARC)
+
+        # ── Stand arc ─────────────────────────────────────────────────────── #
+        # Full circle centred at (12,12.75) r=6; show bottom half
+        # + short upward arms at each end (v-1.5 in SVG)
+        c.create_arc(sx(6), sy(6.75), sx(18), sy(18.75),
+                     start=0, extent=-180,
+                     outline=col, width=lw, style=tk.ARC)
+        c.create_line(sx(18), sy(11.25), sx(18), sy(12.75),
+                      fill=col, width=lw)
+        c.create_line(sx(6),  sy(11.25), sx(6),  sy(12.75),
+                      fill=col, width=lw)
+
+        # ── Stem + base ───────────────────────────────────────────────────── #
+        c.create_line(sx(12), sy(18.75), sx(12), sy(22.5),
+                      fill=col, width=lw, capstyle=tk.ROUND)
+        c.create_line(sx(8.25), sy(22.5), sx(15.75), sy(22.5),
+                      fill=col, width=lw, capstyle=tk.ROUND)
 
     def _set_mic_recording(self, recording: bool):
         """Switch mic icon between idle and recording states."""

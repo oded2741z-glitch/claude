@@ -573,22 +573,21 @@ class OllamaChatApp:
         toolbar = tk.Frame(card, bg=self.INPUT_BG)
         toolbar.pack(fill=tk.X, padx=10, pady=(0, 8))
 
-        # Mic button — canvas-drawn icon (left side of toolbar)
-        self._mic_canvas = tk.Canvas(
-            toolbar, width=34, height=34,
-            bg=self.INPUT_BG, highlightthickness=0,
-        )
-        self._mic_canvas.pack(side=tk.LEFT, padx=(2, 0))
+        # Mic button — simple text button (like ⚙ Settings)
         self._mic_recording = False
         self._mic_anim_id = None
-        self._draw_mic_icon(recording=False)
-        if _STT_AVAILABLE:
-            self._mic_canvas.configure(cursor="hand2")
-            self._mic_canvas.bind("<Button-1>", lambda e: self._start_stt())
-        else:
-            self._mic_canvas.configure(cursor="arrow")
-        # keep .mic_btn alias so existing re-enable calls work
-        self.mic_btn = self._mic_canvas
+        self._mic_canvas = None  # not used but keeps _draw_mic_icon guard happy
+        self.mic_btn = tk.Button(
+            toolbar, text="🎙",
+            command=self._start_stt,
+            bg=self.INPUT_BG, fg=self.MUTED_FG,
+            activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
+            relief=tk.FLAT, bd=0, font=("Segoe UI", 13),
+            padx=6, pady=4,
+            cursor="hand2" if _STT_AVAILABLE else "arrow",
+            state=tk.NORMAL if _STT_AVAILABLE else tk.DISABLED,
+        )
+        self.mic_btn.pack(side=tk.LEFT, padx=(2, 0))
 
         # Send / Stop button (circular) — packed FIRST so it sits at far right
         self._send_canvas = tk.Canvas(
@@ -712,30 +711,25 @@ class OllamaChatApp:
                       fill=col, width=lw, capstyle=tk.ROUND)
 
     def _set_mic_recording(self, recording: bool):
-        """Switch mic icon between idle and recording states."""
+        """Toggle mic button colour between idle and recording."""
         self._mic_recording = recording
-        self._draw_mic_icon(recording=recording)
         if recording:
+            self.mic_btn.configure(fg="#ef4444", text="🎙")
             self._animate_mic()
         else:
+            self.mic_btn.configure(fg=self.MUTED_FG, text="🎙")
             if self._mic_anim_id:
                 self.root.after_cancel(self._mic_anim_id)
                 self._mic_anim_id = None
 
     def _animate_mic(self):
-        """Pulse the mic icon while recording."""
+        """Blink the mic button red while recording."""
         if not self._mic_recording:
             return
-        self._draw_mic_icon(recording=True)
-        # draw a pulsing ring
-        phase = (getattr(self, "_mic_phase", 0) + 1) % 8
-        self._mic_phase = phase
-        r = 4 + phase
-        self._mic_canvas.create_oval(
-            17 - r, 17 - r, 17 + r, 17 + r,
-            outline="#fca5a5", width=1,
-        )
-        self._mic_anim_id = self.root.after(180, self._animate_mic)
+        current = self.mic_btn.cget("fg")
+        next_col = self.MUTED_FG if current == "#ef4444" else "#ef4444"
+        self.mic_btn.configure(fg=next_col)
+        self._mic_anim_id = self.root.after(500, self._animate_mic)
 
     def _on_send_click(self):
         if self.streaming:

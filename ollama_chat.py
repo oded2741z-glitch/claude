@@ -750,6 +750,14 @@ class OllamaChatApp:
 
     # ── attachments (files / screenshots) ─────────────────────────────────── #
     IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
+    VISION_HINTS = ("llava", "bakllava", "gemma3", "llama3.2-vision",
+                    "llama3.2v", "moondream", "vision", "minicpm-v",
+                    "qwen2-vl", "qwen2.5vl", "pixtral", "granite3.2-vision")
+
+    def _model_supports_vision(self, model):
+        """Heuristic: does this model name look like a vision-capable model?"""
+        m = (model or "").lower()
+        return any(h in m for h in self.VISION_HINTS)
 
     def _attach_file(self):
         """Open a file dialog and attach one or more files (images or text)."""
@@ -1961,6 +1969,17 @@ class OllamaChatApp:
         # allow sending if there is text OR at least one attachment
         if not text and not self._attachments:
             return
+
+        # warn if attaching images to a model that likely can't see them
+        has_images = any(a["kind"] == "image" for a in self._attachments)
+        if has_images and not self._model_supports_vision(model):
+            if not messagebox.askyesno(
+                "המודל לא תומך בתמונות",
+                f"המודל '{model}' כנראה לא יודע לקרוא תמונות.\n"
+                "מומלץ לבחור מודל ראייה (gemma3, llava, llama3.2-vision).\n\n"
+                "לשלוח בכל זאת?",
+            ):
+                return
 
         self.entry.delete("1.0", tk.END)
         self._placeholder_active = False

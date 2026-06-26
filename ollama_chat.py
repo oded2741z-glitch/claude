@@ -533,6 +533,10 @@ class OllamaChatApp:
             "tool", foreground="#b45309", font=("Consolas", 9),
             spacing1=2,
         )
+        self.chat.tag_configure(
+            "thinking", foreground="#a0a0a0",
+            font=("Segoe UI", 13), spacing1=6, spacing3=6,
+        )
 
         self._add_context_menu(self.chat)
         self.chat.bind("<Control-c>", lambda e: self._copy_selection(self.chat))
@@ -749,6 +753,48 @@ class OllamaChatApp:
             )
         else:
             self._draw_send_btn(active=True)
+
+    # ── Thinking animation ────────────────────────────────────────────────── #
+    _THINK_FRAMES = ["●  ○  ○", "●  ●  ○", "●  ●  ●", "○  ●  ●", "○  ○  ●", "○  ○  ○"]
+
+    def _start_thinking_anim(self):
+        self._thinking_active = True
+        self._thinking_phase  = 0
+        self._thinking_anim_id = None
+        self.chat.configure(state=tk.NORMAL)
+        self.chat.insert(tk.END, self._THINK_FRAMES[0], "thinking")
+        self.chat.mark_set("th_end", "end-1c")
+        self.chat.mark_set("th_start", f"th_end - {len(self._THINK_FRAMES[0])}c")
+        self.chat.configure(state=tk.DISABLED)
+        self.chat.see(tk.END)
+        self._thinking_anim_id = self.root.after(220, self._tick_thinking)
+
+    def _tick_thinking(self):
+        if not self._thinking_active:
+            return
+        self._thinking_phase = (self._thinking_phase + 1) % len(self._THINK_FRAMES)
+        frame = self._THINK_FRAMES[self._thinking_phase]
+        self.chat.configure(state=tk.NORMAL)
+        try:
+            self.chat.delete("th_start", "th_end")
+            self.chat.insert("th_start", frame, "thinking")
+            self.chat.mark_set("th_end", f"th_start + {len(frame)}c")
+        except tk.TclError:
+            pass
+        self.chat.configure(state=tk.DISABLED)
+        self._thinking_anim_id = self.root.after(220, self._tick_thinking)
+
+    def _stop_thinking_anim(self):
+        self._thinking_active = False
+        if self._thinking_anim_id:
+            self.root.after_cancel(self._thinking_anim_id)
+            self._thinking_anim_id = None
+        self.chat.configure(state=tk.NORMAL)
+        try:
+            self.chat.delete("th_start", "th_end")
+        except tk.TclError:
+            pass
+        self.chat.configure(state=tk.DISABLED)
 
     def _show_placeholder(self, event=None):
         if not self.entry.get("1.0", "end-1c"):
@@ -1850,9 +1896,10 @@ class OllamaChatApp:
         self.streaming = True
         self.stop_event.clear()
         self._set_busy(True)
-        
         self.set_status("Generating...")
         self._bot_reply = ""
+        self._got_first_chunk = False
+        self._start_thinking_anim()
 
         outgoing = list(self.messages)
         system = self.build_system_prompt()
@@ -1890,6 +1937,9 @@ class OllamaChatApp:
                         "Make sure Ollama is installed and running.",
                     )
                 elif kind == "chunk":
+                    if not self._got_first_chunk:
+                        self._stop_thinking_anim()
+                        self._got_first_chunk = True
                     self._bot_reply += payload
                     self._append(payload, "body")
                 elif kind == "done":
@@ -1961,6 +2011,7 @@ class OllamaChatApp:
         self.root.after(40, self._poll_queue)
 
     def _finish_reply(self, error=False):
+        self._stop_thinking_anim()   # no-op if already stopped by first chunk
         if not error:
             self._render_reply(self._bot_reply)
         if self._bot_reply.strip():

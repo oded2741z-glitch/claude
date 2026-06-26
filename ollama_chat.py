@@ -578,7 +578,7 @@ class OllamaChatApp:
         self._mic_anim_id = None
         self._mic_canvas = None  # not used but keeps _draw_mic_icon guard happy
         self.mic_btn = tk.Button(
-            toolbar, text="🎙",
+            toolbar, text="⏺",
             command=self._start_stt,
             bg=self.INPUT_BG, fg=self.MUTED_FG,
             activebackground="#f3f4f6", activeforeground=self.TEXT_FG,
@@ -714,10 +714,10 @@ class OllamaChatApp:
         """Toggle mic button colour between idle and recording."""
         self._mic_recording = recording
         if recording:
-            self.mic_btn.configure(fg="#ef4444", text="🎙")
+            self.mic_btn.configure(fg="#ef4444", text="⏺")
             self._animate_mic()
         else:
-            self.mic_btn.configure(fg=self.MUTED_FG, text="🎙")
+            self.mic_btn.configure(fg=self.MUTED_FG, text="⏺")
             if self._mic_anim_id:
                 self.root.after_cancel(self._mic_anim_id)
                 self._mic_anim_id = None

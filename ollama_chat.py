@@ -12,8 +12,10 @@ Run:
 
 import json
 import os
+import platform
 import queue
 import re
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -1514,6 +1516,7 @@ class OllamaChatApp:
         self._build_sources_tab(nb)
         self._build_voice_tab(nb)
         self._build_workspace_tab(nb)
+        self._build_cuda_tab(nb)
 
         ttk.Button(win, text="Close", command=win.destroy).pack(
             side=tk.BOTTOM, anchor="e", padx=14, pady=(0, 12)
@@ -2074,6 +2077,12 @@ class OllamaChatApp:
                 kind, payload = self.ui_queue.get_nowait()
                 if kind == "models":
                     self._apply_models(payload)
+                elif kind == "ui_call":
+                    # payload is a zero-arg callable to run on the main thread
+                    try:
+                        payload()
+                    except tk.TclError:
+                        pass
                 elif kind == "models_error":
                     self.set_status("Cannot reach Ollama")
                     messagebox.showerror(
@@ -2502,6 +2511,188 @@ class OllamaChatApp:
         self.write_mode = mode
         self.config["write_mode"] = mode
         save_config(self.config)
+
+    # ----- CUDA / GPU tab ------------------------------------------------- #
+    def _run_cmd(self, args):
+        """Run a command and return its stdout, or None if it can't run / fails."""
+        try:
+            out = subprocess.run(
+                args, capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if out.returncode != 0:
+            return None
+        return (out.stdout or "") + (out.stderr or "")
+
+    def _detect_cuda(self):
+        """
+        Detect an NVIDIA GPU / CUDA installation.
+
+        Returns a dict: {"ok": bool, "summary": str, "details": str}.
+        Safe to call from a worker thread (no Tk access).
+        """
+        info = {"ok": False, "summary": "", "details": ""}
+
+        smi = self._run_cmd(["nvidia-smi"])
+        nvcc = self._run_cmd(["nvcc", "--version"])
+
+        if smi is None and nvcc is None:
+            info["summary"] = "✖  CUDA not detected — nvidia-smi / nvcc not found."
+            info["details"] = (
+                "Neither 'nvidia-smi' nor 'nvcc' was found on this system.\n"
+                "This usually means no NVIDIA GPU driver / CUDA toolkit is "
+                "installed, or it is not on PATH.\n\n"
+                "Ollama will fall back to running models on the CPU."
+            )
+            return info
+
+        driver_ver = cuda_runtime = nvcc_ver = None
+        gpu_names = []
+
+        if smi is not None:
+            m = re.search(r"Driver Version:\s*([\d.]+)", smi)
+            if m:
+                driver_ver = m.group(1)
+            m = re.search(r"CUDA Version:\s*([\d.]+)", smi)
+            if m:
+                cuda_runtime = m.group(1)
+            q = self._run_cmd([
+                "nvidia-smi", "--query-gpu=name,memory.total",
+                "--format=csv,noheader",
+            ])
+            if q:
+                gpu_names = [ln.strip() for ln in q.splitlines() if ln.strip()]
+
+        if nvcc is not None:
+            m = re.search(r"release\s*([\d.]+)", nvcc)
+            if m:
+                nvcc_ver = m.group(1)
+
+        info["ok"] = smi is not None
+        if smi is not None:
+            info["summary"] = "✔  NVIDIA GPU detected — CUDA acceleration available."
+        else:
+            info["summary"] = ("⚠  CUDA toolkit found, but no running GPU driver "
+                               "(nvidia-smi unavailable).")
+
+        lines = []
+        if gpu_names:
+            lines.append("GPU(s):")
+            lines.extend(f"  • {g}" for g in gpu_names)
+        if driver_ver:
+            lines.append(f"Driver version:       {driver_ver}")
+        if cuda_runtime:
+            lines.append(f"CUDA (driver max):    {cuda_runtime}")
+        if nvcc_ver:
+            lines.append(f"CUDA toolkit (nvcc):  {nvcc_ver}")
+        elif smi is not None:
+            lines.append("CUDA toolkit (nvcc):  not installed "
+                         "(only the driver runtime is present — fine for Ollama).")
+        info["details"] = "\n".join(lines)
+        return info
+
+    def _cuda_update_help(self):
+        """Platform-specific guidance for updating the NVIDIA driver / CUDA."""
+        system = platform.system()
+        if system == "Windows":
+            return (
+                "1. Update the NVIDIA driver (it includes the CUDA runtime):\n"
+                "   • Open the NVIDIA App / GeForce Experience → Drivers → "
+                "Check for updates, or\n"
+                "   • Download from https://www.nvidia.com/Download/index.aspx\n"
+                "2. (Optional) CUDA Toolkit for development:\n"
+                "   • https://developer.nvidia.com/cuda-downloads\n"
+                "3. Restart, then click “Check now” above to confirm "
+                "the new version.\n\n"
+                "Ollama only needs the driver — the full toolkit is optional."
+            )
+        if system == "Linux":
+            return (
+                "1. Update the NVIDIA driver (it includes the CUDA runtime):\n"
+                "   • Ubuntu/Debian:  sudo apt update && "
+                "sudo apt install --only-upgrade nvidia-driver-XXX\n"
+                "   • Or simply:  sudo ubuntu-drivers autoinstall\n"
+                "2. (Optional) CUDA Toolkit:  "
+                "https://developer.nvidia.com/cuda-downloads\n"
+                "3. Reboot, then run “nvidia-smi” or click "
+                "“Check now” above.\n\n"
+                "Ollama only needs the driver — the full toolkit is optional."
+            )
+        return (
+            "NVIDIA CUDA is not available on this platform. Modern macOS uses "
+            "Apple Silicon (Metal) acceleration, which Ollama supports "
+            "natively — no CUDA needed."
+        )
+
+    def _build_cuda_tab(self, nb):
+        tab = tk.Frame(nb, bg=self.BG)
+        nb.add(tab, text="CUDA / GPU")
+
+        tk.Label(
+            tab,
+            text="Check whether an NVIDIA GPU with CUDA is available so Ollama "
+                 "can use GPU acceleration.",
+            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
+            wraplength=540, justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        status = tk.Label(
+            tab, text="Not checked yet.", bg=self.BG, fg=self.MUTED_FG,
+            font=("Segoe UI", 10, "bold"), wraplength=540, justify="left",
+        )
+        status.pack(anchor="w", padx=12, pady=(0, 4))
+
+        details = self._make_textbox(tab, height=7)
+        details.pack(fill=tk.X, padx=12, pady=(0, 6))
+        details.configure(state=tk.DISABLED)
+
+        def set_details(text):
+            details.configure(state=tk.NORMAL)
+            details.delete("1.0", tk.END)
+            details.insert("1.0", text)
+            details.configure(state=tk.DISABLED)
+
+        btn_bar = tk.Frame(tab, bg=self.BG)
+        btn_bar.pack(fill=tk.X, padx=12, pady=(0, 6))
+        check_btn = ttk.Button(btn_bar, text="Check now")
+        check_btn.pack(side=tk.LEFT)
+
+        def apply_result(result):
+            if not status.winfo_exists():
+                return
+            status.configure(
+                text=result["summary"],
+                fg=self.BOT_FG if result["ok"] else "#dc2626",
+            )
+            set_details(result["details"])
+            check_btn.configure(state=tk.NORMAL, text="Check now")
+
+        def check():
+            check_btn.configure(state=tk.DISABLED, text="Checking…")
+            status.configure(text="Checking…", fg=self.MUTED_FG)
+            set_details("")
+
+            def work():
+                result = self._detect_cuda()
+                self.ui_queue.put(("ui_call", lambda: apply_result(result)))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        check_btn.configure(command=check)
+
+        tk.Frame(tab, bg=self.BORDER, height=1).pack(fill=tk.X, padx=12, pady=8)
+        tk.Label(
+            tab, text="How to update CUDA", bg=self.BG, fg=self.TEXT_FG,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+        tk.Label(
+            tab, text=self._cuda_update_help(), bg=self.BG, fg=self.MUTED_FG,
+            font=("Segoe UI", 9), justify="left", wraplength=540,
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        # run an initial check automatically when the tab opens
+        check()
 
     def _start_agent(self, model):
         self._append(f"{model}  ·  📁 workspace\n", "bot")

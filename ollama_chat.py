@@ -1108,7 +1108,6 @@ class OllamaChatApp:
             relief=tk.FLAT, bd=0,
             font=("Segoe UI", 9), anchor="w",
             padx=lpad, pady=5, width=1,
-            command=lambda i=idx: self._on_hist_select(i),
         )
         name_btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -1327,9 +1326,16 @@ class OllamaChatApp:
     def _drag_start(self, event, idx):
         self._drag_src_idx = idx
         self._drag_over_idx = None
+        self._drag_moved = False
+        self._drag_start_y = event.y_root
 
     def _drag_motion(self, event, idx):
         if self._drag_src_idx is None:
+            return
+        # ignore tiny jitters so a normal click isn't treated as a drag
+        if abs(event.y_root - getattr(self, "_drag_start_y", event.y_root)) > 5:
+            self._drag_moved = True
+        if not self._drag_moved:
             return
         # find which row the pointer is over
         abs_y = event.widget.winfo_rooty() + event.y
@@ -1340,6 +1346,12 @@ class OllamaChatApp:
 
     def _drag_end(self, event, idx):
         if self._drag_src_idx is None:
+            return
+        # plain click (no real drag) → open the conversation
+        if not getattr(self, "_drag_moved", False):
+            self._drag_src_idx = None
+            self._drag_over_idx = None
+            self._on_hist_select(idx)
             return
         src = self._drag_src_idx
         self._drag_src_idx = None

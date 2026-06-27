@@ -105,48 +105,6 @@ def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb):
         error_cb(f"Unexpected error: {exc}")
 
 
-def hf_chat_stream(api_key, model, messages, stop_event, chunk_cb, done_cb, error_cb):
-    """Stream a chat completion from Hugging Face Inference API (OpenAI-compatible)."""
-    url = "https://api-inference.huggingface.co/v1/chat/completions"
-    payload = json.dumps({
-        "model": model,
-        "messages": messages,
-        "stream": True,
-        "max_tokens": 2048,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            for raw_line in resp:
-                if stop_event.is_set():
-                    break
-                line = raw_line.decode("utf-8").strip()
-                if not line or line == "data: [DONE]":
-                    continue
-                if line.startswith("data: "):
-                    try:
-                        obj = json.loads(line[6:])
-                        content = (obj.get("choices", [{}])[0]
-                                   .get("delta", {}).get("content", ""))
-                        if content:
-                            chunk_cb(content)
-                    except (ValueError, IndexError):
-                        pass
-        done_cb()
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        error_cb(f"HF API error {exc.code}: {body[:300]}")
-    except urllib.error.URLError as exc:
-        error_cb(f"Connection error: {exc.reason}")
-    except Exception as exc:  # noqa: BLE001
-        error_cb(f"Unexpected error: {exc}")
-
 
 # --------------------------------------------------------------------------- #
 # Workspace agent (Ollama tool-calling, sandboxed to a chosen folder)
@@ -363,10 +321,6 @@ class OllamaChatApp:
         if self.workspace and not os.path.isdir(self.workspace):
             self.workspace = ""
         self.write_mode = self.config.get("write_mode", "free")  # confirm|readonly|free
-        # Hugging Face provider
-        self.hf_api_key  = self.config.get("hf_api_key", "")
-        self.hf_model    = self.config.get("hf_model", "mistralai/Mistral-7B-Instruct-v0.3")
-        self.provider    = self.config.get("provider", "ollama")  # "ollama" | "hf"
         self.tts_auto = bool(self.config.get("tts_auto", False))
         self.tts_rate = int(self.config.get("tts_rate", 175))
         self.stt_lang = self.config.get("stt_lang", "he-IL")
@@ -696,20 +650,6 @@ class OllamaChatApp:
         )
         self.model_combo.pack(side=tk.RIGHT)
 
-        # Provider toggle button (Ollama ⇄ HF)
-        self._provider_var = tk.StringVar(
-            value="🤗 HF" if self.provider == "hf" else "🦙 Ollama"
-        )
-        self._provider_btn = tk.Button(
-            model_frame, textvariable=self._provider_var,
-            command=self._toggle_provider,
-            bg="#e0e7ff", fg="#3730a3",
-            activebackground="#c7d2fe", activeforeground="#3730a3",
-            relief=tk.FLAT, bd=0, font=("Segoe UI", 9, "bold"),
-            padx=8, pady=3, cursor="hand2",
-        )
-        self._provider_btn.pack(side=tk.RIGHT, padx=(0, 8))
-
         # stop functionality wired through same text button
         self.send_btn  = self.send_text_btn   # keep API compat
         self.stop_btn  = self.send_text_btn   # same widget
@@ -953,22 +893,6 @@ class OllamaChatApp:
             self.entry.delete("1.0", tk.END)
             self.entry.configure(fg=self.TEXT_FG)
             self._placeholder_active = False
-
-    # ----- provider toggle ------------------------------------------------ #
-    def _toggle_provider(self):
-        if self.provider == "ollama":
-            self.provider = "hf"
-            self._provider_var.set("🤗 HF")
-            # Switch combo to free-text so user can type any HF model
-            self.model_combo.configure(state="normal")
-            self.model_var.set(self.hf_model)
-        else:
-            self.provider = "ollama"
-            self._provider_var.set("🦙 Ollama")
-            self.model_combo.configure(state="readonly")
-            self.refresh_models()
-        self.config["provider"] = self.provider
-        save_config(self.config)
 
     # ----- model handling ------------------------------------------------- #
     def refresh_models(self):
@@ -1523,9 +1447,6 @@ class OllamaChatApp:
         self.config["tts_auto"] = self.tts_auto
         self.config["tts_rate"] = self.tts_rate
         self.config["stt_lang"] = self.stt_lang
-        self.config["hf_api_key"] = self.hf_api_key
-        self.config["hf_model"] = self.hf_model
-        self.config["provider"] = self.provider
         save_config(self.config)
 
     def _read_source(self, src):
@@ -1593,7 +1514,6 @@ class OllamaChatApp:
         self._build_sources_tab(nb)
         self._build_voice_tab(nb)
         self._build_workspace_tab(nb)
-        self._build_hf_tab(nb)
 
         ttk.Button(win, text="Close", command=win.destroy).pack(
             side=tk.BOTTOM, anchor="e", padx=14, pady=(0, 12)
@@ -2131,36 +2051,16 @@ class OllamaChatApp:
         if system:
             outgoing = [{"role": "system", "content": system}] + outgoing
 
-        if self.provider == "hf":
-            if not self.hf_api_key:
-                messagebox.showwarning(
-                    "HF API Key חסר",
-                    "הכנס API key של Hugging Face בהגדרות (לשונית Hugging Face).",
-                )
-                self._finish_reply(error=True)
-                return
-            hf_model = self.model_var.get().strip() or self.hf_model
-            self.worker = threading.Thread(
-                target=hf_chat_stream,
-                args=(
-                    self.hf_api_key, hf_model, outgoing, self.stop_event,
-                    lambda c: self.ui_queue.put(("chunk", c)),
-                    lambda: self.ui_queue.put(("done", None)),
-                    lambda e: self.ui_queue.put(("error", e)),
-                ),
-                daemon=True,
-            )
-        else:
-            self.worker = threading.Thread(
-                target=chat_stream,
-                args=(
-                    OLLAMA_HOST, model, outgoing, self.stop_event,
-                    lambda c: self.ui_queue.put(("chunk", c)),
-                    lambda: self.ui_queue.put(("done", None)),
-                    lambda e: self.ui_queue.put(("error", e)),
-                ),
-                daemon=True,
-            )
+        self.worker = threading.Thread(
+            target=chat_stream,
+            args=(
+                OLLAMA_HOST, model, outgoing, self.stop_event,
+                lambda c: self.ui_queue.put(("chunk", c)),
+                lambda: self.ui_queue.put(("done", None)),
+                lambda e: self.ui_queue.put(("error", e)),
+            ),
+            daemon=True,
+        )
         self.worker.start()
 
     def stop(self):
@@ -2597,58 +2497,6 @@ class OllamaChatApp:
                 selectcolor=self.PANEL, font=("Segoe UI", 9), anchor="w",
                 command=lambda v=val: self._set_write_mode(v),
             ).pack(anchor="w", padx=22)
-
-    def _build_hf_tab(self, nb):
-        tab = tk.Frame(nb, bg=self.BG)
-        nb.add(tab, text="Hugging Face")
-
-        tk.Label(
-            tab,
-            text="Hugging Face Inference API — שימוש במודלים מ-HuggingFace.co.",
-            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
-            wraplength=520, justify="left",
-        ).pack(anchor="w", padx=12, pady=(12, 6))
-
-        # API key
-        tk.Label(tab, text="API Key", bg=self.BG, fg=self.TEXT_FG,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(8, 2))
-        key_var = tk.StringVar(value=self.hf_api_key)
-        key_entry = tk.Entry(
-            tab, textvariable=key_var, show="*",
-            bg=self.INPUT_BG, fg=self.TEXT_FG,
-            insertbackground=self.TEXT_FG, relief=tk.SOLID, borderwidth=1,
-            font=("Segoe UI", 10),
-        )
-        key_entry.pack(fill=tk.X, padx=12, pady=(0, 6))
-
-        # Default model
-        tk.Label(tab, text="Default Model", bg=self.BG, fg=self.TEXT_FG,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12, pady=(8, 2))
-        model_var = tk.StringVar(value=self.hf_model)
-        model_entry = tk.Entry(
-            tab, textvariable=model_var,
-            bg=self.INPUT_BG, fg=self.TEXT_FG,
-            insertbackground=self.TEXT_FG, relief=tk.SOLID, borderwidth=1,
-            font=("Segoe UI", 10),
-        )
-        model_entry.pack(fill=tk.X, padx=12, pady=(0, 6))
-        tk.Label(
-            tab,
-            text="דוגמאות: mistralai/Mistral-7B-Instruct-v0.3  •  meta-llama/Llama-3.1-8B-Instruct",
-            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 8),
-        ).pack(anchor="w", padx=12)
-
-        def save_hf():
-            self.hf_api_key = key_var.get().strip()
-            self.hf_model = model_var.get().strip() or "mistralai/Mistral-7B-Instruct-v0.3"
-            self._persist()
-            if self.provider == "hf":
-                self.model_var.set(self.hf_model)
-            self.set_status("HF settings saved")
-
-        bar = tk.Frame(tab, bg=self.BG)
-        bar.pack(fill=tk.X, padx=12, pady=(10, 4))
-        ttk.Button(bar, text="Save", command=save_hf).pack(side=tk.RIGHT)
 
     def _set_write_mode(self, mode):
         self.write_mode = mode

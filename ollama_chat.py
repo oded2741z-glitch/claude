@@ -2862,6 +2862,7 @@ class OllamaChatApp:
         # back so it can be kept in the conversation history — otherwise the
         # model forgets which files it created and can't update them later.
         base_len = len(convo)
+        wrote_any = False  # did the model actually call write_file this turn?
         try:
             for _ in range(MAX_AGENT_STEPS):
                 if self.stop_event.is_set():
@@ -2875,6 +2876,12 @@ class OllamaChatApp:
                 if not calls:
                     convo.append(msg)  # keep the final answer in history
                     text = msg.get("content", "") or "(No response.)"
+                    # Fallback: many models don't emit native tool calls — they
+                    # just print the code instead of calling write_file, so no
+                    # file gets created. If nothing was written this turn,
+                    # extract any code blocks from the reply and save them.
+                    if not wrote_any:
+                        self._save_code_blocks_from_text(text, convo)
                     self.ui_queue.put(("agent_done", (text, convo[base_len:])))
                     return
                 convo.append(msg)
@@ -2890,6 +2897,7 @@ class OllamaChatApp:
                     self.ui_queue.put(("tool_call", self._format_call(name, args)))
                     # show the file content being written, as a code block
                     if name == "write_file":
+                        wrote_any = True
                         self.ui_queue.put((
                             "tool_code",
                             (args.get("path", ""), args.get("content", "")),
@@ -2906,6 +2914,102 @@ class OllamaChatApp:
             self.ui_queue.put(("error", f"Connection error: {exc.reason}"))
         except Exception as exc:  # noqa: BLE001
             self.ui_queue.put(("error", f"Agent error: {exc}"))
+
+    def _save_code_blocks_from_text(self, text, convo):
+        """Write any code blocks found in `text` to the workspace.
+
+        Used as a fallback when the model printed code instead of calling
+        write_file. Mirrors the normal write path: shows the file in the UI,
+        respects the write mode, and records a tool result in `convo`.
+        """
+        for path, body in self._extract_code_files(text):
+            if self.stop_event.is_set():
+                break
+            self.ui_queue.put(
+                ("tool_call", self._format_call("write_file", {"path": path}))
+            )
+            self.ui_queue.put(("tool_code", (path, body)))
+            result = self._exec_tool(
+                "write_file", {"path": path, "content": body}
+            )
+            convo.append(
+                {"role": "tool", "content": result, "tool_name": "write_file"}
+            )
+
+    # extensions used to name an unlabeled code block from its language tag
+    _LANG_EXT = {
+        "python": "py", "py": "py", "javascript": "js", "js": "js",
+        "typescript": "ts", "ts": "ts", "html": "html", "css": "css",
+        "json": "json", "bash": "sh", "sh": "sh", "shell": "sh",
+        "c": "c", "cpp": "cpp", "c++": "cpp", "java": "java", "go": "go",
+        "rust": "rs", "rs": "rs", "ruby": "rb", "rb": "rb", "php": "php",
+        "sql": "sql", "yaml": "yaml", "yml": "yaml", "xml": "xml",
+        "markdown": "md", "md": "md",
+    }
+
+    @classmethod
+    def _extract_code_files(cls, text):
+        """Find fenced code blocks in `text` and guess a filename for each.
+
+        Returns a list of (relative_path, content). Filenames are taken, in
+        order of preference, from: the fence info string (```python:app.py or
+        ```app.py), a label line right before the fence (**app.py**, `app.py`,
+        app.py:), a filename comment on the first body line, or finally a
+        generic name derived from the language tag.
+        """
+        name_re = re.compile(r"^[\w.\-]+\.[A-Za-z0-9]+$")
+        fence_re = re.compile(r"```([^\n`]*)\n(.*?)```", re.DOTALL)
+        files = []
+        used = set()
+        for idx, mobj in enumerate(fence_re.finditer(text)):
+            info = (mobj.group(1) or "").strip()
+            body = mobj.group(2)
+            if body.endswith("\n"):
+                body = body[:-1]
+            if not body.strip():
+                continue
+
+            lang = info.split(":")[0].split()[0].lower() if info else ""
+            path = None
+
+            # 1) filename inside the fence info string
+            for token in re.split(r"[\s:]+", info):
+                if name_re.match(token):
+                    path = token
+                    break
+
+            # 2) a label line immediately before the fence
+            if not path:
+                before = text[:mobj.start()].rstrip().splitlines()
+                if before:
+                    last = before[-1].strip().strip("*`#:> ")
+                    last = last.split()[-1] if last else ""
+                    if name_re.match(last):
+                        path = last
+
+            # 3) a filename comment on the first line of the body
+            if not path:
+                first = body.splitlines()[0].strip() if body.splitlines() else ""
+                if first[:4] in ("#  ", "# ", "// ", "<!--") or first.startswith(
+                    ("#", "//", "<!--", "/*")
+                ):
+                    mtok = re.search(r"[\w.\-]+\.[A-Za-z0-9]+", first)
+                    if mtok and name_re.match(mtok.group(0)):
+                        path = mtok.group(0)
+
+            # 4) generic name from the language tag
+            if not path:
+                ext = cls._LANG_EXT.get(lang, "txt")
+                base = "file" if not files else f"file{len(files) + 1}"
+                path = f"{base}.{ext}"
+
+            # avoid clobbering an earlier block in the same reply
+            if path in used:
+                root, dot, ext = path.rpartition(".")
+                path = f"{root}_{idx + 1}.{ext}" if dot else f"{path}_{idx + 1}"
+            used.add(path)
+            files.append((path, body))
+        return files
 
     @staticmethod
     def _lang_from_path(path):

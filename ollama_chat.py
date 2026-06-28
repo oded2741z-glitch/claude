@@ -2857,18 +2857,25 @@ class OllamaChatApp:
 
     def _run_agent(self, model, convo):
         """Worker thread: loop over tool calls until the model gives an answer."""
+        # Everything appended past this point is new this turn (assistant
+        # tool-call messages, tool results, and the final answer). We hand it
+        # back so it can be kept in the conversation history — otherwise the
+        # model forgets which files it created and can't update them later.
+        base_len = len(convo)
         try:
             for _ in range(MAX_AGENT_STEPS):
                 if self.stop_event.is_set():
-                    self.ui_queue.put(("agent_done", "(Stopped.)"))
+                    self.ui_queue.put(
+                        ("agent_done", ("(Stopped.)", convo[base_len:]))
+                    )
                     return
                 resp = agent_chat_once(OLLAMA_HOST, model, convo, TOOLS)
                 msg = resp.get("message", {}) or {}
                 calls = msg.get("tool_calls") or []
                 if not calls:
-                    self.ui_queue.put(
-                        ("agent_done", msg.get("content", "") or "(No response.)")
-                    )
+                    convo.append(msg)  # keep the final answer in history
+                    text = msg.get("content", "") or "(No response.)"
+                    self.ui_queue.put(("agent_done", (text, convo[base_len:])))
                     return
                 convo.append(msg)
                 for tc in calls:
@@ -2891,7 +2898,10 @@ class OllamaChatApp:
                     convo.append(
                         {"role": "tool", "content": result, "tool_name": name}
                     )
-            self.ui_queue.put(("agent_done", "(Reached the tool-step limit.)"))
+            self.ui_queue.put(
+                ("agent_done",
+                 ("(Reached the tool-step limit.)", convo[base_len:]))
+            )
         except urllib.error.URLError as exc:
             self.ui_queue.put(("error", f"Connection error: {exc.reason}"))
         except Exception as exc:  # noqa: BLE001
@@ -2973,7 +2983,12 @@ class OllamaChatApp:
         event.wait()
         return holder.get("approved", False)
 
-    def _finish_agent(self, text):
+    def _finish_agent(self, payload):
+        # payload is (display_text, new_messages); stay backward-compatible
+        if isinstance(payload, tuple):
+            text, new_msgs = payload
+        else:
+            text, new_msgs = payload, None
         self._append("\n", "spacer")
         self.chat.configure(state=tk.NORMAL)
         self._insert_markdown(text)
@@ -2996,7 +3011,12 @@ class OllamaChatApp:
         self.chat.configure(state=tk.DISABLED)
         self._append("\n\n", "spacer")
         self.chat.see(tk.END)
-        if text.strip():
+        # Persist the full agent exchange (tool calls + results + final answer)
+        # so follow-up messages remember the files it created and can update
+        # them. Fall back to just the text for older/empty payloads.
+        if new_msgs:
+            self.messages.extend(new_msgs)
+        elif text.strip():
             self.messages.append({"role": "assistant", "content": text})
         self.streaming = False
         self._set_busy(False)
@@ -3077,7 +3097,8 @@ class OllamaChatApp:
     def _auto_update_worker(self, model, current, convo):
         try:
             transcript = "\n".join(
-                f"{m['role'].upper()}: {m['content']}" for m in convo[-12:]
+                f"{m.get('role', '').upper()}: {m.get('content', '')}"
+                for m in convo[-12:]
             )
             meta = [
                 {"role": "system", "content": AUTO_UPDATE_SYSTEM},

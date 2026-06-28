@@ -575,6 +575,7 @@ class OllamaChatApp:
         self.entry.pack(fill=tk.BOTH, expand=True)
         self.entry.bind("<Return>", self._on_return)
         self.entry.bind("<Shift-Return>", lambda e: None)
+        self._add_edit_menu(self.entry)
 
         # placeholder
         self._placeholder_active = False
@@ -1168,6 +1169,7 @@ class OllamaChatApp:
                        relief=tk.SOLID, borderwidth=1)
         ent.pack(fill=tk.X, padx=14)
         ent.focus_set()
+        self._add_edit_menu(ent)
         bar = tk.Frame(dlg, bg=self.BG)
         bar.pack(fill=tk.X, padx=14, pady=10)
 
@@ -1201,6 +1203,7 @@ class OllamaChatApp:
         ent.pack(fill=tk.X, padx=14)
         ent.select_range(0, tk.END)
         ent.focus_set()
+        self._add_edit_menu(ent)
         bar = tk.Frame(dlg, bg=self.BG)
         bar.pack(fill=tk.X, padx=14, pady=10)
 
@@ -1373,6 +1376,7 @@ class OllamaChatApp:
         ent.pack(fill=tk.X, padx=14)
         ent.select_range(0, tk.END)
         ent.focus_set()
+        self._add_edit_menu(ent)
         bar = tk.Frame(dlg, bg=self.BG)
         bar.pack(fill=tk.X, padx=14, pady=10)
 
@@ -1523,13 +1527,15 @@ class OllamaChatApp:
         )
 
     def _make_textbox(self, parent, **kw):
-        return tk.Text(
+        box = tk.Text(
             parent, wrap=tk.WORD, bg=self.INPUT_BG, fg=self.TEXT_FG,
             insertbackground=self.TEXT_FG, relief=tk.SOLID, borderwidth=1,
             highlightthickness=1, highlightbackground=self.BORDER,
             highlightcolor=self.USER_FG, font=("Segoe UI", 11),
             padx=8, pady=8, **kw
         )
+        self._add_edit_menu(box)
+        return box
 
     def _make_listbox(self, parent):
         return tk.Listbox(
@@ -1653,6 +1659,7 @@ class OllamaChatApp:
         )
         name_entry.pack(fill=tk.X, padx=14)
         name_entry.insert(0, name_val)
+        self._add_edit_menu(name_entry)
 
         tk.Label(
             dlg, text=content_label, bg=self.BG, fg=self.TEXT_FG,
@@ -2392,6 +2399,84 @@ class OllamaChatApp:
 
         widget.bind("<Button-3>", popup)
 
+    def _ctrl_keycodes(self):
+        """Physical keycodes for C/V/X/A → action, for the current platform.
+
+        Keycodes are tied to the physical key, not the produced character, so
+        they let Ctrl+C/V/X/A work even under a non-Latin (e.g. Hebrew)
+        keyboard layout where event.keysym is a Hebrew letter.
+        """
+        cached = getattr(self, "_ctrl_keycodes_cache", None)
+        if cached is not None:
+            return cached
+        if platform.system() == "Windows":
+            codes = {67: "copy", 86: "paste", 88: "cut", 65: "all"}
+        else:  # X11 / Linux hardware keycodes
+            codes = {54: "copy", 55: "paste", 53: "cut", 38: "all"}
+        self._ctrl_keycodes_cache = codes
+        return codes
+
+    def _add_edit_menu(self, widget):
+        """Attach right-click + Ctrl-C/V/X/A editing to a Text or Entry widget.
+
+        Also works when the keyboard layout is Hebrew: in that case Ctrl+C/V/X/A
+        arrive as Hebrew keysyms (ב/ה/ס/ש) that the default bindings ignore, so
+        we fall back to the physical keycode.
+        """
+        is_text = isinstance(widget, tk.Text)
+
+        def cut(_=None):
+            widget.event_generate("<<Cut>>")
+            return "break"
+
+        def copy(_=None):
+            widget.event_generate("<<Copy>>")
+            return "break"
+
+        def paste(_=None):
+            widget.event_generate("<<Paste>>")
+            return "break"
+
+        def select_all(_=None):
+            if is_text:
+                widget.tag_add("sel", "1.0", "end-1c")
+            else:
+                widget.select_range(0, tk.END)
+                widget.icursor(tk.END)
+            return "break"
+
+        actions = {"cut": cut, "copy": copy, "paste": paste, "all": select_all}
+
+        menu = tk.Menu(widget, tearoff=0)
+        menu.add_command(label="Cut", command=cut)
+        menu.add_command(label="Copy", command=copy)
+        menu.add_command(label="Paste", command=paste)
+        menu.add_separator()
+        menu.add_command(label="Select all", command=select_all)
+
+        def popup(event):
+            widget.focus_set()
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        widget.bind("<Button-3>", popup)
+
+        keycodes = self._ctrl_keycodes()
+
+        def on_ctrl(event):
+            ks = (event.keysym or "").lower()
+            if ks in ("c", "v", "x", "a"):       # Latin layout
+                return actions[{"c": "copy", "v": "paste",
+                                "x": "cut", "a": "all"}[ks]]()
+            action = keycodes.get(event.keycode)  # non-Latin layout fallback
+            if action:
+                return actions[action]()
+            return None
+
+        widget.bind("<Control-KeyPress>", on_ctrl)
+
     # ----- workspace agent ------------------------------------------------ #
     def choose_workspace(self):
         path = filedialog.askdirectory(
@@ -2444,6 +2529,7 @@ class OllamaChatApp:
             font=("Segoe UI", 10),
         )
         path_entry.pack(fill=tk.X, padx=12, pady=(0, 6))
+        self._add_edit_menu(path_entry)
 
         bar = tk.Frame(tab, bg=self.BG)
         bar.pack(fill=tk.X, padx=12, pady=(0, 6))

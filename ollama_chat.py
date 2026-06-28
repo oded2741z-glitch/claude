@@ -333,6 +333,8 @@ class OllamaChatApp:
         self._reply_count = 0
         self._updating_instructions = False
         self._instr_editor = None          # live ref to the Instructions editor
+        self._instr_autosave = None        # flushes pending instruction edits
+        self._instr_save_after = None      # debounce id for instructions auto-save
         self.messages = []                 # conversation history sent to Ollama
         self.ui_queue = queue.Queue()      # thread -> main-loop communication
         self.stop_event = threading.Event()
@@ -1522,7 +1524,25 @@ class OllamaChatApp:
         self._build_workspace_tab(nb)
         self._build_cuda_tab(nb)
 
-        ttk.Button(win, text="Close", command=win.destroy).pack(
+        def close_settings():
+            # flush any pending instruction edits before closing
+            if self._instr_save_after is not None:
+                try:
+                    self.root.after_cancel(self._instr_save_after)
+                except (tk.TclError, ValueError):
+                    pass
+                self._instr_save_after = None
+            if self._instr_autosave is not None:
+                try:
+                    self._instr_autosave()
+                except tk.TclError:
+                    pass
+            self._instr_editor = None
+            self._instr_autosave = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", close_settings)
+        ttk.Button(win, text="Close", command=close_settings).pack(
             side=tk.BOTTOM, anchor="e", padx=14, pady=(0, 12)
         )
 
@@ -1565,12 +1585,35 @@ class OllamaChatApp:
         bar = tk.Frame(tab, bg=self.BG)
         bar.pack(fill=tk.X, padx=12, pady=(0, 6))
 
-        def save():
-            self.system_prompt = editor.get("1.0", tk.END).strip()
+        def _do_save(show_status=True):
+            new = editor.get("1.0", tk.END).strip()
+            if new == self.system_prompt:
+                return
+            self.system_prompt = new
             self._persist()
-            self.set_status("Instructions saved")
+            if show_status:
+                self.set_status("Instructions saved")
 
-        ttk.Button(bar, text="Save", command=save).pack(side=tk.RIGHT)
+        def schedule_save(_=None):
+            if self._instr_save_after is not None:
+                self.root.after_cancel(self._instr_save_after)
+            self._instr_save_after = self.root.after(
+                600, lambda: _do_save(False)
+            )
+
+        # auto-save: debounced while typing, and immediately when leaving the box
+        editor.bind("<KeyRelease>", schedule_save)
+        editor.bind("<FocusOut>", lambda e: _do_save(False))
+        # let open_settings flush a final save when the window closes
+        self._instr_autosave = lambda: _do_save(False)
+
+        ttk.Button(bar, text="Save", command=lambda: _do_save(True)).pack(
+            side=tk.RIGHT
+        )
+        tk.Label(
+            bar, text="Saved automatically", bg=self.BG, fg=self.MUTED_FG,
+            font=("Segoe UI", 8),
+        ).pack(side=tk.RIGHT, padx=(0, 10))
         ttk.Button(
             bar, text="Clear", command=lambda: editor.delete("1.0", tk.END)
         ).pack(side=tk.LEFT)

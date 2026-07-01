@@ -15,6 +15,11 @@ try:
 except ImportError:
     HAS_PIL = False
 
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 class TranigStudioApp:
     def __init__(self, root):
         self.root = root
@@ -45,6 +50,22 @@ class TranigStudioApp:
         self.active_process = None
         self.is_running = False
         self.restore_win = None
+
+        # Video Studio state
+        self.video_source_path = tk.StringVar()
+        self.video_folder_name = tk.StringVar(value="video_dataset")
+        self.video_interval_sec = tk.StringVar(value="1.0")
+        self.video_mode = tk.StringVar(value="Draw")
+        self.video_active_tag = tk.StringVar(value="object")
+        self.video_tags = ["object"]
+        self.video_image_paths = []
+        self.video_current_index = -1
+        self.video_photo = None
+        self.video_img_width = 0
+        self.video_img_height = 0
+        self.video_annotations = []
+        self.video_selected_box_idx = None
+        self.video_drag_handle = None
 
         self.root.bind("<F4>", self.toggle_visibility)
 
@@ -189,6 +210,11 @@ class TranigStudioApp:
         self.tab_audio = tk.Frame(self.notebook, bg="#121212")
         self.notebook.add(self.tab_audio, text=" Audio-to-Image ")
         self.setup_audio_tab()
+
+        # TAB 4: Video Studio
+        self.tab_video = tk.Frame(self.notebook, bg="#121212")
+        self.notebook.add(self.tab_video, text=" Video Studio ")
+        self.setup_video_tab()
 
         btn_args = {"bg": "#333333", "fg": "#FFFFFF", "relief": "flat", "borderwidth": 0, "padx": 10, "pady": 5}
 
@@ -405,6 +431,436 @@ class TranigStudioApp:
         scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.audio_listbox.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.audio_listbox.config(yscrollcommand=scrollbar.set)
+
+    def setup_video_tab(self):
+        btn_args = {"bg": "#333333", "fg": "#FFFFFF", "relief": "flat", "borderwidth": 0, "padx": 10, "pady": 5}
+        tk.Label(self.tab_video, text="Video Extraction & Annotation Studio", bg="#121212", fg="#E07A5F", font=("Arial", 16, "bold")).pack(pady=(15, 5))
+
+        top_f = tk.Frame(self.tab_video, bg="#121212")
+        top_f.pack(fill=tk.X, padx=20, pady=5)
+
+        ext_lf = ttk.LabelFrame(top_f, text=" 1. Extract Frames from Video ")
+        ext_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        row1 = tk.Frame(ext_lf, bg="#121212")
+        row1.pack(fill=tk.X, pady=5, padx=5)
+        tk.Button(row1, text="Select Video", command=self.video_browse, **btn_args).pack(side=tk.LEFT, padx=5)
+        tk.Entry(row1, textvariable=self.video_source_path, width=40, bg="#333333", fg="#FFFFFF", relief="flat", state="readonly").pack(side=tk.LEFT, padx=5)
+
+        row2 = tk.Frame(ext_lf, bg="#121212")
+        row2.pack(fill=tk.X, pady=5, padx=5)
+        tk.Label(row2, text="New Folder:", bg="#121212", fg="#FFFFFF", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        tk.Entry(row2, textvariable=self.video_folder_name, width=15, bg="#333333", fg="#FFFFFF", relief="flat", insertbackground="#FFFFFF").pack(side=tk.LEFT, padx=5)
+        tk.Label(row2, text="Interval (sec):", bg="#121212", fg="#FFFFFF", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        tk.Entry(row2, textvariable=self.video_interval_sec, width=5, bg="#333333", fg="#FFFFFF", relief="flat", insertbackground="#FFFFFF").pack(side=tk.LEFT, padx=5)
+        tk.Button(row2, text="Extract Frames", command=self.video_extract, bg="#81B29A", fg="#121212", font=("Arial", 9, "bold"), relief="flat", padx=10, pady=5).pack(side=tk.LEFT, padx=15)
+
+        edit_lf = ttk.LabelFrame(top_f, text=" 2. Workspace & Annotation ")
+        edit_lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+
+        erow1 = tk.Frame(edit_lf, bg="#121212")
+        erow1.pack(fill=tk.X, pady=5, padx=5)
+        tk.Button(erow1, text="Load Dataset Folder", command=self.video_load_folder, **btn_args).pack(side=tk.LEFT, padx=5)
+        self.video_mode_btn = tk.Button(erow1, text="Mode: DRAW", command=self.video_toggle_mode, bg="#389379", fg="#FFFFFF", font=("Arial", 9, "bold"), relief="flat", padx=15, pady=5)
+        self.video_mode_btn.pack(side=tk.RIGHT, padx=5)
+
+        erow2 = tk.Frame(edit_lf, bg="#121212")
+        erow2.pack(fill=tk.X, pady=5, padx=5)
+        tk.Label(erow2, text="Active Tag:", bg="#121212", fg="#FFFFFF", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        self.video_tag_cb = ttk.Combobox(erow2, textvariable=self.video_active_tag, font=("Arial", 10), width=15)
+        self.video_tag_cb['values'] = self.video_tags
+        self.video_tag_cb.pack(side=tk.LEFT, padx=5)
+        tk.Button(erow2, text="Update Tag (Edit)", command=self.video_update_tag, **btn_args).pack(side=tk.LEFT, padx=5)
+        tk.Button(erow2, text="Delete Box", command=self.video_delete_box, bg="#E04A3F", fg="#FFFFFF", relief="flat", padx=10, pady=5).pack(side=tk.RIGHT, padx=5)
+
+        bot_f = tk.Frame(self.tab_video, bg="#121212")
+        bot_f.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
+
+        self.video_canvas = tk.Canvas(bot_f, bg="#000000", highlightthickness=1, highlightbackground="#333333", cursor="crosshair")
+        self.video_canvas.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.video_canvas.bind("<ButtonPress-1>", self.video_on_press)
+        self.video_canvas.bind("<B1-Motion>", self.video_on_drag)
+        self.video_canvas.bind("<ButtonRelease-1>", self.video_on_release)
+
+        c_bot = tk.Frame(bot_f, bg="#121212")
+        c_bot.pack(fill=tk.X, pady=5)
+        tk.Button(c_bot, text="Prev", command=self.video_prev_image, **btn_args).pack(side=tk.LEFT, padx=5)
+        tk.Button(c_bot, text="Next", command=self.video_next_image, **btn_args).pack(side=tk.LEFT, padx=5)
+        tk.Button(c_bot, text="Delete Image", command=self.video_delete_image, bg="#E04A3F", fg="#FFFFFF", relief="flat", padx=10, pady=5).pack(side=tk.RIGHT, padx=5)
+        self.video_counter_lbl = tk.Label(c_bot, text="0 / 0", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold"))
+        self.video_counter_lbl.pack(expand=True)
+
+    # --- Video Studio Logic ---
+    def video_browse(self):
+        filepath = filedialog.askopenfilename(title="Select Video", filetypes=[("Video Files", "*.mp4 *.avi *.mov *.mkv")])
+        if filepath:
+            self.video_source_path.set(filepath)
+
+    def video_extract(self):
+        if cv2 is None:
+            self.update_status("Status: Error - OpenCV not found. Click 'Install Requirements' first.")
+            messagebox.showerror("Dependency Missing", "OpenCV is required for video extraction.\nGo to Vision Studio and click 'Install Requirements'.")
+            return
+        if self.is_running:
+            self.update_status("Status: Error - Another process is already running")
+            return
+
+        vid_path = self.video_source_path.get()
+        folder = self.video_folder_name.get().strip()
+        try:
+            interval = float(self.video_interval_sec.get())
+            if interval <= 0:
+                raise ValueError
+        except ValueError:
+            self.update_status("Status: Error - Invalid interval")
+            return
+        if not vid_path or not os.path.exists(vid_path):
+            self.update_status("Status: Error - Video file not found")
+            return
+        if not folder:
+            self.update_status("Status: Error - Invalid folder name")
+            return
+
+        self.update_status("Status: Extracting frames...")
+        self.console.delete("1.0", tk.END)
+        self.append_console(f"--- Starting Video Extraction ---\nTarget Folder: {folder}\nInterval: {interval} seconds\n")
+        self.start_task(lambda: self._video_extract_thread(vid_path, folder, interval))
+
+    def _video_extract_thread(self, vid_path, folder, interval):
+        import tempfile
+        target_dir = os.path.join(os.getcwd(), folder)
+        img_dir = os.path.join(target_dir, "images")
+        lbl_dir = os.path.join(target_dir, "labels")
+        os.makedirs(img_dir, exist_ok=True)
+        os.makedirs(lbl_dir, exist_ok=True)
+
+        # Copy to a temp ASCII path so OpenCV can open videos with non-ASCII paths.
+        temp_vid_path = os.path.join(tempfile.gettempdir(), "tranig_temp_video.mp4")
+        try:
+            shutil.copy2(vid_path, temp_vid_path)
+            safe_vid_path = temp_vid_path
+        except Exception:
+            safe_vid_path = vid_path
+            temp_vid_path = None
+
+        cap = cv2.VideoCapture(safe_vid_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            cap.release()
+            if temp_vid_path and os.path.exists(temp_vid_path):
+                try:
+                    os.remove(temp_vid_path)
+                except OSError:
+                    pass
+            self.root.after(0, lambda: self.update_status("Status: Error - Failed to read video FPS"))
+            self.root.after(0, self.append_console, "Error: Unsupported format or corrupted file.\n")
+            return
+
+        frame_skip = max(1, int(fps * interval))
+        count, saved = 0, 0
+        while cap.isOpened():
+            ret = cap.grab()
+            if not ret:
+                break
+            if count % frame_skip == 0:
+                ret, frame = cap.retrieve()
+                if ret:
+                    out_path = os.path.join(img_dir, f"frame_{saved:05d}.jpg")
+                    is_success, buf = cv2.imencode(".jpg", frame)
+                    if is_success:
+                        buf.tofile(out_path)
+                    saved += 1
+                    if saved % 10 == 0:
+                        self.root.after(0, self.append_console, f"Extracted {saved} frames so far...\n")
+            count += 1
+
+        cap.release()
+        if temp_vid_path and os.path.exists(temp_vid_path):
+            try:
+                os.remove(temp_vid_path)
+            except OSError:
+                pass
+
+        self.root.after(0, self.append_console, f"--- Video Extraction Complete! Total frames: {saved} ---\n")
+        self.root.after(0, lambda: self.video_finish_extract(target_dir, saved))
+
+    def video_finish_extract(self, target_dir, saved_count):
+        self.update_status(f"Status: Extracted {saved_count} frames to {target_dir}")
+        self._video_load_from_path(target_dir)
+
+    def video_load_folder(self):
+        folder = filedialog.askdirectory(title="Select Dataset Folder (must contain 'images')")
+        if folder:
+            self._video_load_from_path(folder)
+
+    def _video_load_from_path(self, folder):
+        img_dir = os.path.join(folder, "images")
+        if not os.path.exists(img_dir):
+            self.update_status("Status: Error - Selected folder has no 'images' subfolder")
+            return
+
+        self.video_image_paths = [
+            os.path.join(img_dir, f) for f in sorted(os.listdir(img_dir))
+            if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        ]
+
+        classes_path = os.path.join(folder, "classes.txt")
+        if os.path.exists(classes_path):
+            with open(classes_path, "r", encoding="utf-8") as f:
+                loaded = [line.strip() for line in f if line.strip()]
+            if loaded:
+                self.video_tags = loaded
+                self.video_tag_cb['values'] = self.video_tags
+                self.video_active_tag.set(self.video_tags[0])
+        else:
+            self.video_tags = ["object"]
+            self.video_tag_cb['values'] = self.video_tags
+            self.video_active_tag.set("object")
+            self._video_save_classes(folder)
+
+        if self.video_image_paths:
+            self.video_current_index = 0
+            self.video_show_image()
+            self.update_status(f"Status: Loaded {len(self.video_image_paths)} images")
+        else:
+            self.video_canvas.delete("all")
+            self.video_counter_lbl.config(text="0 / 0")
+            self.update_status("Status: No images found in folder")
+
+    def _video_save_classes(self, folder=None):
+        if not folder and self.video_image_paths:
+            folder = os.path.dirname(os.path.dirname(self.video_image_paths[0]))
+        if folder:
+            with open(os.path.join(folder, "classes.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(self.video_tags) + "\n")
+
+    def video_show_image(self):
+        if not (0 <= self.video_current_index < len(self.video_image_paths)):
+            return
+        img_path = self.video_image_paths[self.video_current_index]
+        self.video_canvas.delete("all")
+        self.video_annotations = []
+        self.video_selected_box_idx = None
+
+        try:
+            if HAS_PIL:
+                img = Image.open(img_path)
+                c_width = max(800, self.video_canvas.winfo_width())
+                c_height = max(500, self.video_canvas.winfo_height())
+                img.thumbnail((c_width, c_height))
+                self.video_img_width = img.width
+                self.video_img_height = img.height
+                self.video_photo = ImageTk.PhotoImage(img)
+            else:
+                self.video_photo = tk.PhotoImage(file=img_path)
+                self.video_img_width = self.video_photo.width()
+                self.video_img_height = self.video_photo.height()
+
+            self.video_canvas.create_image(0, 0, anchor=tk.NW, image=self.video_photo)
+            self.video_counter_lbl.config(text=f"{self.video_current_index + 1} / {len(self.video_image_paths)}")
+            self.video_load_annotations(img_path)
+            self.video_redraw_boxes()
+        except Exception as e:
+            self.update_status(f"Status: Error loading video image {e}")
+
+    def _video_get_lbl_path(self, img_path):
+        base_name = os.path.splitext(os.path.basename(img_path))[0]
+        return os.path.join(os.path.dirname(os.path.dirname(img_path)), "labels", f"{base_name}.txt")
+
+    def video_load_annotations(self, img_path):
+        lbl_path = self._video_get_lbl_path(img_path)
+        if not os.path.exists(lbl_path):
+            return
+        with open(lbl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if len(parts) == 5:
+                    try:
+                        cls_id, cx, cy, w, h = map(float, parts)
+                        cls_id_int = int(cls_id)
+                        tag_name = self.video_tags[cls_id_int] if cls_id_int < len(self.video_tags) else str(cls_id_int)
+                        x1 = (cx - w / 2) * self.video_img_width
+                        y1 = (cy - h / 2) * self.video_img_height
+                        x2 = (cx + w / 2) * self.video_img_width
+                        y2 = (cy + h / 2) * self.video_img_height
+                        self.video_annotations.append({"tag": tag_name, "coords": [x1, y1, x2, y2]})
+                    except ValueError:
+                        pass
+
+    def video_redraw_boxes(self):
+        self.video_canvas.delete("box")
+        self.video_canvas.delete("handle")
+        for idx, ann in enumerate(self.video_annotations):
+            x1, y1, x2, y2 = ann["coords"]
+            selected = idx == self.video_selected_box_idx
+            color = "#FFFFFF" if selected else "#389379"
+            width = 3 if selected else 2
+            self.video_canvas.create_rectangle(x1, y1, x2, y2, outline=color, width=width, tags="box")
+            self.video_canvas.create_text(min(x1, x2), max(0, min(y1, y2) - 10), text=ann["tag"], fill=color, anchor=tk.W, font=("Arial", 10, "bold"), tags="box")
+            if selected and self.video_mode.get() == "Edit":
+                for h_pos, hx, hy in [("tl", x1, y1), ("tr", x2, y1), ("bl", x1, y2), ("br", x2, y2)]:
+                    self.video_canvas.create_rectangle(hx - 6, hy - 6, hx + 6, hy + 6, fill="#FFFFFF", tags=("handle", h_pos))
+
+    def _video_clamp(self, coords):
+        # Keep boxes inside the image so exported YOLO labels stay within [0, 1].
+        x1, y1, x2, y2 = coords
+        w = max(1, self.video_img_width)
+        h = max(1, self.video_img_height)
+        return [
+            max(0, min(x1, w)), max(0, min(y1, h)),
+            max(0, min(x2, w)), max(0, min(y2, h)),
+        ]
+
+    def video_save_annotations(self):
+        if not self.video_image_paths or self.video_current_index < 0 or not self.video_img_width:
+            return
+        img_path = self.video_image_paths[self.video_current_index]
+        lbl_path = self._video_get_lbl_path(img_path)
+
+        if not self.video_annotations:
+            if os.path.exists(lbl_path):
+                os.remove(lbl_path)
+            return
+
+        with open(lbl_path, "w", encoding="utf-8") as f:
+            for ann in self.video_annotations:
+                tag = ann["tag"]
+                if tag not in self.video_tags:
+                    self.video_tags.append(tag)
+                    self.video_tag_cb['values'] = self.video_tags
+                    self._video_save_classes()
+                cls_id = self.video_tags.index(tag)
+                x1, y1, x2, y2 = self._video_clamp(ann["coords"])
+                cx = ((x1 + x2) / 2) / self.video_img_width
+                cy = ((y1 + y2) / 2) / self.video_img_height
+                w = abs(x2 - x1) / self.video_img_width
+                h = abs(y2 - y1) / self.video_img_height
+                f.write(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+
+    def video_toggle_mode(self):
+        if self.video_mode.get() == "Draw":
+            self.video_mode.set("Edit")
+            self.video_mode_btn.config(text="Mode: EDIT", bg="#E04A3F")
+        else:
+            self.video_mode.set("Draw")
+            self.video_mode_btn.config(text="Mode: DRAW", bg="#389379")
+            self.video_selected_box_idx = None
+        self.video_redraw_boxes()
+
+    def video_on_press(self, event):
+        if not self.video_image_paths:
+            return
+        x, y = event.x, event.y
+        if self.video_mode.get() == "Draw":
+            self.start_x, self.start_y = x, y
+            self.rect_id = self.video_canvas.create_rectangle(x, y, x, y, outline="#389379", width=2, tags="temp_box")
+        else:
+            self.video_drag_handle = None
+            items = self.video_canvas.find_withtag("current")
+            if items:
+                tags = self.video_canvas.gettags(items[0])
+                if "handle" in tags:
+                    self.video_drag_handle = tags[1]
+                    self.start_x, self.start_y = x, y
+                    return
+            self.video_selected_box_idx = next(
+                (idx for idx, ann in reversed(list(enumerate(self.video_annotations)))
+                 if min(ann["coords"][0], ann["coords"][2]) <= x <= max(ann["coords"][0], ann["coords"][2]) and
+                    min(ann["coords"][1], ann["coords"][3]) <= y <= max(ann["coords"][1], ann["coords"][3])), None
+            )
+            if self.video_selected_box_idx is not None:
+                self.video_active_tag.set(self.video_annotations[self.video_selected_box_idx]["tag"])
+                self.start_x, self.start_y = x, y
+            self.video_redraw_boxes()
+
+    def video_on_drag(self, event):
+        if not self.video_image_paths:
+            return
+        x, y = event.x, event.y
+        if self.video_mode.get() == "Draw" and self.rect_id:
+            self.video_canvas.coords(self.rect_id, self.start_x, self.start_y, x, y)
+        elif self.video_mode.get() == "Edit" and self.video_selected_box_idx is not None:
+            ann = self.video_annotations[self.video_selected_box_idx]
+            if self.video_drag_handle:
+                x1, y1, x2, y2 = ann["coords"]
+                if self.video_drag_handle == "tl":
+                    x1, y1 = x, y
+                elif self.video_drag_handle == "tr":
+                    x2, y1 = x, y
+                elif self.video_drag_handle == "bl":
+                    x1, y2 = x, y
+                elif self.video_drag_handle == "br":
+                    x2, y2 = x, y
+                ann["coords"] = [x1, y1, x2, y2]
+            else:
+                dx, dy = x - self.start_x, y - self.start_y
+                ann["coords"] = [c + d for c, d in zip(ann["coords"], [dx, dy, dx, dy])]
+            self.start_x, self.start_y = x, y
+            self.video_redraw_boxes()
+
+    def video_on_release(self, event):
+        if not self.video_image_paths:
+            return
+        if self.video_mode.get() == "Draw" and self.rect_id:
+            x1, y1, x2, y2 = self.video_canvas.coords(self.rect_id)
+            self.video_canvas.delete(self.rect_id)
+            self.rect_id = None
+            if abs(x2 - x1) > 5 and abs(y2 - y1) > 5:
+                self.video_annotations.append({"tag": self.video_active_tag.get().strip() or "object", "coords": self._video_clamp([x1, y1, x2, y2])})
+                self.video_save_annotations()
+                self.video_redraw_boxes()
+        elif self.video_mode.get() == "Edit" and self.video_selected_box_idx is not None:
+            ann = self.video_annotations[self.video_selected_box_idx]
+            ann["coords"] = self._video_clamp(ann["coords"])
+            self.video_save_annotations()
+            self.video_redraw_boxes()
+
+    def video_update_tag(self):
+        if self.video_selected_box_idx is not None:
+            new_tag = self.video_active_tag.get().strip()
+            if new_tag:
+                self.video_annotations[self.video_selected_box_idx]["tag"] = new_tag
+                self.video_save_annotations()
+                self.video_redraw_boxes()
+
+    def video_delete_box(self):
+        if self.video_selected_box_idx is not None:
+            del self.video_annotations[self.video_selected_box_idx]
+            self.video_selected_box_idx = None
+            self.video_save_annotations()
+            self.video_redraw_boxes()
+
+    def video_delete_image(self):
+        if not self.video_image_paths or self.video_current_index < 0:
+            return
+        img_path = self.video_image_paths[self.video_current_index]
+        if not messagebox.askyesno("Delete Image", f"Delete {os.path.basename(img_path)} and its label file?"):
+            return
+        lbl_path = self._video_get_lbl_path(img_path)
+        try:
+            os.remove(img_path)
+            if os.path.exists(lbl_path):
+                os.remove(lbl_path)
+            del self.video_image_paths[self.video_current_index]
+            self.video_current_index = max(0, min(self.video_current_index, len(self.video_image_paths) - 1))
+            if not self.video_image_paths:
+                self.video_canvas.delete("all")
+                self.video_counter_lbl.config(text="0 / 0")
+                self.update_status("Status: Video folder is now empty")
+            else:
+                self.video_show_image()
+        except OSError as e:
+            self.update_status(f"Status: Error deleting file - {e}")
+
+    def video_prev_image(self):
+        if self.video_image_paths and self.video_current_index > 0:
+            self.video_current_index -= 1
+            self.video_show_image()
+
+    def video_next_image(self):
+        if self.video_image_paths and self.video_current_index < len(self.video_image_paths) - 1:
+            self.video_current_index += 1
+            self.video_show_image()
 
     # --- File Execution Methods ---
     def load_selected_yaml(self):
@@ -912,7 +1368,7 @@ except Exception as e:
         self.stream_subprocess([self.venv_python, "-m", "pip", "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu118"])
 
         # Added 'soundfile' for saving wav chunks
-        self.stream_subprocess([self.venv_python, "-m", "pip", "install", "ultralytics", "librosa", "matplotlib", "soundfile"])
+        self.stream_subprocess([self.venv_python, "-m", "pip", "install", "ultralytics", "librosa", "matplotlib", "soundfile", "opencv-python"])
 
         self.root.after(0, self.append_console, "\n--- Installation Finished ---\n")
         self.root.after(0, lambda: self.update_status("Status: Requirements Installed"))

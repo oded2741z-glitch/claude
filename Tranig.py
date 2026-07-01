@@ -67,6 +67,14 @@ class TranigStudioApp:
         self.video_selected_box_idx = None
         self.video_drag_handle = None
 
+        # Training Studio state (independent torchvision trainer, no YOLO)
+        self.train_dataset_dir = None
+        self.train_classes = []
+        self.train_arch_var = tk.StringVar(value="Faster R-CNN")
+        self.train_epochs_var = tk.StringVar(value="10")
+        self.train_batch_var = tk.StringVar(value="2")
+        self.train_lr_var = tk.StringVar(value="0.005")
+
         self.root.bind("<F4>", self.toggle_visibility)
 
         self.load_settings()
@@ -215,6 +223,11 @@ class TranigStudioApp:
         self.tab_video = tk.Frame(self.notebook, bg="#121212")
         self.notebook.add(self.tab_video, text=" Video Studio ")
         self.setup_video_tab()
+
+        # TAB 5: Training Studio (independent, no YOLO)
+        self.tab_train = tk.Frame(self.notebook, bg="#121212")
+        self.notebook.add(self.tab_train, text=" Training Studio ")
+        self.setup_training_tab()
 
         btn_args = {"bg": "#333333", "fg": "#FFFFFF", "relief": "flat", "borderwidth": 0, "padx": 10, "pady": 5}
 
@@ -861,6 +874,392 @@ class TranigStudioApp:
         if self.video_image_paths and self.video_current_index < len(self.video_image_paths) - 1:
             self.video_current_index += 1
             self.video_show_image()
+
+    # --- Training Studio (independent torchvision trainer, no YOLO) ---
+    def setup_training_tab(self):
+        btn_args = {"bg": "#333333", "fg": "#FFFFFF", "relief": "flat", "borderwidth": 0, "padx": 10, "pady": 5}
+        tk.Label(self.tab_train, text="Training Studio (PyTorch / torchvision - no YOLO)", bg="#121212", fg="#E07A5F", font=("Arial", 16, "bold")).pack(pady=(15, 5))
+        tk.Label(self.tab_train, text="Multi-class object detection. Reads YOLO-format labels (images/ + labels/) and trains a standalone torchvision model.", bg="#121212", fg="#AAAAAA", font=("Arial", 10)).pack(pady=(0, 10))
+
+        data_lf = ttk.LabelFrame(self.tab_train, text=" 1. Dataset ")
+        data_lf.pack(fill=tk.X, padx=20, pady=5)
+        d_row = tk.Frame(data_lf, bg="#121212")
+        d_row.pack(fill=tk.X, pady=8, padx=5)
+        tk.Button(d_row, text="Select Dataset Folder", command=self.train_browse_dataset, **btn_args).pack(side=tk.LEFT, padx=5)
+        tk.Button(d_row, text="Use my_dataset", command=lambda: self.train_set_dataset(os.path.abspath("my_dataset")), **btn_args).pack(side=tk.LEFT, padx=5)
+        self.train_dataset_lbl = tk.Label(d_row, text="No dataset selected", bg="#121212", fg="#FFFFFF", font=("Arial", 10))
+        self.train_dataset_lbl.pack(side=tk.LEFT, padx=10)
+
+        cfg_lf = ttk.LabelFrame(self.tab_train, text=" 2. Training Configuration ")
+        cfg_lf.pack(fill=tk.X, padx=20, pady=5)
+        c_row = tk.Frame(cfg_lf, bg="#121212")
+        c_row.pack(fill=tk.X, pady=8, padx=5)
+
+        tk.Label(c_row, text="Architecture:", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+        arch_cb = ttk.Combobox(c_row, textvariable=self.train_arch_var, font=("Arial", 10), width=14, state="readonly")
+        arch_cb['values'] = ["Faster R-CNN", "SSD"]
+        arch_cb.pack(side=tk.LEFT, padx=5)
+
+        tk.Label(c_row, text="Epochs:", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(15, 2))
+        tk.Entry(c_row, textvariable=self.train_epochs_var, width=5, bg="#333333", fg="#FFFFFF", relief="flat", insertbackground="#FFFFFF").pack(side=tk.LEFT, padx=2)
+        tk.Label(c_row, text="Batch:", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(15, 2))
+        tk.Entry(c_row, textvariable=self.train_batch_var, width=5, bg="#333333", fg="#FFFFFF", relief="flat", insertbackground="#FFFFFF").pack(side=tk.LEFT, padx=2)
+        tk.Label(c_row, text="LR:", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(15, 2))
+        tk.Entry(c_row, textvariable=self.train_lr_var, width=7, bg="#333333", fg="#FFFFFF", relief="flat", insertbackground="#FFFFFF").pack(side=tk.LEFT, padx=2)
+
+        act_lf = ttk.LabelFrame(self.tab_train, text=" 3. Train & Test ")
+        act_lf.pack(fill=tk.X, padx=20, pady=5)
+        a_row = tk.Frame(act_lf, bg="#121212")
+        a_row.pack(fill=tk.X, pady=8, padx=5)
+        tk.Button(a_row, text="Start Training", command=self.train_model, bg="#81B29A", fg="#121212", font=("Arial", 10, "bold"), relief="flat", padx=15, pady=5).pack(side=tk.LEFT, padx=5)
+        tk.Button(a_row, text="Test Model on Image", command=self.train_test_model, **btn_args).pack(side=tk.LEFT, padx=5)
+        self.train_status_lbl = tk.Label(a_row, text="Output model: model.pth", bg="#121212", fg="#AAAAAA", font=("Arial", 10))
+        self.train_status_lbl.pack(side=tk.LEFT, padx=10)
+
+        tk.Label(self.tab_train, text="Training progress is streamed to the Vision Studio console.", bg="#121212", fg="#555555", font=("Arial", 9)).pack(pady=10)
+
+    def train_browse_dataset(self):
+        folder = filedialog.askdirectory(title="Select Dataset Folder (must contain 'images' and 'labels')")
+        if folder:
+            self.train_set_dataset(folder)
+
+    def train_set_dataset(self, folder):
+        if not os.path.exists(os.path.join(folder, "images")):
+            self.update_status("Status: Error - Folder has no 'images' subfolder")
+            self.train_dataset_lbl.config(text="Invalid folder (no images/)")
+            return
+        self.train_dataset_dir = folder
+        self.train_classes = self._read_dataset_classes(folder)
+        name = os.path.basename(folder.rstrip(os.sep)) or folder
+        if self.train_classes:
+            self.train_dataset_lbl.config(text=f"{name}  |  {len(self.train_classes)} classes: {', '.join(self.train_classes)}")
+        else:
+            self.train_dataset_lbl.config(text=f"{name}  |  no classes/labels found")
+        self.update_status(f"Status: Dataset set to {name}")
+
+    def _read_dataset_classes(self, folder):
+        classes_path = os.path.join(folder, "classes.txt")
+        if os.path.exists(classes_path):
+            with open(classes_path, "r", encoding="utf-8") as f:
+                names = [line.strip() for line in f if line.strip()]
+            if names:
+                return names
+        for yaml_name in ("data.yaml", "data_split.yaml"):
+            yaml_path = os.path.join(folder, yaml_name)
+            if os.path.exists(yaml_path):
+                names = self._parse_yaml_names(yaml_path)
+                if names:
+                    return names
+        # Fall back to inferring class count from the label files themselves.
+        lbl_dir = os.path.join(folder, "labels")
+        max_id = -1
+        if os.path.exists(lbl_dir):
+            for fn in os.listdir(lbl_dir):
+                if fn.lower().endswith(".txt"):
+                    with open(os.path.join(lbl_dir, fn), "r", encoding="utf-8") as f:
+                        for line in f:
+                            parts = line.split()
+                            if parts:
+                                try:
+                                    max_id = max(max_id, int(float(parts[0])))
+                                except ValueError:
+                                    pass
+        if max_id >= 0:
+            return [f"class_{i}" for i in range(max_id + 1)]
+        return []
+
+    def _parse_yaml_names(self, yaml_path):
+        names = []
+        in_names = False
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith("names:"):
+                    in_names = True
+                    continue
+                if in_names and ":" in line:
+                    names.append(line.split(":", 1)[1].strip().strip("'\""))
+                elif in_names and line.strip() and not line.startswith(" "):
+                    break
+        return names
+
+    def train_model(self):
+        if not self.venv_python:
+            self.update_status("Status: Error - Please activate environment first")
+            return
+        if not self.train_dataset_dir:
+            self.update_status("Status: Error - Please select a dataset folder first")
+            return
+        if not self.train_classes:
+            self.update_status("Status: Error - No classes found in dataset")
+            return
+        try:
+            epochs = int(self.train_epochs_var.get())
+            batch = int(self.train_batch_var.get())
+            lr = float(self.train_lr_var.get())
+            if epochs <= 0 or batch <= 0 or lr <= 0:
+                raise ValueError
+        except ValueError:
+            self.update_status("Status: Error - Invalid epochs / batch / lr")
+            return
+        if self.is_running:
+            self.update_status("Status: Error - Another process is already running")
+            return
+
+        out_path = os.path.abspath("model.pth")
+        script = self._build_train_script(self.train_dataset_dir, self.train_arch_var.get(), epochs, batch, lr, out_path, self.train_classes)
+        with open("train_torch_script.py", "w", encoding="utf-8") as f:
+            f.write(script)
+
+        self.notebook.select(self.tab_main)
+        self.update_status("Status: Training started...")
+        self.console.delete("1.0", tk.END)
+        self.append_console(f"--- Training {self.train_arch_var.get()} on {len(self.train_classes)} classes ---\n")
+        self.start_task(self._train_thread)
+
+    def _train_thread(self):
+        self.stream_subprocess([self.venv_python, "train_torch_script.py"])
+        if os.path.exists("train_torch_script.py"):
+            try:
+                os.remove("train_torch_script.py")
+            except OSError:
+                pass
+        self.root.after(0, lambda: self.update_status("Status: Training finished (see console)"))
+
+    def train_test_model(self):
+        if not self.venv_python:
+            self.update_status("Status: Error - Please activate environment first")
+            return
+        model_path = filedialog.askopenfilename(title="Select Trained Model (.pth)", filetypes=[("PyTorch Model", "*.pth")])
+        if not model_path:
+            return
+        image_path = filedialog.askopenfilename(title="Select Image to Test", filetypes=[("Images", "*.png *.jpg *.jpeg")])
+        if not image_path:
+            return
+        if self.is_running:
+            self.update_status("Status: Error - Another process is already running")
+            return
+
+        out_path = os.path.splitext(image_path)[0] + "_pred.jpg"
+        script = self._build_infer_script(model_path, image_path, out_path, 0.5)
+        with open("infer_torch_script.py", "w", encoding="utf-8") as f:
+            f.write(script)
+
+        self.notebook.select(self.tab_main)
+        self.update_status("Status: Running inference...")
+        self.console.delete("1.0", tk.END)
+        self.append_console("--- Running inference ---\n")
+        self.start_task(lambda: self._infer_thread(out_path))
+
+    def _infer_thread(self, out_path):
+        self.stream_subprocess([self.venv_python, "infer_torch_script.py"])
+        if os.path.exists("infer_torch_script.py"):
+            try:
+                os.remove("infer_torch_script.py")
+            except OSError:
+                pass
+        if os.path.exists(out_path):
+            self.root.after(0, lambda: self._open_file(out_path))
+            self.root.after(0, lambda: self.update_status(f"Status: Saved prediction to {os.path.basename(out_path)}"))
+        else:
+            self.root.after(0, lambda: self.update_status("Status: Inference finished (see console)"))
+
+    def _open_file(self, path):
+        try:
+            if os.name == "nt":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", path])
+            else:
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
+
+    _TORCH_MODEL_BODY = '''
+import os, sys
+try:
+    import torch
+    import torchvision
+except ImportError:
+    print("Error: torch/torchvision not found. Click 'Install Requirements' first.")
+    sys.exit(1)
+
+
+def build_model(arch, num_classes):
+    if arch == "SSD":
+        from torchvision.models.detection.ssd import SSDClassificationHead
+        from torchvision.models.detection import _utils as det_utils
+        model = torchvision.models.detection.ssd300_vgg16(weights="DEFAULT")
+        in_channels = det_utils.retrieve_out_channels(model.backbone, (300, 300))
+        num_anchors = model.anchor_generator.num_anchors_per_location()
+        model.head.classification_head = SSDClassificationHead(in_channels, num_anchors, num_classes)
+    else:
+        from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+        model = torchvision.models.detection.fasterrcnn_resnet50_fpn(weights="DEFAULT")
+        in_features = model.roi_heads.box_predictor.cls_score.in_features
+        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    return model
+'''
+
+    def _build_train_script(self, dataset_dir, arch, epochs, batch, lr, out_path, classes):
+        header = (
+            "DATASET_DIR = %r\n"
+            "ARCH = %r\n"
+            "EPOCHS = %d\n"
+            "BATCH = %d\n"
+            "LR = %f\n"
+            "OUT_PATH = %r\n"
+            "CLASSES = %r\n"
+        ) % (dataset_dir, arch, epochs, batch, lr, out_path, list(classes))
+        body = '''
+from PIL import Image
+import torchvision.transforms.functional as TF
+from torch.utils.data import Dataset, DataLoader
+
+IMG_DIR = os.path.join(DATASET_DIR, "images")
+LBL_DIR = os.path.join(DATASET_DIR, "labels")
+IMG_EXTS = (".png", ".jpg", ".jpeg")
+
+
+def list_samples():
+    samples = []
+    for name in sorted(os.listdir(IMG_DIR)):
+        if not name.lower().endswith(IMG_EXTS):
+            continue
+        base = os.path.splitext(name)[0]
+        lbl = os.path.join(LBL_DIR, base + ".txt")
+        if not os.path.exists(lbl):
+            continue
+        rows = []
+        with open(lbl, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) != 5:
+                    continue
+                try:
+                    c, cx, cy, w, h = map(float, parts)
+                except ValueError:
+                    continue
+                rows.append((int(c), cx, cy, w, h))
+        if rows:
+            samples.append((os.path.join(IMG_DIR, name), rows))
+    return samples
+
+
+class DetectionDataset(Dataset):
+    def __init__(self, samples):
+        self.samples = samples
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, rows = self.samples[idx]
+        img = Image.open(path).convert("RGB")
+        W, H = img.size
+        boxes, labels = [], []
+        for c, cx, cy, w, h in rows:
+            x1 = max(0.0, min((cx - w / 2) * W, W))
+            y1 = max(0.0, min((cy - h / 2) * H, H))
+            x2 = max(0.0, min((cx + w / 2) * W, W))
+            y2 = max(0.0, min((cy + h / 2) * H, H))
+            if x2 - x1 < 1 or y2 - y1 < 1:
+                continue
+            boxes.append([x1, y1, x2, y2])
+            labels.append(c + 1)  # +1: torchvision reserves class 0 for background
+        if not boxes:
+            boxes = [[0.0, 0.0, 1.0, 1.0]]
+            labels = [0]
+        target = {
+            "boxes": torch.tensor(boxes, dtype=torch.float32),
+            "labels": torch.tensor(labels, dtype=torch.int64),
+        }
+        return TF.to_tensor(img), target
+
+
+def main():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Device:", device, flush=True)
+    samples = list_samples()
+    print("Found", len(samples), "labeled images", flush=True)
+    if not samples:
+        print("Error: no labeled images found in", LBL_DIR)
+        sys.exit(1)
+
+    num_classes = len(CLASSES) + 1  # + background
+    print("Classes:", CLASSES, flush=True)
+
+    ds = DetectionDataset(samples)
+    loader = DataLoader(ds, batch_size=BATCH, shuffle=True, collate_fn=lambda b: tuple(zip(*b)))
+
+    model = build_model(ARCH, num_classes).to(device)
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.SGD(params, lr=LR, momentum=0.9, weight_decay=0.0005)
+
+    model.train()
+    for epoch in range(EPOCHS):
+        running = 0.0
+        for images, targets in loader:
+            images = [img.to(device) for img in images]
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+            loss_dict = model(images, targets)
+            loss = sum(l for l in loss_dict.values())
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            running += float(loss.item())
+        print("Epoch %d/%d - loss: %.4f" % (epoch + 1, EPOCHS, running / max(1, len(loader))), flush=True)
+
+    torch.save({"model_state": model.state_dict(), "classes": CLASSES, "arch": ARCH}, OUT_PATH)
+    print("Saved model to", OUT_PATH, flush=True)
+
+
+if __name__ == "__main__":
+    main()
+'''
+        return header + self._TORCH_MODEL_BODY + body
+
+    def _build_infer_script(self, model_path, image_path, out_path, conf):
+        header = (
+            "MODEL_PATH = %r\n"
+            "IMAGE_PATH = %r\n"
+            "OUT_PATH = %r\n"
+            "CONF = %f\n"
+        ) % (model_path, image_path, out_path, conf)
+        body = '''
+from PIL import Image, ImageDraw
+import torchvision.transforms.functional as TF
+
+ckpt = torch.load(MODEL_PATH, map_location="cpu")
+classes = ckpt.get("classes", [])
+arch = ckpt.get("arch", "Faster R-CNN")
+num_classes = len(classes) + 1
+
+model = build_model(arch, num_classes)
+model.load_state_dict(ckpt["model_state"])
+model.eval()
+
+img = Image.open(IMAGE_PATH).convert("RGB")
+x = TF.to_tensor(img)
+with torch.no_grad():
+    pred = model([x])[0]
+
+draw = ImageDraw.Draw(img)
+kept = 0
+for box, label, score in zip(pred["boxes"], pred["labels"], pred["scores"]):
+    if float(score) < CONF:
+        continue
+    x1, y1, x2, y2 = [float(v) for v in box.tolist()]
+    cls_idx = int(label) - 1
+    name = classes[cls_idx] if 0 <= cls_idx < len(classes) else str(cls_idx)
+    draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
+    draw.text((x1, max(0, y1 - 12)), "%s %.2f" % (name, float(score)), fill="red")
+    kept += 1
+
+img.save(OUT_PATH)
+print("Detections above %.2f: %d" % (CONF, kept), flush=True)
+print("Saved:", OUT_PATH, flush=True)
+'''
+        return header + self._TORCH_MODEL_BODY + body
 
     # --- File Execution Methods ---
     def load_selected_yaml(self):

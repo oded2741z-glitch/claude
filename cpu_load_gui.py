@@ -114,36 +114,56 @@ _CL_DEVICE_TYPE_ALL = 0xFFFFFFFF
 _CL_MEM_READ_WRITE = 1
 _CL_DEVICE_NAME = 0x102B
 
+# The stress kernel renders a plasma animation frame — every pixel runs a
+# tunable amount of trig math, so the visible animation IS the load.
 _CL_KERNEL = b"""
-__kernel void burn(__global float *buf, const int iters) {
+__kernel void frame(__global uchar *img, const float t, const int iters,
+                    const int W, const int H) {
     int gid = get_global_id(0);
-    float x = buf[gid] + gid * 1e-7f;
+    if (gid >= W * H) return;
+    float u = (gid % W) / (float)W * 2.0f - 1.0f;
+    float v = (gid / W) / (float)H * 2.0f - 1.0f;
+    float x = u, y = v, acc = 0.0f;
     for (int i = 0; i < iters; i++) {
-        x = mad(x, 1.0000001f, 1e-7f);
-        x = sin(x) * cos(x) + x * 0.5f + 0.25f;
-        x = x - floor(x);
+        float fi = (float)i;
+        acc += sin(x * (3.0f + fi * 0.021f) + t)
+             + cos(y * (4.0f + fi * 0.017f) - t * 1.3f);
+        float nx = x * 0.9998f - y * 0.02f + 0.004f * sin(t + fi * 0.1f);
+        y = x * 0.02f + y * 0.9998f + 0.004f * cos(t * 0.7f + fi * 0.13f);
+        x = nx;
     }
-    buf[gid] = x;
+    float w1 = 0.5f + 0.5f * sin(acc * 0.5f + t);
+    float w2 = 0.5f + 0.5f * sin(acc * 0.5f + t + 2.094f);
+    float w3 = 0.5f + 0.5f * sin(acc * 0.5f + t + 4.188f);
+    float vig = clamp(1.25f - (u * u + v * v), 0.0f, 1.0f);
+    img[gid * 3 + 0] = (uchar)(255.0f * w1 * vig);
+    img[gid * 3 + 1] = (uchar)(255.0f * w2 * vig * 0.85f);
+    img[gid * 3 + 2] = (uchar)(255.0f * w3 * vig * 0.55f);
 }
 """
 
 
 class GpuBurner:
     """Generates GPU load through OpenCL, which ships with GPU drivers on
-    Windows/Linux/macOS — no Python packages needed. Runs kernel bursts on
-    a duty cycle, like the CPU workers. Unavailable if no OpenCL GPU."""
+    Windows/Linux/macOS — no Python packages needed. Each burst renders a
+    plasma-animation frame (FurMark-style: the animation is the load) on
+    the same duty cycle as the CPU workers. Unavailable if no OpenCL GPU."""
 
-    GLOBAL_SIZE = 1 << 20
-    TARGET_BURST = 0.03          # seconds per kernel launch
+    FRAME_W = 320
+    FRAME_H = 320
+    TARGET_BURST = 0.03          # seconds per rendered frame
 
     def __init__(self, device_type=_CL_DEVICE_TYPE_GPU):
         self.available = False
         self.reason = None
         self.device_name = None
         self.intensity = 50.0
+        self.frame = None            # latest rendered frame as binary PPM
+        self._frame_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
-        self._iters = 256
+        self._iters = 64
+        self._t = 0.0
         try:
             self._init_cl(device_type)
             self.available = True
@@ -211,32 +231,55 @@ class GpuBurner:
             raise RuntimeError("clCreateProgramWithSource failed")
         if cl.clBuildProgram(ct.c_void_p(prog), 1, devarr, b"", None, None) != 0:
             raise RuntimeError("OpenCL kernel build failed")
-        kern = cl.clCreateKernel(ct.c_void_p(prog), b"burn", ct.byref(err))
+        kern = cl.clCreateKernel(ct.c_void_p(prog), b"frame", ct.byref(err))
         if not kern or err.value != 0:
             raise RuntimeError("clCreateKernel failed")
 
+        nbytes = self.FRAME_W * self.FRAME_H * 3
         membuf = cl.clCreateBuffer(ct.c_void_p(ctx), ct.c_ulonglong(_CL_MEM_READ_WRITE),
-                                   ct.c_size_t(self.GLOBAL_SIZE * 4), None, ct.byref(err))
+                                   ct.c_size_t(nbytes), None, ct.byref(err))
         if not membuf or err.value != 0:
             raise RuntimeError("clCreateBuffer failed")
         mem_handle = ct.c_void_p(membuf)
-        if cl.clSetKernelArg(ct.c_void_p(kern), 0, ct.c_size_t(ct.sizeof(ct.c_void_p)),
+        kern_p = ct.c_void_p(kern)
+        if cl.clSetKernelArg(kern_p, 0, ct.c_size_t(ct.sizeof(ct.c_void_p)),
                              ct.byref(mem_handle)) != 0:
             raise RuntimeError("clSetKernelArg failed")
+        for idx, val in ((3, ct.c_int(self.FRAME_W)), (4, ct.c_int(self.FRAME_H))):
+            if cl.clSetKernelArg(kern_p, idx, ct.c_size_t(4), ct.byref(val)) != 0:
+                raise RuntimeError("clSetKernelArg failed")
 
         self._cl, self._queue, self._kern = cl, queue, kern
         self._mem = mem_handle          # keep alive
+        self._host = (ct.c_ubyte * nbytes)()
+        self._ppm_header = b"P6\n%d %d\n255\n" % (self.FRAME_W, self.FRAME_H)
 
     def _launch(self, iters):
+        """Render one animation frame on the GPU and read it back."""
         cl = self._cl
-        arg = ct.c_int(iters)
-        if cl.clSetKernelArg(ct.c_void_p(self._kern), 1, ct.c_size_t(4), ct.byref(arg)) != 0:
+        kern_p = ct.c_void_p(self._kern)
+        q_p = ct.c_void_p(self._queue)
+        t_arg = ct.c_float(self._t)
+        i_arg = ct.c_int(iters)
+        if (cl.clSetKernelArg(kern_p, 1, ct.c_size_t(4), ct.byref(t_arg)) != 0 or
+                cl.clSetKernelArg(kern_p, 2, ct.c_size_t(4), ct.byref(i_arg)) != 0):
             raise RuntimeError("clSetKernelArg failed")
-        gsz = ct.c_size_t(self.GLOBAL_SIZE)
-        if cl.clEnqueueNDRangeKernel(ct.c_void_p(self._queue), ct.c_void_p(self._kern),
-                                     1, None, ct.byref(gsz), None, 0, None, None) != 0:
+        gsz = ct.c_size_t(self.FRAME_W * self.FRAME_H)
+        if cl.clEnqueueNDRangeKernel(q_p, kern_p, 1, None, ct.byref(gsz),
+                                     None, 0, None, None) != 0:
             raise RuntimeError("clEnqueueNDRangeKernel failed")
-        cl.clFinish(ct.c_void_p(self._queue))
+        if cl.clEnqueueReadBuffer(q_p, self._mem, 1, ct.c_size_t(0),
+                                  ct.c_size_t(len(self._host)), self._host,
+                                  0, None, None) != 0:
+            raise RuntimeError("clEnqueueReadBuffer failed")
+        cl.clFinish(q_p)
+        self._t += 0.06
+        with self._frame_lock:
+            self.frame = self._ppm_header + bytes(self._host)
+
+    def get_frame(self):
+        with self._frame_lock:
+            return self.frame
 
     @property
     def running(self):
@@ -272,9 +315,9 @@ class GpuBurner:
                     self.available, self.reason = False, str(e)
                     return
                 dt = time.perf_counter() - k0
-                if dt > 0:   # steer launches toward TARGET_BURST seconds each
-                    self._iters = max(16, min(1 << 15,
-                                              int(self._iters * self.TARGET_BURST / dt) or 16))
+                if dt > 0:   # steer frame renders toward TARGET_BURST seconds each
+                    self._iters = max(8, min(1 << 14,
+                                             int(self._iters * self.TARGET_BURST / dt) or 8))
             rest = period - (time.perf_counter() - t0)
             if rest > 0:
                 time.sleep(rest)
@@ -717,7 +760,12 @@ class App:
                               height=max(46, 24 * ((engine.cpu_count + 1) // 2)))
         self.bars.pack(fill="x", padx=14, pady=(6, 12))
 
+        self._anim_win = None
+        self._anim_lbl = None
+        self._anim_img = None
+        self._anim_closed = False    # user closed the window during this run
         self._tick()
+        self._anim_tick()
 
     # -- widget helpers ------------------------------------------------------
     def _card(self, parent):
@@ -808,8 +856,52 @@ class App:
             self.engine.set_target(self.target.get())
             self.engine.start(self._workers_n(), self._duration_s())
             if self.gpu_on.get() and self.gpu.available:
+                self._anim_closed = False
                 self.gpu.start()
         self._paint_state()
+
+    # -- gpu animation window ---------------------------------------------------
+    def _open_anim(self):
+        win = tk.Toplevel(self.root)
+        win.title("GPU Stress Animation")
+        win.configure(bg=PAGE)
+        win.resizable(False, False)
+        win.geometry("+%d+%d" % (self.root.winfo_rootx() + self.root.winfo_width() + 16,
+                                 self.root.winfo_rooty()))
+        self._anim_lbl = tk.Label(win, bg=PAGE, bd=0,
+                                  width=self.gpu.FRAME_W, height=self.gpu.FRAME_H)
+        self._anim_lbl.pack(padx=10, pady=(10, 4))
+        tk.Label(win, text=(self.gpu.device_name or "GPU")[:44],
+                 font=self.f_small, bg=PAGE, fg=MUTED).pack(pady=(0, 8))
+        win.protocol("WM_DELETE_WINDOW", self._close_anim_by_user)
+        self._anim_win = win
+
+    def _close_anim_by_user(self):
+        self._anim_closed = True     # load keeps running, window stays closed
+        self._destroy_anim()
+
+    def _destroy_anim(self):
+        if self._anim_win is not None:
+            self._anim_win.destroy()
+        self._anim_win, self._anim_lbl, self._anim_img = None, None, None
+
+    def _anim_tick(self):
+        if self.gpu.running:
+            if self._anim_win is None and not self._anim_closed:
+                self._open_anim()
+            if self._anim_lbl is not None:
+                frame = self.gpu.get_frame()
+                if frame:
+                    try:
+                        img = tk.PhotoImage(data=frame)
+                        self._anim_lbl.configure(image=img, width=img.width(),
+                                                 height=img.height())
+                        self._anim_img = img   # keep a reference or tk drops it
+                    except tk.TclError:
+                        pass
+        elif self._anim_win is not None:
+            self._destroy_anim()
+        self.root.after(80, self._anim_tick)
 
     def _paint_state(self):
         if self.engine.running:

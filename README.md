@@ -33,8 +33,8 @@ No dependencies — Python standard library only.
 | Windows | WMI via PowerShell: [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) / OpenHardwareMonitor sensors if the app is running, otherwise the ACPI thermal zone |
 | WSL | Windows WMI through `powershell.exe` |
 
-**Windows note:** many PCs don't expose the ACPI thermal zone to regular users — if the temperature shows "—", either run the app **as Administrator**, or (better) install and run **LibreHardwareMonitor**; the app picks up its CPU sensor automatically within a few seconds.
+**Windows note:** many PCs don't expose the ACPI thermal zone to regular users. When that happens the temperature tile shows "—" with a **"click to restart as Administrator"** link — clicking it relaunches the app elevated (UAC prompt), no manual steps needed. Alternatively, run **LibreHardwareMonitor** in the background and the app picks up its CPU sensor automatically. If your Windows account has no admin rights at all, Windows provides no way to read the CPU temperature and the tile stays "—".
 
-**הערה ל-Windows:** אם הטמפרטורה מציגה "—", הריצו את התוכנה כמנהל (Run as Administrator), או עדיף — התקינו והריצו את LibreHardwareMonitor (חינמי); התוכנה תזהה את החיישן שלו אוטומטית.
+**הערה ל-Windows:** אם הטמפרטורה מציגה "—", יופיע בכרטיס הטמפרטורה קישור **"click to restart as Administrator"** — לחיצה עליו מפעילה את התוכנה מחדש עם הרשאות מנהל (חלון UAC) באופן אוטומטי. לחלופין, הריצו LibreHardwareMonitor ברקע והתוכנה תזהה את החיישן שלו. אם לחשבון שלכם אין הרשאות מנהל בכלל — Windows לא מאפשר קריאת טמפרטורה, והכרטיס יישאר "—".
 
 > ⚠️ This tool is for stress-testing your own machine (cooling, throttling, behavior under load). A sustained 100% load heats the CPU — use common sense.

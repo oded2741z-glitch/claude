@@ -168,14 +168,41 @@ _PS_TEMP_SCRIPT = (
 )
 
 
+IS_WINDOWS = os.name == "nt"
+
+
 def find_powershell():
-    if os.name == "nt":
+    if IS_WINDOWS:
         return shutil.which("powershell") or shutil.which("pwsh")
     return shutil.which("powershell.exe")  # running under WSL
 
 
+def is_windows_admin():
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (OSError, AttributeError):
+        return False
+
+
+def relaunch_as_admin():
+    """Restart this script elevated (UAC prompt). True if launch succeeded."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        import ctypes
+        script = os.path.abspath(sys.argv[0])
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, f'"{script}"', None, 1)
+        return rc > 32  # ShellExecute returns >32 on success
+    except (OSError, AttributeError):
+        return False
+
+
 def read_temp_powershell(exe):
-    flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+    flags = 0x08000000 if IS_WINDOWS else 0  # CREATE_NO_WINDOW
     try:
         out = subprocess.run(
             [exe, "-NoProfile", "-NonInteractive", "-Command", _PS_TEMP_SCRIPT],
@@ -406,6 +433,12 @@ class App:
         self.tile_temp = self._tile(dash, 1, "CPU TEMPERATURE")
         self.tile_left = self._tile(dash, 2, "TIME LEFT")
 
+        # shown in the temperature tile when Windows exposes no sensor
+        self.temp_hint = tk.Label(self.tile_temp.master, font=(base, 8, "underline"),
+                                  bg=CARD, fg=BLUE, cursor="hand2")
+        self.temp_hint.bind("<Button-1>", lambda e: self._temp_hint_click())
+        self._temp_hint_mode = None   # None | "elevate" | "lhm"
+
         chart_card = self._card(dash)
         chart_card.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
         tk.Label(chart_card, text="CPU usage — last 60 seconds",
@@ -461,6 +494,32 @@ class App:
         except ValueError:
             return self.engine.cpu_count
 
+    def _update_temp_hint(self, temp):
+        """Offer a fix in the temperature tile when Windows shows no sensor."""
+        if temp is not None or not IS_WINDOWS:
+            mode = None
+        elif not is_windows_admin():
+            mode = "elevate"
+        else:
+            mode = "lhm"
+        if mode == self._temp_hint_mode:
+            return
+        self._temp_hint_mode = mode
+        if mode is None:
+            self.temp_hint.pack_forget()
+        else:
+            self.temp_hint.config(
+                text="click to restart as Administrator" if mode == "elevate"
+                else "no sensor — install LibreHardwareMonitor",
+                cursor="hand2" if mode == "elevate" else "arrow")
+            self.temp_hint.pack(anchor="w", padx=14, pady=(0, 8))
+
+    def _temp_hint_click(self):
+        if self._temp_hint_mode == "elevate" and relaunch_as_admin():
+            self.engine.stop()
+            self.root.destroy()
+            sys.exit(0)
+
     def _toggle(self):
         if self.engine.running:
             self.engine.stop()
@@ -491,6 +550,7 @@ class App:
         else:
             color = RED if s.temp >= 85 else AMBER if s.temp >= 70 else INK
             self.tile_temp.config(text=f"{s.temp:.0f}°C", fg=color)
+        self._update_temp_hint(s.temp)
 
         rem = self.engine.remaining
         if not self.engine.running:

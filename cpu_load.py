@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import glob
 import json
 import multiprocessing as mp
 import os
@@ -46,6 +47,8 @@ class LoadEngine:
         self._stop = mp.Event()
         self._procs = []
         self._lock = threading.Lock()
+        self._until = None
+        self._timer = None
 
     @property
     def running(self):
@@ -59,10 +62,17 @@ class LoadEngine:
     def target(self):
         return self._target.value
 
+    @property
+    def remaining(self):
+        """Seconds until auto-stop, or None if unlimited / not running."""
+        if self._until is None or not self._procs:
+            return None
+        return max(0.0, self._until - time.time())
+
     def set_target(self, pct):
         self._target.value = min(100.0, max(0.0, float(pct)))
 
-    def start(self, workers):
+    def start(self, workers, duration=0):
         with self._lock:
             self._stop_locked()
             workers = min(self.cpu_count * 2, max(1, int(workers)))
@@ -71,12 +81,36 @@ class LoadEngine:
                 p = mp.Process(target=_worker, args=(self._target, self._stop), daemon=True)
                 p.start()
                 self._procs.append(p)
+            self._set_duration_locked(duration)
+
+    def set_duration(self, duration):
+        with self._lock:
+            self._set_duration_locked(duration)
+
+    def _set_duration_locked(self, duration):
+        if self._timer:
+            self._timer.cancel()
+            self._timer = None
+        self._until = None
+        try:
+            duration = float(duration or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        if self._procs and duration > 0:
+            self._until = time.time() + duration
+            self._timer = threading.Timer(duration, self.stop)
+            self._timer.daemon = True
+            self._timer.start()
 
     def stop(self):
         with self._lock:
             self._stop_locked()
 
     def _stop_locked(self):
+        if self._timer:
+            self._timer.cancel()
+            self._timer = None
+        self._until = None
         if not self._procs:
             return
         self._stop.set()
@@ -89,6 +123,47 @@ class LoadEngine:
 
 # ---------------------------------------------------------------- cpu sampler
 
+_CPU_SENSOR_HINTS = ("pkg", "cpu", "core", "x86", "soc", "k10temp", "zenpower", "acpitz")
+
+
+def read_cpu_temp(sys_root="/sys", psutil_mod=None):
+    """CPU temperature in °C, or None if no sensor is available."""
+    candidates = []  # (is_cpu_sensor, temp)
+    for zone in glob.glob(sys_root + "/class/thermal/thermal_zone*"):
+        try:
+            with open(zone + "/temp") as f:
+                t = int(f.read().strip()) / 1000.0
+            with open(zone + "/type") as f:
+                kind = f.read().strip().lower()
+        except (OSError, ValueError):
+            continue
+        if 0 < t < 150:
+            candidates.append((any(h in kind for h in _CPU_SENSOR_HINTS), t))
+    for path in glob.glob(sys_root + "/class/hwmon/hwmon*/temp*_input"):
+        try:
+            with open(path) as f:
+                t = int(f.read().strip()) / 1000.0
+            with open(os.path.dirname(path) + "/name") as f:
+                kind = f.read().strip().lower()
+        except (OSError, ValueError):
+            continue
+        if 0 < t < 150:
+            candidates.append((any(h in kind for h in _CPU_SENSOR_HINTS), t))
+    if psutil_mod and not candidates:
+        try:
+            for kind, entries in (psutil_mod.sensors_temperatures() or {}).items():
+                for e in entries:
+                    if e.current and 0 < e.current < 150:
+                        candidates.append(
+                            (any(h in kind.lower() for h in _CPU_SENSOR_HINTS), e.current))
+        except (AttributeError, OSError):
+            pass
+    if not candidates:
+        return None
+    cpu_only = [t for is_cpu, t in candidates if is_cpu]
+    return max(cpu_only) if cpu_only else max(t for _, t in candidates)
+
+
 class CpuSampler:
     """Samples real CPU usage. Uses /proc/stat on Linux, psutil elsewhere
     if installed; otherwise reports no measurements (GUI shows target only)."""
@@ -97,14 +172,14 @@ class CpuSampler:
         self.interval = interval
         self.total = None          # overall usage %, or None if unavailable
         self.cores = []            # per-core usage %
+        self.temp = None           # CPU temperature °C, or None if no sensor
         self._prev = None
         self._psutil = None
-        if not os.path.exists("/proc/stat"):
-            try:
-                import psutil
-                self._psutil = psutil
-            except ImportError:
-                pass
+        try:
+            import psutil
+            self._psutil = psutil
+        except ImportError:
+            pass
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
 
@@ -114,14 +189,17 @@ class CpuSampler:
                 self._sample()
             except Exception:
                 self.total, self.cores = None, []
+            try:
+                self.temp = read_cpu_temp(psutil_mod=self._psutil)
+            except Exception:
+                self.temp = None
             time.sleep(self.interval)
 
     def _sample(self):
-        if self._psutil:
-            self.cores = self._psutil.cpu_percent(percpu=True)
-            self.total = sum(self.cores) / max(1, len(self.cores))
-            return
         if not os.path.exists("/proc/stat"):
+            if self._psutil:
+                self.cores = self._psutil.cpu_percent(percpu=True)
+                self.total = sum(self.cores) / max(1, len(self.cores))
             return
         with open("/proc/stat") as f:
             lines = [l.split() for l in f if l.startswith("cpu")]
@@ -169,10 +247,12 @@ def make_handler(engine, sampler):
                 self._json({
                     "cpu": sampler.total,
                     "cores": sampler.cores,
+                    "temp": sampler.temp,
                     "running": engine.running,
                     "target": engine.target,
                     "workers": engine.workers,
                     "cpuCount": engine.cpu_count,
+                    "remaining": engine.remaining,
                 })
             else:
                 self._json({"error": "not found"}, 404)
@@ -191,11 +271,15 @@ def make_handler(engine, sampler):
                 engine.set_target(req["target"])
             action = req.get("action")
             if action == "start":
-                engine.start(req.get("workers", engine.cpu_count))
+                engine.start(req.get("workers", engine.cpu_count),
+                             req.get("duration", 0))
             elif action == "stop":
                 engine.stop()
+            elif "duration" in req:
+                engine.set_duration(req["duration"])
             self._json({"ok": True, "running": engine.running,
-                        "workers": engine.workers, "target": engine.target})
+                        "workers": engine.workers, "target": engine.target,
+                        "remaining": engine.remaining})
 
     return Handler
 
@@ -277,6 +361,14 @@ PAGE = r"""<!doctype html>
   .stepper .val { font-size: 20px; font-weight: 650; min-width: 2.2ch; text-align: center;
                   font-variant-numeric: tabular-nums; }
   .stepper .of { color: var(--muted); font-size: 13px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    padding: 6px 13px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--ink-2); font-size: 12.5px;
+    font-family: inherit; cursor: pointer; transition: background .15s;
+  }
+  .chip:hover { background: #2e2e2c; }
+  .chip.sel { background: var(--series); border-color: var(--series); color: #fff; font-weight: 600; }
   .go {
     width: 100%; margin-top: 22px; padding: 13px; font-size: 16px; font-weight: 700;
     border: none; border-radius: 12px; cursor: pointer;
@@ -292,8 +384,10 @@ PAGE = r"""<!doctype html>
   .tile { background: var(--surface); border: 1px solid var(--border);
           border-radius: 14px; padding: 16px 20px; }
   .tile .k { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-  .tile .v { font-size: 28px; font-weight: 700; }
+  .tile .v { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .tile .v small { font-size: 15px; color: var(--ink-2); font-weight: 500; }
+  .tile .v.warm { color: #fab219; }
+  .tile .v.hot { color: #d03b3b; }
 
   /* chart */
   .chart-wrap { position: relative; direction: ltr; }
@@ -340,6 +434,8 @@ PAGE = r"""<!doctype html>
       <span class="of" id="wOf">מתוך 1 ליבות</span>
       <button id="wPlus" aria-label="יותר">+</button>
     </div>
+    <div class="ctl-label"><span>משך ריצה</span></div>
+    <div class="chips" id="durChips"></div>
     <button class="go" id="go">▶ התחל עומס</button>
     <p class="hint">כל תהליך עובד במחזוריות של 100 מילישניות — עסוק לפי אחוז היעד וישן בשאר הזמן. אפשר לשנות את העוצמה תוך כדי ריצה.</p>
   </div>
@@ -347,6 +443,8 @@ PAGE = r"""<!doctype html>
   <div>
     <div class="tiles">
       <div class="tile"><div class="k">שימוש כולל ב-CPU</div><div class="v" id="tCpu">—</div></div>
+      <div class="tile"><div class="k">טמפרטורת CPU</div><div class="v" id="tTemp">—</div></div>
+      <div class="tile"><div class="k">זמן נותר</div><div class="v" id="tLeft">—</div></div>
       <div class="tile"><div class="k">יעד עומס</div><div class="v" id="tTarget">50<small>%</small></div></div>
       <div class="tile"><div class="k">תהליכים פעילים</div><div class="v" id="tWorkers">0</div></div>
       <div class="tile"><div class="k">ליבות מעבד</div><div class="v" id="tCores">—</div></div>
@@ -370,6 +468,30 @@ const MAXPTS = Math.round(WINDOW_S * 1000 / POLL_MS);
 let history = [];            // {t: ms, v: pct}
 let state = { running:false, cpuCount:1, workers:0 };
 let wantWorkers = null;
+let wantDuration = 0;        // seconds, 0 = unlimited
+let endsAt = null;           // ms timestamp of auto-stop, null = unlimited/idle
+
+// ---- duration chips
+const DURATIONS = [
+  [0, "ללא הגבלה"], [30, "30 שנ׳"], [60, "דקה"],
+  [300, "5 דק׳"], [900, "15 דק׳"], [3600, "שעה"],
+];
+$("durChips").innerHTML = DURATIONS.map(([v, label]) =>
+  '<button class="chip' + (v === 0 ? ' sel' : '') + '" data-v="' + v + '">' + label + '</button>').join("");
+$("durChips").addEventListener("click", e => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  wantDuration = +chip.dataset.v;
+  for (const c of $("durChips").children) c.classList.toggle("sel", c === chip);
+  if (state.running) post({ duration: wantDuration });
+});
+
+function fmtLeft(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  const mm = String(m).padStart(2, "0"), ss = String(s).padStart(2, "0");
+  return h ? h + ":" + mm + ":" + ss : m + ":" + ss;
+}
 
 // ---- controls
 const slider = $("target");
@@ -399,7 +521,8 @@ function bumpWorkers(d) {
 
 $("go").onclick = () => {
   if (state.running) post({ action: "stop" });
-  else post({ action: "start", workers: wantWorkers ?? state.cpuCount, target: +slider.value });
+  else post({ action: "start", workers: wantWorkers ?? state.cpuCount,
+              target: +slider.value, duration: wantDuration });
 };
 
 async function post(body) {
@@ -436,6 +559,15 @@ function render(s, fromPost) {
   $("tCores").textContent = state.cpuCount;
   if (s.cpu !== undefined)
     $("tCpu").innerHTML = s.cpu == null ? "—" : s.cpu.toFixed(0) + "<small>%</small>";
+  if (s.temp !== undefined) {
+    const el = $("tTemp");
+    el.innerHTML = s.temp == null ? "—" : s.temp.toFixed(0) + "<small>°C</small>";
+    el.classList.toggle("warm", s.temp != null && s.temp >= 70 && s.temp < 85);
+    el.classList.toggle("hot", s.temp != null && s.temp >= 85);
+  }
+  if (s.remaining !== undefined)
+    endsAt = s.remaining == null ? null : Date.now() + s.remaining * 1000;
+  paintCountdown();
   const pill = $("pill");
   pill.classList.toggle("on", state.running);
   $("pillText").textContent = state.running ? "עומס פעיל" : "מנוחה";
@@ -446,6 +578,12 @@ function render(s, fromPost) {
     slider.value = Math.round(s.target); paintSlider();
   }
 }
+
+function paintCountdown() {
+  $("tLeft").textContent = !state.running ? "—"
+    : endsAt == null ? "∞" : fmtLeft((endsAt - Date.now()) / 1000);
+}
+setInterval(paintCountdown, 250);
 
 // ---- line chart (canvas, LTR)
 const cv = $("chart"), ctx = cv.getContext("2d");

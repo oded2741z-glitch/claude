@@ -20,9 +20,10 @@ No dependencies — Python standard library only.
 ## Features
 
 * **Intensity slider (0–100%)** — each worker runs a 100 ms duty cycle (busy for the target percentage, sleeping for the rest); adjustable live while running
-* **Run duration** — minutes : seconds with auto-stop and a live countdown; 0:00 = unlimited
-* **Live usage display** — overall percentage, a 60-second history chart, and a bar per core
-* **CPU temperature** — color-coded (amber from 70°C, red from 85°C); shows "—" when no sensor is readable
+* **GPU load (OpenCL)** — optional stress on the graphics card with its own intensity slider; uses the OpenCL runtime that ships with GPU drivers, no Python packages needed
+* **Run duration** — minutes : seconds with auto-stop and a live countdown; 0:00 = unlimited (stops CPU and GPU together)
+* **Live usage display** — CPU and GPU percentages on a 60-second history chart, plus a bar per core
+* **CPU & GPU temperature** — color-coded (amber from 70°C, red from 85°C); shows "—" when no sensor is readable
 * **Worker-count control** — choose how many cores to load (up to 2× core count)
 
 ## Temperature readings · קריאת טמפרטורה
@@ -37,4 +38,11 @@ No dependencies — Python standard library only.
 
 **הערה ל-Windows:** אם הטמפרטורה מציגה "—", יופיע בכרטיס הטמפרטורה קישור **"click to restart as Administrator"** — לחיצה עליו מפעילה את התוכנה מחדש עם הרשאות מנהל (חלון UAC) באופן אוטומטי. לחלופין, הריצו LibreHardwareMonitor ברקע והתוכנה תזהה את החיישן שלו. אם לחשבון שלכם אין הרשאות מנהל בכלל — Windows לא מאפשר קריאת טמפרטורה, והכרטיס יישאר "—".
 
-> ⚠️ This tool is for stress-testing your own machine (cooling, throttling, behavior under load). A sustained 100% load heats the CPU — use common sense.
+## GPU load & readings · עומס וניטור GPU
+
+- **Load generation** works on any GPU with an OpenCL driver (NVIDIA, AMD, Intel — included in the regular graphics driver). If the GPU section shows "No OpenCL GPU detected", update your graphics driver.
+- **Usage / temperature readings** come from `nvidia-smi` (NVIDIA, Windows & Linux) or sysfs (AMD on Linux). On AMD/Intel under Windows the readings show "—", but the load itself still works — you can watch usage in Task Manager's GPU tab.
+
+**עברית:** יצירת העומס עובדת על כל כרטיס מסך עם דרייבר OpenCL (מגיע עם הדרייבר הרגיל של NVIDIA/AMD/Intel). קריאת השימוש והטמפרטורה זמינה בכרטיסי NVIDIA (דרך `nvidia-smi`); ב-AMD/Intel ב-Windows המדדים יציגו "—" אבל העומס עצמו עובד — אפשר לראות את השימוש ב-Task Manager בלשונית GPU.
+
+> ⚠️ This tool is for stress-testing your own machine (cooling, throttling, behavior under load). A sustained 100% load heats the CPU and GPU — use common sense.

@@ -10,6 +10,7 @@ Usage:
     python3 cpu_load_gui.py
 """
 
+import ctypes as ct
 import glob
 import multiprocessing as mp
 import os
@@ -104,6 +105,225 @@ class LoadEngine:
             if p.is_alive():
                 p.terminate()
         self._procs = []
+
+
+# ------------------------------------------------------------------ gpu load
+
+_CL_DEVICE_TYPE_GPU = 4
+_CL_DEVICE_TYPE_ALL = 0xFFFFFFFF
+_CL_MEM_READ_WRITE = 1
+_CL_DEVICE_NAME = 0x102B
+
+_CL_KERNEL = b"""
+__kernel void burn(__global float *buf, const int iters) {
+    int gid = get_global_id(0);
+    float x = buf[gid] + gid * 1e-7f;
+    for (int i = 0; i < iters; i++) {
+        x = mad(x, 1.0000001f, 1e-7f);
+        x = sin(x) * cos(x) + x * 0.5f + 0.25f;
+        x = x - floor(x);
+    }
+    buf[gid] = x;
+}
+"""
+
+
+class GpuBurner:
+    """Generates GPU load through OpenCL, which ships with GPU drivers on
+    Windows/Linux/macOS — no Python packages needed. Runs kernel bursts on
+    a duty cycle, like the CPU workers. Unavailable if no OpenCL GPU."""
+
+    GLOBAL_SIZE = 1 << 20
+    TARGET_BURST = 0.03          # seconds per kernel launch
+
+    def __init__(self, device_type=_CL_DEVICE_TYPE_GPU):
+        self.available = False
+        self.reason = None
+        self.device_name = None
+        self.intensity = 50.0
+        self._stop = threading.Event()
+        self._thread = None
+        self._iters = 256
+        try:
+            self._init_cl(device_type)
+            self.available = True
+        except Exception as e:
+            self.reason = str(e) or "OpenCL initialization failed"
+
+    def _init_cl(self, device_type):
+        if IS_WINDOWS:
+            names = ["OpenCL.dll"]
+        elif sys.platform == "darwin":
+            names = ["/System/Library/Frameworks/OpenCL.framework/OpenCL"]
+        else:
+            names = ["libOpenCL.so.1", "libOpenCL.so"]
+        cl = None
+        for n in names:
+            try:
+                cl = ct.CDLL(n)
+                break
+            except OSError:
+                continue
+        if cl is None:
+            raise RuntimeError("no OpenCL driver found")
+        # handle-returning functions must be declared or 64-bit pointers truncate
+        for fn in ("clCreateContext", "clCreateCommandQueue",
+                   "clCreateProgramWithSource", "clCreateKernel", "clCreateBuffer"):
+            getattr(cl, fn).restype = ct.c_void_p
+
+        n = ct.c_uint(0)
+        if cl.clGetPlatformIDs(0, None, ct.byref(n)) != 0 or not n.value:
+            raise RuntimeError("no OpenCL platforms")
+        plats = (ct.c_void_p * n.value)()
+        cl.clGetPlatformIDs(n, plats, None)
+
+        dev = None
+        for p in plats:
+            dn = ct.c_uint(0)
+            if cl.clGetDeviceIDs(ct.c_void_p(p), ct.c_ulonglong(device_type),
+                                 0, None, ct.byref(dn)) == 0 and dn.value:
+                devs = (ct.c_void_p * dn.value)()
+                cl.clGetDeviceIDs(ct.c_void_p(p), ct.c_ulonglong(device_type), dn, devs, None)
+                dev = devs[0]
+                break
+        if dev is None:
+            raise RuntimeError("no OpenCL GPU device")
+
+        namebuf = ct.create_string_buffer(256)
+        cl.clGetDeviceInfo(ct.c_void_p(dev), _CL_DEVICE_NAME, ct.c_size_t(256), namebuf, None)
+        self.device_name = namebuf.value.decode(errors="replace") or "GPU"
+
+        err = ct.c_int(0)
+        devarr = (ct.c_void_p * 1)(dev)
+        ctx = cl.clCreateContext(None, 1, devarr, None, None, ct.byref(err))
+        if not ctx or err.value != 0:
+            raise RuntimeError(f"clCreateContext failed ({err.value})")
+        queue = cl.clCreateCommandQueue(ct.c_void_p(ctx), ct.c_void_p(dev),
+                                        ct.c_ulonglong(0), ct.byref(err))
+        if not queue or err.value != 0:
+            raise RuntimeError(f"clCreateCommandQueue failed ({err.value})")
+
+        src = ct.c_char_p(_CL_KERNEL)
+        length = ct.c_size_t(len(_CL_KERNEL))
+        prog = cl.clCreateProgramWithSource(ct.c_void_p(ctx), 1, ct.byref(src),
+                                            ct.byref(length), ct.byref(err))
+        if not prog or err.value != 0:
+            raise RuntimeError("clCreateProgramWithSource failed")
+        if cl.clBuildProgram(ct.c_void_p(prog), 1, devarr, b"", None, None) != 0:
+            raise RuntimeError("OpenCL kernel build failed")
+        kern = cl.clCreateKernel(ct.c_void_p(prog), b"burn", ct.byref(err))
+        if not kern or err.value != 0:
+            raise RuntimeError("clCreateKernel failed")
+
+        membuf = cl.clCreateBuffer(ct.c_void_p(ctx), ct.c_ulonglong(_CL_MEM_READ_WRITE),
+                                   ct.c_size_t(self.GLOBAL_SIZE * 4), None, ct.byref(err))
+        if not membuf or err.value != 0:
+            raise RuntimeError("clCreateBuffer failed")
+        mem_handle = ct.c_void_p(membuf)
+        if cl.clSetKernelArg(ct.c_void_p(kern), 0, ct.c_size_t(ct.sizeof(ct.c_void_p)),
+                             ct.byref(mem_handle)) != 0:
+            raise RuntimeError("clSetKernelArg failed")
+
+        self._cl, self._queue, self._kern = cl, queue, kern
+        self._mem = mem_handle          # keep alive
+
+    def _launch(self, iters):
+        cl = self._cl
+        arg = ct.c_int(iters)
+        if cl.clSetKernelArg(ct.c_void_p(self._kern), 1, ct.c_size_t(4), ct.byref(arg)) != 0:
+            raise RuntimeError("clSetKernelArg failed")
+        gsz = ct.c_size_t(self.GLOBAL_SIZE)
+        if cl.clEnqueueNDRangeKernel(ct.c_void_p(self._queue), ct.c_void_p(self._kern),
+                                     1, None, ct.byref(gsz), None, 0, None, None) != 0:
+            raise RuntimeError("clEnqueueNDRangeKernel failed")
+        cl.clFinish(ct.c_void_p(self._queue))
+
+    @property
+    def running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self):
+        if not self.available or self.running:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+        self._thread = None
+
+    def _run(self):
+        period = 0.1
+        while not self._stop.is_set():
+            t = min(100.0, max(0.0, self.intensity))
+            if t <= 0:
+                time.sleep(period)
+                continue
+            budget = period * t / 100.0
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < budget and not self._stop.is_set():
+                k0 = time.perf_counter()
+                try:
+                    self._launch(self._iters)
+                except Exception as e:
+                    self.available, self.reason = False, str(e)
+                    return
+                dt = time.perf_counter() - k0
+                if dt > 0:   # steer launches toward TARGET_BURST seconds each
+                    self._iters = max(16, min(1 << 15,
+                                              int(self._iters * self.TARGET_BURST / dt) or 16))
+            rest = period - (time.perf_counter() - t0)
+            if rest > 0:
+                time.sleep(rest)
+
+
+def find_nvidia_smi():
+    exe = shutil.which("nvidia-smi") or shutil.which("nvidia-smi.exe")
+    if exe:
+        return exe
+    if IS_WINDOWS:
+        p = os.path.expandvars(r"%SystemRoot%\System32\nvidia-smi.exe")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def read_gpu_stats(nvsmi, sys_root="/sys"):
+    """(utilization %, temperature °C) — either may be None."""
+    if nvsmi:
+        flags = 0x08000000 if IS_WINDOWS else 0
+        try:
+            out = subprocess.run(
+                [nvsmi, "--query-gpu=utilization.gpu,temperature.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5, creationflags=flags,
+            ).stdout.strip()
+            if out:
+                util_s, temp_s = (x.strip() for x in out.splitlines()[0].split(",")[:2])
+                util = float(util_s) if util_s.replace(".", "", 1).isdigit() else None
+                temp = float(temp_s) if temp_s.replace(".", "", 1).isdigit() else None
+                return util, temp
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    for card in glob.glob(sys_root + "/class/drm/card*/device"):   # AMD on Linux
+        util = temp = None
+        try:
+            with open(card + "/gpu_busy_percent") as f:
+                util = float(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        for t in glob.glob(card + "/hwmon/hwmon*/temp*_input"):
+            try:
+                with open(t) as f:
+                    temp = int(f.read().strip()) / 1000.0
+                break
+            except (OSError, ValueError):
+                pass
+        return util, temp
+    return None, None
 
 
 # ------------------------------------------------------- cpu & temp sampling
@@ -225,11 +445,16 @@ class CpuSampler:
         self.total = None          # overall usage %, or None if unavailable
         self.cores = []            # per-core usage %
         self.temp = None           # CPU temperature °C, or None if no sensor
+        self.gpu_util = None       # GPU utilization %, or None
+        self.gpu_temp = None       # GPU temperature °C, or None
         self._prev = None
         self._psutil = None
         self._ps_exe = find_powershell()
         self._temp_period = interval   # slowed down once PowerShell is needed
         self._temp_ts = 0.0
+        self._nvsmi = find_nvidia_smi()
+        self._gpu_period = 2.0         # nvidia-smi is a subprocess; poll gently
+        self._gpu_ts = 0.0
         try:
             import psutil
             self._psutil = psutil
@@ -245,7 +470,18 @@ class CpuSampler:
             except Exception:
                 self.total, self.cores = None, []
             self._sample_temp()
+            self._sample_gpu()
             time.sleep(self.interval)
+
+    def _sample_gpu(self):
+        now = time.time()
+        if now - self._gpu_ts < self._gpu_period:
+            return
+        self._gpu_ts = now
+        try:
+            self.gpu_util, self.gpu_temp = read_gpu_stats(self._nvsmi)
+        except Exception:
+            self.gpu_util, self.gpu_temp = None, None
 
     def _sample_temp(self):
         now = time.time()
@@ -298,6 +534,7 @@ GRID = "#2c2c2a"
 BASELINE = "#383835"
 BLUE = "#3987e5"
 BLUE_DIM = "#16283f"   # area fill under the chart line
+AQUA = "#199e70"       # GPU series
 RED = "#d03b3b"
 GREEN = "#0ca30c"
 AMBER = "#fab219"
@@ -346,9 +583,11 @@ class Slider(tk.Canvas):
 
 
 class App:
-    def __init__(self, root, engine, sampler):
+    def __init__(self, root, engine, sampler, gpu=None):
         self.root, self.engine, self.sampler = root, engine, sampler
+        self.gpu = gpu or GpuBurner()
         self.history = []                      # (timestamp, cpu %)
+        self.gpu_hist = []                     # (timestamp, gpu %)
         root.title("CPU Load Generator")
         root.configure(bg=PAGE)
         root.geometry("1080x660")
@@ -410,6 +649,28 @@ class App:
         self.dur_sec.pack(side="left")
         tk.Label(dur, text="sec", font=self.f_small, bg=CARD, fg=MUTED).pack(side="left", padx=(4, 0))
 
+        self._ctl_header(ctl, "GPU load (OpenCL)").pack(anchor="w", padx=16, pady=(14, 4))
+        if self.gpu.available:
+            grow = tk.Frame(ctl, bg=CARD)
+            grow.pack(anchor="w", fill="x", padx=16)
+            self.gpu_on = tk.BooleanVar(value=False)
+            tk.Checkbutton(grow, text="Enable", variable=self.gpu_on, font=self.f_small,
+                           bg=CARD, fg=INK2, activebackground=CARD,
+                           activeforeground=INK, selectcolor=CARD2,
+                           command=self._on_gpu_toggle).pack(side="left")
+            self.gpu_lbl = tk.Label(grow, text="50%", font=self.f_mid, bg=CARD, fg=INK)
+            self.gpu_lbl.pack(side="right")
+            self.gpu_slider = Slider(ctl, command=self._on_gpu_target, width=240)
+            self.gpu_slider.pack(fill="x", padx=16)
+            self.gpu_slider.set(50)
+            name = self.gpu.device_name or "GPU"
+            tk.Label(ctl, text=name[:34], font=self.f_small, bg=CARD, fg=MUTED
+                     ).pack(anchor="w", padx=16)
+        else:
+            self.gpu_on = tk.BooleanVar(value=False)
+            tk.Label(ctl, text="No OpenCL GPU detected", font=self.f_small,
+                     bg=CARD, fg=MUTED).pack(anchor="w", padx=16)
+
         self.go = tk.Button(
             ctl, text="▶  Start load", font=self.f_btn, command=self._toggle,
             bg=BLUE, fg="white", activebackground="#5598e7", activeforeground="white",
@@ -426,12 +687,14 @@ class App:
         # dashboard (right) --------------------------------------------------
         dash = tk.Frame(body, bg=PAGE)
         dash.grid(row=0, column=1, sticky="nsew")
-        dash.columnconfigure((0, 1, 2), weight=1, uniform="tiles")
+        dash.columnconfigure((0, 1, 2, 3, 4), weight=1, uniform="tiles")
         dash.rowconfigure(1, weight=1)
 
-        self.tile_cpu = self._tile(dash, 0, "TOTAL CPU USAGE")
-        self.tile_temp = self._tile(dash, 1, "CPU TEMPERATURE")
-        self.tile_left = self._tile(dash, 2, "TIME LEFT")
+        self.tile_cpu = self._tile(dash, 0, "CPU USAGE")
+        self.tile_temp = self._tile(dash, 1, "CPU TEMP")
+        self.tile_gpu = self._tile(dash, 2, "GPU USAGE")
+        self.tile_gpu_temp = self._tile(dash, 3, "GPU TEMP")
+        self.tile_left = self._tile(dash, 4, "TIME LEFT")
 
         # shown in the temperature tile when Windows exposes no sensor
         self.temp_hint = tk.Label(self.tile_temp.master, font=(base, 8, "underline"),
@@ -440,9 +703,14 @@ class App:
         self._temp_hint_mode = None   # None | "elevate" | "lhm"
 
         chart_card = self._card(dash)
-        chart_card.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
-        tk.Label(chart_card, text="CPU usage — last 60 seconds",
-                 font=self.f_label, bg=CARD, fg=MUTED).pack(anchor="w", padx=14, pady=(10, 2))
+        chart_card.grid(row=1, column=0, columnspan=5, sticky="nsew", pady=(12, 0))
+        chead = tk.Frame(chart_card, bg=CARD)
+        chead.pack(fill="x", padx=14, pady=(10, 2))
+        tk.Label(chead, text="Usage — last 60 seconds",
+                 font=self.f_label, bg=CARD, fg=MUTED).pack(side="left")
+        self.legend_gpu = tk.Label(chead, text="— GPU", font=self.f_small, bg=CARD, fg=AQUA)
+        self.legend_cpu = tk.Label(chead, text="— CPU", font=self.f_small, bg=CARD, fg=BLUE)
+        self._legend_shown = False
         self.chart = tk.Canvas(chart_card, bg=CARD, highlightthickness=0, height=210)
         self.chart.pack(fill="both", expand=True, padx=14)
         self.bars = tk.Canvas(chart_card, bg=CARD, highlightthickness=0,
@@ -480,6 +748,18 @@ class App:
     def _on_target(self, v):
         self.target_lbl.config(text=f"{int(float(v))}%")
         self.engine.set_target(float(v))
+
+    def _on_gpu_target(self, v):
+        self.gpu_lbl.config(text=f"{int(float(v))}%")
+        self.gpu.intensity = float(v)
+
+    def _on_gpu_toggle(self):
+        if not self.engine.running:
+            return
+        if self.gpu_on.get():
+            self.gpu.start()
+        else:
+            self.gpu.stop()
 
     def _duration_s(self):
         try:
@@ -523,9 +803,12 @@ class App:
     def _toggle(self):
         if self.engine.running:
             self.engine.stop()
+            self.gpu.stop()
         else:
             self.engine.set_target(self.target.get())
             self.engine.start(self._workers_n(), self._duration_s())
+            if self.gpu_on.get() and self.gpu.available:
+                self.gpu.start()
         self._paint_state()
 
     def _paint_state(self):
@@ -543,8 +826,25 @@ class App:
         if s.total is not None:
             self.history.append((now, s.total))
             self.history = [(t, v) for t, v in self.history if t >= now - WINDOW_S - 2]
+        if s.gpu_util is not None:
+            self.gpu_hist.append((now, s.gpu_util))
+            self.gpu_hist = [(t, v) for t, v in self.gpu_hist if t >= now - WINDOW_S - 2]
+
+        # the duration timer stops the CPU engine; follow it with the GPU
+        if self.gpu.running and not self.engine.running:
+            self.gpu.stop()
 
         self.tile_cpu.config(text="—" if s.total is None else f"{s.total:.0f}%")
+        self.tile_gpu.config(text="—" if s.gpu_util is None else f"{s.gpu_util:.0f}%")
+        if s.gpu_temp is None:
+            self.tile_gpu_temp.config(text="—", fg=INK)
+        else:
+            color = RED if s.gpu_temp >= 85 else AMBER if s.gpu_temp >= 70 else INK
+            self.tile_gpu_temp.config(text=f"{s.gpu_temp:.0f}°C", fg=color)
+        if self.gpu_hist and not self._legend_shown:
+            self._legend_shown = True
+            self.legend_gpu.pack(side="right")
+            self.legend_cpu.pack(side="right", padx=(0, 10))
         if s.temp is None:
             self.tile_temp.config(text="—", fg=INK)
         else:
@@ -596,6 +896,13 @@ class App:
             c.create_line(*line, fill=BLUE, width=2, joinstyle="round")
             lx, ly = x(pts[-1][0]), y(pts[-1][1])
             c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4, fill=BLUE, outline=CARD, width=2)
+
+        gpts = [(t, v) for t, v in self.gpu_hist if t >= t0]
+        if len(gpts) > 1:
+            line = [coord for t, v in gpts for coord in (x(t), y(v))]
+            c.create_line(*line, fill=AQUA, width=2, joinstyle="round")
+            lx, ly = x(gpts[-1][0]), y(gpts[-1][1])
+            c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4, fill=AQUA, outline=CARD, width=2)
 
     def _draw_bars(self, cores):
         c = self.bars

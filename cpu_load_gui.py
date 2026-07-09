@@ -4,7 +4,7 @@
 Generates a controllable CPU load for a chosen duration and shows live
 CPU usage and temperature. Pure Python standard library — no
 dependencies (on Debian/Ubuntu, tkinter comes from the python3-tk
-package).
+package; on Windows, installing psutil enables CPU-usage readings).
 
 Usage:
     python3 cpu_load_gui.py
@@ -13,6 +13,8 @@ Usage:
 import glob
 import multiprocessing as mp
 import os
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -110,7 +112,7 @@ _CPU_SENSOR_HINTS = ("pkg", "cpu", "core", "x86", "soc", "k10temp", "zenpower", 
 
 
 def read_cpu_temp(sys_root="/sys", psutil_mod=None):
-    """CPU temperature in °C, or None if no sensor is available."""
+    """CPU temperature in °C from Linux sensors, or None if unavailable."""
     candidates = []  # (is_cpu_sensor, temp)
     for zone in glob.glob(sys_root + "/class/thermal/thermal_zone*"):
         try:
@@ -147,6 +149,46 @@ def read_cpu_temp(sys_root="/sys", psutil_mod=None):
     return max(cpu_only) if cpu_only else max(t for _, t in candidates)
 
 
+# Windows (and WSL) fallback: ask WMI through PowerShell. Tries
+# LibreHardwareMonitor / OpenHardwareMonitor sensors first (accurate, if the
+# app is running), then the ACPI thermal zone (often requires administrator
+# rights and is not exposed on every machine).
+_PS_TEMP_SCRIPT = (
+    "$t=$null;"
+    "foreach($ns in 'root/LibreHardwareMonitor','root/OpenHardwareMonitor'){"
+    "try{$s=Get-CimInstance -Namespace $ns -ClassName Sensor -ErrorAction Stop|"
+    "Where-Object{$_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Package|Core'}|"
+    "Sort-Object Value -Descending|Select-Object -First 1;"
+    "if($s){$t=$s.Value;break}}catch{}};"
+    "if($null -eq $t){"
+    "try{$z=Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
+    "-ErrorAction Stop|Sort-Object CurrentTemperature -Descending|Select-Object -First 1;"
+    "if($z){$t=($z.CurrentTemperature/10)-273.15}}catch{}};"
+    "if($null -ne $t){[math]::Round($t,1)}"
+)
+
+
+def find_powershell():
+    if os.name == "nt":
+        return shutil.which("powershell") or shutil.which("pwsh")
+    return shutil.which("powershell.exe")  # running under WSL
+
+
+def read_temp_powershell(exe):
+    flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+    try:
+        out = subprocess.run(
+            [exe, "-NoProfile", "-NonInteractive", "-Command", _PS_TEMP_SCRIPT],
+            capture_output=True, text=True, timeout=10, creationflags=flags,
+        ).stdout.strip()
+        if not out:
+            return None
+        val = float(out.splitlines()[-1].replace(",", "."))
+        return val if 0 < val < 150 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
 class CpuSampler:
     """Background thread sampling CPU usage (via /proc/stat on Linux,
     psutil elsewhere if installed) and CPU temperature."""
@@ -158,6 +200,9 @@ class CpuSampler:
         self.temp = None           # CPU temperature °C, or None if no sensor
         self._prev = None
         self._psutil = None
+        self._ps_exe = find_powershell()
+        self._temp_period = interval   # slowed down once PowerShell is needed
+        self._temp_ts = 0.0
         try:
             import psutil
             self._psutil = psutil
@@ -172,11 +217,22 @@ class CpuSampler:
                 self._sample()
             except Exception:
                 self.total, self.cores = None, []
-            try:
-                self.temp = read_cpu_temp(psutil_mod=self._psutil)
-            except Exception:
-                self.temp = None
+            self._sample_temp()
             time.sleep(self.interval)
+
+    def _sample_temp(self):
+        now = time.time()
+        if now - self._temp_ts < self._temp_period:
+            return
+        self._temp_ts = now
+        try:
+            t = read_cpu_temp(psutil_mod=self._psutil)
+            if t is None and self._ps_exe:
+                t = read_temp_powershell(self._ps_exe)
+                self._temp_period = 4.0   # PowerShell is slow; poll gently
+            self.temp = t
+        except Exception:
+            self.temp = None
 
     def _sample(self):
         if not os.path.exists("/proc/stat"):
@@ -201,37 +257,6 @@ class CpuSampler:
             self.cores = [usages[k] for k in sorted(
                 (k for k in usages if k != "cpu"), key=lambda k: int(k[3:]))]
         self._prev = now
-
-
-# ------------------------------------------------------------ hebrew for tk
-
-# Tk has no bidi support on X11/Windows, so Hebrew strings render in logical
-# (reversed) order. Convert them to visual order ourselves: reverse the whole
-# string (mirroring brackets), then flip LTR runs (latin/digits) back.
-# On macOS (aqua) the native text engine handles bidi, so leave text as-is.
-
-_TK_NEEDS_BIDI = True
-_MIRROR = {"(": ")", ")": "(", "[": "]", "]": "[", "{": "}", "}": "{"}
-
-
-def H(s):
-    if not _TK_NEEDS_BIDI or not any("֐" <= c <= "׿" for c in s):
-        return s
-    rev = [_MIRROR.get(c, c) for c in reversed(s)]
-    is_ltr = lambda c: c.isascii() and c.isalnum()
-    out, i, n = [], 0, len(rev)
-    while i < n:
-        if is_ltr(rev[i]):
-            j = i
-            while j < n and (is_ltr(rev[j]) or
-                             (rev[j] in ".:%-" and j + 1 < n and is_ltr(rev[j + 1]))):
-                j += 1
-            out.extend(rev[i:j][::-1])
-            i = j
-        else:
-            out.append(rev[i])
-            i += 1
-    return "".join(out)
 
 
 # ------------------------------------------------------------------- palette
@@ -316,72 +341,75 @@ class App:
         # header ------------------------------------------------------------
         head = tk.Frame(outer, bg=PAGE)
         head.pack(fill="x", pady=(0, 12))
-        tk.Label(head, text=H("מחולל עומס CPU"), font=self.f_title, bg=PAGE, fg=INK).pack(side="right")
-        tk.Label(head, text="  " + H("כלי בדיקת עומס למעבד"), font=self.f_label,
-                 bg=PAGE, fg=MUTED).pack(side="right")
-        self.status = tk.Label(head, text="● " + H("מנוחה"), font=self.f_label, bg=PAGE, fg=MUTED)
-        self.status.pack(side="left")
+        tk.Label(head, text="CPU Load Generator", font=self.f_title, bg=PAGE, fg=INK).pack(side="left")
+        tk.Label(head, text="  processor stress-testing tool", font=self.f_label,
+                 bg=PAGE, fg=MUTED).pack(side="left")
+        self.status = tk.Label(head, text="● idle", font=self.f_label, bg=PAGE, fg=MUTED)
+        self.status.pack(side="right")
 
         body = tk.Frame(outer, bg=PAGE)
         body.pack(fill="both", expand=True)
-        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
-        # controls card (right, RTL) ----------------------------------------
+        # controls card (left) ----------------------------------------------
         ctl = self._card(body)
-        ctl.grid(row=0, column=1, sticky="ns", padx=(12, 0))
+        ctl.grid(row=0, column=0, sticky="ns", padx=(0, 12))
 
-        self._ctl_header(ctl, H("בקרת עומס")).pack(anchor="e", padx=16, pady=(14, 2))
+        self._ctl_header(ctl, "LOAD CONTROL").pack(anchor="w", padx=16, pady=(14, 2))
 
         self.target_lbl = tk.Label(ctl, text="50%", font=self.f_big, bg=CARD, fg=INK)
-        self.target_lbl.pack(anchor="e", padx=16)
-        self._ctl_header(ctl, H("עוצמת עומס")).pack(anchor="e", padx=16, pady=(8, 0))
+        self.target_lbl.pack(anchor="w", padx=16)
+        self._ctl_header(ctl, "Load intensity").pack(anchor="w", padx=16, pady=(8, 0))
         self.target = Slider(ctl, command=self._on_target, width=240)
         self.target.pack(fill="x", padx=16)
         self.target.set(50)
 
-        self._ctl_header(ctl, H("תהליכי עומס (ליבות)")).pack(anchor="e", padx=16, pady=(14, 4))
-        self.workers = self._spin_row(ctl, 1, engine.cpu_count * 2, engine.cpu_count,
-                                      H(f"מתוך {engine.cpu_count} ליבות"))
+        self._ctl_header(ctl, "Worker processes (cores)").pack(anchor="w", padx=16, pady=(14, 4))
+        row = tk.Frame(ctl, bg=CARD)
+        row.pack(anchor="w", padx=16)
+        self.workers = self._spin(row, 1, engine.cpu_count * 2, engine.cpu_count)
+        self.workers.pack(side="left")
+        tk.Label(row, text=f"of {engine.cpu_count} cores", font=self.f_small,
+                 bg=CARD, fg=MUTED).pack(side="left", padx=(10, 0))
 
-        self._ctl_header(ctl, H("משך ריצה (0:00 = ללא הגבלה)")).pack(anchor="e", padx=16, pady=(14, 4))
+        self._ctl_header(ctl, "Run duration  (0:00 = unlimited)").pack(anchor="w", padx=16, pady=(14, 4))
         dur = tk.Frame(ctl, bg=CARD)
-        dur.pack(anchor="e", padx=16)
-        tk.Label(dur, text=H("שניות"), font=self.f_small, bg=CARD, fg=MUTED).pack(side="left", padx=(4, 10))
-        self.dur_sec = self._spin(dur, 0, 59, 0)
-        self.dur_sec.pack(side="left")
-        tk.Label(dur, text=H("דקות"), font=self.f_small, bg=CARD, fg=MUTED).pack(side="left", padx=(4, 10))
+        dur.pack(anchor="w", padx=16)
         self.dur_min = self._spin(dur, 0, 599, 5)
         self.dur_min.pack(side="left")
+        tk.Label(dur, text="min", font=self.f_small, bg=CARD, fg=MUTED).pack(side="left", padx=(4, 10))
+        self.dur_sec = self._spin(dur, 0, 59, 0)
+        self.dur_sec.pack(side="left")
+        tk.Label(dur, text="sec", font=self.f_small, bg=CARD, fg=MUTED).pack(side="left", padx=(4, 0))
 
         self.go = tk.Button(
-            ctl, text="▶  " + H("התחל עומס"), font=self.f_btn, command=self._toggle,
+            ctl, text="▶  Start load", font=self.f_btn, command=self._toggle,
             bg=BLUE, fg="white", activebackground="#5598e7", activeforeground="white",
             relief="flat", bd=0, padx=10, pady=10, cursor="hand2")
         self.go.pack(fill="x", padx=16, pady=(18, 6))
 
-        hint = "\n".join(H(line) for line in (
-            "כל תהליך עובד במחזוריות של 100 מילישניות —",
-            "עסוק לפי אחוז היעד וישן בשאר הזמן.",
-            "אפשר לשנות את העוצמה תוך כדי ריצה.",
-        ))
-        tk.Label(ctl, justify="right", font=self.f_small, bg=CARD, fg=MUTED,
-                 text=hint).pack(padx=16, pady=(4, 14))
+        tk.Label(ctl, justify="left", font=self.f_small, bg=CARD, fg=MUTED,
+                 text="Each worker runs a 100 ms duty cycle —\n"
+                      "busy for the target percentage, sleeping\n"
+                      "for the rest. Intensity can be changed\n"
+                      "while the load is running."
+                 ).pack(anchor="w", padx=16, pady=(4, 14))
 
-        # dashboard (left) ---------------------------------------------------
+        # dashboard (right) --------------------------------------------------
         dash = tk.Frame(body, bg=PAGE)
-        dash.grid(row=0, column=0, sticky="nsew")
+        dash.grid(row=0, column=1, sticky="nsew")
         dash.columnconfigure((0, 1, 2), weight=1, uniform="tiles")
         dash.rowconfigure(1, weight=1)
 
-        self.tile_cpu = self._tile(dash, 2, H("שימוש כולל ב-CPU"))
-        self.tile_temp = self._tile(dash, 1, H("טמפרטורת CPU"))
-        self.tile_left = self._tile(dash, 0, H("זמן נותר"))
+        self.tile_cpu = self._tile(dash, 0, "TOTAL CPU USAGE")
+        self.tile_temp = self._tile(dash, 1, "CPU TEMPERATURE")
+        self.tile_left = self._tile(dash, 2, "TIME LEFT")
 
         chart_card = self._card(dash)
         chart_card.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
-        tk.Label(chart_card, text=H("שימוש ב-CPU — 60 השניות האחרונות"),
-                 font=self.f_label, bg=CARD, fg=MUTED).pack(anchor="e", padx=14, pady=(10, 2))
+        tk.Label(chart_card, text="CPU usage — last 60 seconds",
+                 font=self.f_label, bg=CARD, fg=MUTED).pack(anchor="w", padx=14, pady=(10, 2))
         self.chart = tk.Canvas(chart_card, bg=CARD, highlightthickness=0, height=210)
         self.chart.pack(fill="both", expand=True, padx=14)
         self.bars = tk.Canvas(chart_card, bg=CARD, highlightthickness=0,
@@ -407,20 +435,12 @@ class App:
         sp.var = var
         return sp
 
-    def _spin_row(self, parent, lo, hi, val, caption):
-        row = tk.Frame(parent, bg=CARD)
-        row.pack(anchor="e", padx=16)
-        tk.Label(row, text=caption, font=self.f_small, bg=CARD, fg=MUTED).pack(side="left", padx=(0, 10))
-        sp = self._spin(row, lo, hi, val)
-        sp.pack(side="left")
-        return sp
-
     def _tile(self, parent, col, caption):
         card = self._card(parent)
-        card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 2 else 0, 0 if col == 0 else 12))
-        tk.Label(card, text=caption, font=self.f_small, bg=CARD, fg=MUTED).pack(anchor="e", padx=14, pady=(10, 0))
+        card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 12, 0))
+        tk.Label(card, text=caption, font=self.f_small, bg=CARD, fg=MUTED).pack(anchor="w", padx=14, pady=(10, 0))
         val = tk.Label(card, text="—", font=(self.f_big[0], 22, "bold"), bg=CARD, fg=INK)
-        val.pack(anchor="e", padx=14, pady=(0, 10))
+        val.pack(anchor="w", padx=14, pady=(0, 10))
         return val
 
     # -- actions --------------------------------------------------------------
@@ -451,11 +471,11 @@ class App:
 
     def _paint_state(self):
         if self.engine.running:
-            self.go.config(text="■  " + H("עצור עומס"), bg=RED, activebackground="#e66767")
-            self.status.config(text="● " + H("עומס פעיל"), fg=GREEN)
+            self.go.config(text="■  Stop load", bg=RED, activebackground="#e66767")
+            self.status.config(text="● load active", fg=GREEN)
         else:
-            self.go.config(text="▶  " + H("התחל עומס"), bg=BLUE, activebackground="#5598e7")
-            self.status.config(text="● " + H("מנוחה"), fg=MUTED)
+            self.go.config(text="▶  Start load", bg=BLUE, activebackground="#5598e7")
+            self.status.config(text="● idle", fg=MUTED)
 
     # -- refresh loop ----------------------------------------------------------
     def _tick(self):
@@ -505,7 +525,7 @@ class App:
             c.create_text(pl - 7, y(v), text=str(v), anchor="e", fill=MUTED, font=self.f_small)
         for sec in (60, 45, 30, 15, 0):
             c.create_text(x(now - sec), h - pb + 4, anchor="n", fill=MUTED, font=self.f_small,
-                          text=H("עכשיו") if sec == 0 else f"-{sec}s")
+                          text="now" if sec == 0 else f"-{sec}s")
         c.create_line(pl, y(0), w - pr, y(0), fill=BASELINE)
 
         pts = [(t, v) for t, v in self.history if t >= t0]
@@ -530,25 +550,22 @@ class App:
             cx = (i % cols) * col_w
             cy = (i // cols) * row_h + row_h // 2
             label_w, pct_w, gap = 52, 40, 10
-            c.create_text(cx + col_w - gap, cy, text=H(f"ליבה {i}"), anchor="e",
+            c.create_text(cx + gap, cy, text=f"Core {i}", anchor="w",
                           fill=MUTED, font=self.f_small)
-            bar_x1 = cx + pct_w + gap
-            bar_x2 = cx + col_w - label_w - gap
+            bar_x1 = cx + gap + label_w
+            bar_x2 = cx + col_w - pct_w - gap
             if bar_x2 - bar_x1 > 30:
                 c.create_rectangle(bar_x1, cy - 4, bar_x2, cy + 4, fill=CARD2, outline="")
                 fill_w = (bar_x2 - bar_x1) * min(100.0, v) / 100.0
-                c.create_rectangle(bar_x2 - fill_w, cy - 4, bar_x2, cy + 4, fill=BLUE, outline="")
-            c.create_text(cx + pct_w, cy, text=f"{v:.0f}%", anchor="e",
+                c.create_rectangle(bar_x1, cy - 4, bar_x1 + fill_w, cy + 4, fill=BLUE, outline="")
+            c.create_text(cx + col_w - gap, cy, text=f"{v:.0f}%", anchor="e",
                           fill=INK2, font=self.f_small)
 
 
 def main():
-    global _TK_NEEDS_BIDI
     engine = LoadEngine()
     sampler = CpuSampler()
     root = tk.Tk()
-    # macOS renders bidi text natively; X11/Windows Tk does not
-    _TK_NEEDS_BIDI = root.tk.call("tk", "windowingsystem") != "aqua"
     App(root, engine, sampler)
     try:
         root.mainloop()

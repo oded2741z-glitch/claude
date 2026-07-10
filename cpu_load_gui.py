@@ -145,13 +145,17 @@ __kernel void frame(__global uchar *img, const float t, const int iters,
 
 class GpuBurner:
     """Generates GPU load through OpenCL, which ships with GPU drivers on
-    Windows/Linux/macOS — no Python packages needed. Each burst renders a
-    plasma-animation frame (FurMark-style: the animation is the load) on
-    the same duty cycle as the CPU workers. Unavailable if no OpenCL GPU."""
+    Windows/Linux/macOS — no Python packages needed. Renders a plasma
+    animation (FurMark-style: the animation is the load) at up to FPS
+    frames per second; the intensity slider sets the math per pixel and
+    the window size sets the pixel count, so enlarging the animation
+    window raises GPU load. Unavailable if no OpenCL GPU."""
 
-    FRAME_W = 320
+    FRAME_W = 320                # initial frame size
     FRAME_H = 320
-    TARGET_BURST = 0.03          # seconds per rendered frame
+    MAX_W = 2560
+    MAX_H = 1440
+    FPS = 25
 
     def __init__(self, device_type=_CL_DEVICE_TYPE_GPU):
         self.available = False
@@ -162,8 +166,9 @@ class GpuBurner:
         self._frame_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
-        self._iters = 64
         self._t = 0.0
+        self._size = (self.FRAME_W, self.FRAME_H)
+        self._last_pub = 0.0
         try:
             self._init_cl(device_type)
             self.available = True
@@ -235,7 +240,7 @@ class GpuBurner:
         if not kern or err.value != 0:
             raise RuntimeError("clCreateKernel failed")
 
-        nbytes = self.FRAME_W * self.FRAME_H * 3
+        nbytes = self.MAX_W * self.MAX_H * 3   # one buffer big enough for any size
         membuf = cl.clCreateBuffer(ct.c_void_p(ctx), ct.c_ulonglong(_CL_MEM_READ_WRITE),
                                    ct.c_size_t(nbytes), None, ct.byref(err))
         if not membuf or err.value != 0:
@@ -245,37 +250,45 @@ class GpuBurner:
         if cl.clSetKernelArg(kern_p, 0, ct.c_size_t(ct.sizeof(ct.c_void_p)),
                              ct.byref(mem_handle)) != 0:
             raise RuntimeError("clSetKernelArg failed")
-        for idx, val in ((3, ct.c_int(self.FRAME_W)), (4, ct.c_int(self.FRAME_H))):
-            if cl.clSetKernelArg(kern_p, idx, ct.c_size_t(4), ct.byref(val)) != 0:
-                raise RuntimeError("clSetKernelArg failed")
 
         self._cl, self._queue, self._kern = cl, queue, kern
         self._mem = mem_handle          # keep alive
         self._host = (ct.c_ubyte * nbytes)()
-        self._ppm_header = b"P6\n%d %d\n255\n" % (self.FRAME_W, self.FRAME_H)
 
-    def _launch(self, iters):
+    def set_size(self, w, h):
+        """Set the rendered frame size; more pixels = more GPU work."""
+        w = int(max(160, min(self.MAX_W, w)))
+        h = int(max(160, min(self.MAX_H, h)))
+        cw, ch = self._size
+        if abs(w - cw) >= 8 or abs(h - ch) >= 8:
+            self._size = (w, h)
+
+    def _launch(self, iters, w, h):
         """Render one animation frame on the GPU and read it back."""
         cl = self._cl
         kern_p = ct.c_void_p(self._kern)
         q_p = ct.c_void_p(self._queue)
-        t_arg = ct.c_float(self._t)
-        i_arg = ct.c_int(iters)
-        if (cl.clSetKernelArg(kern_p, 1, ct.c_size_t(4), ct.byref(t_arg)) != 0 or
-                cl.clSetKernelArg(kern_p, 2, ct.c_size_t(4), ct.byref(i_arg)) != 0):
-            raise RuntimeError("clSetKernelArg failed")
-        gsz = ct.c_size_t(self.FRAME_W * self.FRAME_H)
+        args = ((1, ct.c_float(self._t)), (2, ct.c_int(iters)),
+                (3, ct.c_int(w)), (4, ct.c_int(h)))
+        for idx, val in args:
+            if cl.clSetKernelArg(kern_p, idx, ct.c_size_t(4), ct.byref(val)) != 0:
+                raise RuntimeError("clSetKernelArg failed")
+        gsz = ct.c_size_t(w * h)
         if cl.clEnqueueNDRangeKernel(q_p, kern_p, 1, None, ct.byref(gsz),
                                      None, 0, None, None) != 0:
             raise RuntimeError("clEnqueueNDRangeKernel failed")
         if cl.clEnqueueReadBuffer(q_p, self._mem, 1, ct.c_size_t(0),
-                                  ct.c_size_t(len(self._host)), self._host,
+                                  ct.c_size_t(w * h * 3), self._host,
                                   0, None, None) != 0:
             raise RuntimeError("clEnqueueReadBuffer failed")
         cl.clFinish(q_p)
         self._t += 0.06
-        with self._frame_lock:
-            self.frame = self._ppm_header + bytes(self._host)
+        now = time.perf_counter()
+        if now - self._last_pub > 0.09:   # publish at GUI cadence, not per frame
+            self._last_pub = now
+            header = b"P6\n%d %d\n255\n" % (w, h)
+            with self._frame_lock:
+                self.frame = header + bytes(self._host[:w * h * 3])
 
     def get_frame(self):
         with self._frame_lock:
@@ -299,26 +312,24 @@ class GpuBurner:
         self._thread = None
 
     def _run(self):
-        period = 0.1
+        # FurMark model: fixed frame pacing; load = pixels x math-per-pixel.
+        # When a frame takes longer than the frame interval the GPU is
+        # saturated and the fps simply drops.
+        interval = 1.0 / self.FPS
         while not self._stop.is_set():
             t = min(100.0, max(0.0, self.intensity))
             if t <= 0:
-                time.sleep(period)
+                time.sleep(0.1)
                 continue
-            budget = period * t / 100.0
-            t0 = time.perf_counter()
-            while time.perf_counter() - t0 < budget and not self._stop.is_set():
-                k0 = time.perf_counter()
-                try:
-                    self._launch(self._iters)
-                except Exception as e:
-                    self.available, self.reason = False, str(e)
-                    return
-                dt = time.perf_counter() - k0
-                if dt > 0:   # steer frame renders toward TARGET_BURST seconds each
-                    self._iters = max(8, min(1 << 14,
-                                             int(self._iters * self.TARGET_BURST / dt) or 8))
-            rest = period - (time.perf_counter() - t0)
+            w, h = self._size
+            iters = max(4, int(t * t / 8))     # 10% -> 12, 50% -> 312, 100% -> 1250
+            k0 = time.perf_counter()
+            try:
+                self._launch(iters, w, h)
+            except Exception as e:
+                self.available, self.reason = False, str(e)
+                return
+            rest = interval - (time.perf_counter() - k0)
             if rest > 0:
                 time.sleep(rest)
 
@@ -885,19 +896,25 @@ class App:
     # -- gpu animation window ---------------------------------------------------
     def _open_anim(self):
         win = tk.Toplevel(self.root)
-        win.title("GPU Stress Animation")
+        win.title("GPU Stress Animation — " + (self.gpu.device_name or "GPU")[:40])
         win.configure(bg=PAGE)
-        win.resizable(False, False)
-        win.geometry("+%d+%d" % (self.root.winfo_rootx() + self.root.winfo_width() + 16,
-                                 self.root.winfo_rooty()))
-        self._anim_lbl = tk.Label(win, bg=PAGE, bd=0,
-                                  width=self.gpu.FRAME_W, height=self.gpu.FRAME_H)
-        self._anim_lbl.pack(padx=10, pady=(10, 4))
-        tk.Label(win, text=(self.gpu.device_name or "GPU")[:44],
-                 font=self.f_small, bg=PAGE, fg=MUTED).pack(pady=(0, 8))
+        win.minsize(200, 240)
+        win.geometry("%dx%d+%d+%d" % (
+            self.gpu.FRAME_W + 20, self.gpu.FRAME_H + 46,
+            self.root.winfo_rootx() + self.root.winfo_width() + 16,
+            self.root.winfo_rooty()))
+        self._anim_lbl = tk.Label(win, bg=PAGE, bd=0)
+        self._anim_lbl.pack(fill="both", expand=True, padx=10, pady=(10, 2))
+        tk.Label(win, text="enlarge the window to raise GPU load",
+                 font=self.f_small, bg=PAGE, fg=MUTED).pack(pady=(0, 6))
         win.protocol("WM_DELETE_WINDOW", self._close_anim_by_user)
+        win.bind("<Configure>", self._on_anim_resize)
         self._anim_win = win
         win.after(150, lambda: apply_dark_title_bar(win))
+
+    def _on_anim_resize(self, e):
+        if e.widget is self._anim_win:
+            self.gpu.set_size(e.width - 20, e.height - 46)
 
     def _close_anim_by_user(self):
         self._anim_closed = True     # load keeps running, window stays closed
@@ -917,8 +934,7 @@ class App:
                 if frame:
                     try:
                         img = tk.PhotoImage(data=frame)
-                        self._anim_lbl.configure(image=img, width=img.width(),
-                                                 height=img.height())
+                        self._anim_lbl.configure(image=img)
                         self._anim_img = img   # keep a reference or tk drops it
                     except tk.TclError:
                         pass

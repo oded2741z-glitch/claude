@@ -21,7 +21,7 @@ No dependencies — Python standard library only.
 
 * **Intensity slider (0–100%)** — each worker runs a 100 ms duty cycle (busy for the target percentage, sleeping for the rest); adjustable live while running
 * **GPU load (OpenCL)** — optional stress on the graphics card with its own intensity slider; uses the OpenCL runtime that ships with GPU drivers, no Python packages needed
-* **Stress animation window** — FurMark-style: while the GPU load runs, a window shows a live plasma animation that is computed pixel-by-pixel on the GPU — the animation itself is the load. Closing the window keeps the load running
+* **Stress animation window** — FurMark-style: while the GPU load runs, a resizable window shows a live plasma animation that is computed pixel-by-pixel on the GPU — the animation itself is the load. **Enlarging the window raises the GPU load** (more pixels per frame); the intensity slider sets the math per pixel. Closing the window keeps the load running
 * **Run duration** — minutes : seconds with auto-stop and a live countdown; 0:00 = unlimited (stops CPU and GPU together)
 * **Live usage display** — CPU and GPU percentages on a 60-second history chart, plus a bar per core
 * **CPU & GPU temperature** — color-coded (amber from 70°C, red from 85°C); shows "—" when no sensor is readable

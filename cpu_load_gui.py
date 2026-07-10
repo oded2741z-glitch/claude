@@ -450,6 +450,25 @@ def is_windows_admin():
         return False
 
 
+def apply_dark_title_bar(win):
+    """Ask Windows for a dark title bar (no-op elsewhere / on old builds)."""
+    if not IS_WINDOWS:
+        return
+    try:
+        win.update_idletasks()
+        hwnd = ct.windll.user32.GetParent(win.winfo_id())
+        val = ct.c_int(1)
+        for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE (19 pre-20H1)
+            if ct.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr,
+                                                      ct.byref(val), 4) == 0:
+                break
+        # nudge a repaint so the bar recolors immediately
+        win.attributes("-alpha", 0.99)
+        win.attributes("-alpha", 1.0)
+    except (OSError, AttributeError, tk.TclError):
+        pass
+
+
 def relaunch_as_admin():
     """Restart this script elevated (UAC prompt). True if launch succeeded."""
     if not IS_WINDOWS:
@@ -635,6 +654,9 @@ class App:
         root.configure(bg=PAGE)
         root.geometry("1080x660")
         root.minsize(880, 560)
+        self._blank_icon = tk.PhotoImage(width=16, height=16)   # hides the Tk feather
+        root.iconphoto(True, self._blank_icon)
+        root.after(150, lambda: apply_dark_title_bar(root))
 
         base = "Segoe UI" if "Segoe UI" in tkfont.families() else "DejaVu Sans"
         self.f_title = (base, 16, "bold")
@@ -875,6 +897,7 @@ class App:
                  font=self.f_small, bg=PAGE, fg=MUTED).pack(pady=(0, 8))
         win.protocol("WM_DELETE_WINDOW", self._close_anim_by_user)
         self._anim_win = win
+        win.after(150, lambda: apply_dark_title_bar(win))
 
     def _close_anim_by_user(self):
         self._anim_closed = True     # load keeps running, window stays closed

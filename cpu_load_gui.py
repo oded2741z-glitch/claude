@@ -485,10 +485,12 @@ def relaunch_as_admin():
     if not IS_WINDOWS:
         return False
     try:
-        import ctypes
-        script = os.path.abspath(sys.argv[0])
-        rc = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, f'"{script}"', None, 1)
+        if getattr(sys, "frozen", False):      # built exe: relaunch itself
+            exe, params = sys.executable, ""
+        else:                                  # script: relaunch via python
+            exe = sys.executable
+            params = '"%s"' % os.path.abspath(sys.argv[0])
+        rc = ct.windll.shell32.ShellExecuteW(None, "runas", exe, params, None, 1)
         return rc > 32  # ShellExecute returns >32 on success
     except (OSError, AttributeError):
         return False
@@ -1072,5 +1074,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Required for frozen builds (PyInstaller etc.): worker processes
+    # re-execute this entry point, and without freeze_support() each one
+    # would open another copy of the GUI.
+    mp.freeze_support()
     mp.set_start_method("spawn", force=True)
     main()

@@ -26,6 +26,7 @@ No dependencies — Python standard library only.
 * **Live usage display** — CPU and GPU percentages on a 60-second history chart, plus a bar per core
 * **CPU & GPU temperature** — color-coded (amber from 70°C, red from 85°C); shows "—" when no sensor is readable
 * **Worker-count control** — choose how many cores to load (up to 2× core count)
+* **Logging to a text file** — optional sampling every 1 / 5 / 10 minutes into `cpu_load_log.txt` (next to the program; falls back to your home folder): timestamp, CPU/GPU usage and temperature, and the current load settings. Handy for long burn-in runs
 
 ## Temperature readings · קריאת טמפרטורה
 

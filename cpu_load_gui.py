@@ -64,6 +64,10 @@ class LoadEngine:
         return len(self._procs)
 
     @property
+    def target(self):
+        return self._target.value
+
+    @property
     def remaining(self):
         """Seconds until auto-stop, or None if unlimited / not running."""
         if self._until is None or not self._procs:
@@ -675,6 +679,17 @@ AMBER = "#fab219"
 WINDOW_S = 60          # chart history window, seconds
 TICK_MS = 500          # GUI refresh interval
 
+LOG_CHOICES = (("Off", 0), ("Every 1 min", 60),
+               ("Every 5 min", 300), ("Every 10 min", 600))
+
+
+def default_log_path():
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "cpu_load_log.txt")
+
 
 # ----------------------------------------------------------------------- gui
 
@@ -784,6 +799,23 @@ class App:
         self.dur_sec = self._spin(dur, 0, 59, 0)
         self.dur_sec.pack(side="left")
         tk.Label(dur, text="sec", font=self.f_small, bg=CARD, fg=MUTED).pack(side="left", padx=(4, 0))
+
+        self._ctl_header(ctl, "Log to file").pack(anchor="w", padx=16, pady=(14, 4))
+        self._log_interval = 0
+        self._log_last = 0.0
+        self._log_path = default_log_path()
+        self.log_var = tk.StringVar(value=LOG_CHOICES[0][0])
+        lom = tk.OptionMenu(ctl, self.log_var, *(c[0] for c in LOG_CHOICES),
+                            command=self._on_log_change)
+        lom.configure(bg=CARD2, fg=INK2, activebackground=CARD2, activeforeground=INK,
+                      relief="flat", bd=0, highlightthickness=1,
+                      highlightbackground=GRID, font=self.f_small, anchor="w",
+                      cursor="hand2")
+        lom["menu"].configure(bg=CARD2, fg=INK, font=self.f_small,
+                              activebackground=BLUE, activeforeground="#ffffff")
+        lom.pack(anchor="w", fill="x", padx=16)
+        self.log_lbl = tk.Label(ctl, text="", font=self.f_small, bg=CARD, fg=MUTED)
+        self.log_lbl.pack(anchor="w", padx=16)
 
         self._ctl_header(ctl, "GPU load (OpenCL)").pack(anchor="w", padx=16, pady=(14, 4))
         if self.gpu.available:
@@ -904,6 +936,51 @@ class App:
     def _on_gpu_target(self, v):
         self.gpu_lbl.config(text=f"{int(float(v))}%")
         self.gpu.intensity = float(v)
+
+    # -- stats logging ----------------------------------------------------------
+    def _on_log_change(self, choice):
+        self._log_interval = dict(LOG_CHOICES).get(choice, 0)
+        if self._log_interval:
+            self._write_log("--- logging started (%s) ---" % choice.lower())
+            self._log_last = 0.0          # first sample on the next tick
+        else:
+            self.log_lbl.config(text="")
+
+    def _write_log(self, text):
+        line = time.strftime("%Y-%m-%d %H:%M:%S") + " | " + text + "\n"
+        for path in (self._log_path, os.path.join(os.path.expanduser("~"),
+                                                  "cpu_load_log.txt")):
+            try:
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(line)
+                self._log_path = path
+                shown = path if len(path) <= 36 else "…" + path[-35:]
+                self.log_lbl.config(text="→ " + shown)
+                return
+            except OSError:
+                continue
+        self.log_lbl.config(text="cannot write log file")
+
+    def _maybe_log(self, now):
+        if not self._log_interval or now - self._log_last < self._log_interval:
+            return
+        self._log_last = now
+        s = self.sampler
+        fmt = lambda v, u: "—" if v is None else "%.0f%s" % (v, u)
+        text = "CPU %s %s | GPU %s %s" % (
+            fmt(s.total, "%"), fmt(s.temp, "°C"),
+            fmt(s.gpu_util, "%"), fmt(s.gpu_temp, "°C"))
+        if self.engine.running:
+            text += " | load ON: target %d%%, workers %d" % (
+                int(self.engine.target), self.engine.workers)
+            if self.gpu.running:
+                text += ", GPU intensity %d%%" % int(self.gpu.intensity)
+            rem = self.engine.remaining
+            if rem is not None:
+                text += ", %ds left" % int(rem)
+        else:
+            text += " | load off"
+        self._write_log(text)
 
     def _on_gpu_device(self, name):
         """Switch the burner to another GPU (e.g. onboard Intel -> NVIDIA)."""
@@ -1088,6 +1165,7 @@ class App:
             h, m = divmod(m, 60)
             self.tile_left.config(text=f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}")
 
+        self._maybe_log(now)
         self._paint_state()
         self._draw_chart(now)
         self._draw_bars(s.cores)

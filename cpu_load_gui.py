@@ -300,8 +300,8 @@ class GpuBurner:
         if abs(w - cw) >= 8 or abs(h - ch) >= 8:
             self._size = (w, h)
 
-    def _launch(self, iters, w, h):
-        """Render one animation frame on the GPU and read it back."""
+    def _launch(self, iters, w, h, readback=True):
+        """Run one compute burst on the GPU; optionally read the frame back."""
         cl = self._cl
         kern_p = ct.c_void_p(self._kern)
         q_p = ct.c_void_p(self._queue)
@@ -314,18 +314,20 @@ class GpuBurner:
         if cl.clEnqueueNDRangeKernel(q_p, kern_p, 1, None, ct.byref(gsz),
                                      None, 0, None, None) != 0:
             raise RuntimeError("clEnqueueNDRangeKernel failed")
-        if cl.clEnqueueReadBuffer(q_p, self._mem, 1, ct.c_size_t(0),
-                                  ct.c_size_t(w * h * 3), self._host,
-                                  0, None, None) != 0:
-            raise RuntimeError("clEnqueueReadBuffer failed")
+        if readback:
+            if cl.clEnqueueReadBuffer(q_p, self._mem, 1, ct.c_size_t(0),
+                                      ct.c_size_t(w * h * 3), self._host,
+                                      0, None, None) != 0:
+                raise RuntimeError("clEnqueueReadBuffer failed")
         cl.clFinish(q_p)
-        self._t += 0.06
-        now = time.perf_counter()
-        if now - self._last_pub > 0.09:   # publish at GUI cadence, not per frame
-            self._last_pub = now
-            header = b"P6\n%d %d\n255\n" % (w, h)
-            with self._frame_lock:
-                self.frame = header + bytes(self._host[:w * h * 3])
+        if readback:
+            self._t += 0.06
+            now = time.perf_counter()
+            if now - self._last_pub > 0.09:   # publish at GUI cadence
+                self._last_pub = now
+                header = b"P6\n%d %d\n255\n" % (w, h)
+                with self._frame_lock:
+                    self.frame = header + bytes(self._host[:w * h * 3])
 
     def get_frame(self):
         with self._frame_lock:
@@ -349,24 +351,43 @@ class GpuBurner:
         self._thread = None
 
     def _run(self):
-        # FurMark model: fixed frame pacing; load = pixels x math-per-pixel.
-        # When a frame takes longer than the frame interval the GPU is
-        # saturated and the fps simply drops.
+        # Busy-budget model: intensity sets the fraction of each frame
+        # interval the GPU spends computing. The first burst of an interval
+        # renders the visible frame; extra bursts keep the GPU busy until
+        # the budget is used. Burst size auto-tunes toward ~10ms, so the
+        # slider stays accurate on anything from an iGPU to a high-end card.
         interval = 1.0 / self.FPS
+        chunk = 0.010
+        iters = 64
         while not self._stop.is_set():
             t = min(100.0, max(0.0, self.intensity))
             if t <= 0:
                 time.sleep(0.1)
                 continue
             w, h = self._size
-            iters = max(4, int(t * t / 8))     # 10% -> 12, 50% -> 312, 100% -> 1250
-            k0 = time.perf_counter()
-            try:
-                self._launch(iters, w, h)
-            except Exception as e:
-                self.available, self.reason = False, str(e)
-                return
-            rest = interval - (time.perf_counter() - k0)
+            budget = interval * t / 100.0
+            t0 = time.perf_counter()
+            readback = True
+            while not self._stop.is_set():
+                k0 = time.perf_counter()
+                try:
+                    self._launch(iters, w, h, readback)
+                except Exception as e:
+                    self.available, self.reason = False, str(e)
+                    return
+                readback = False
+                dt = time.perf_counter() - k0
+                if dt > 0:   # steer bursts toward `chunk`, damped against noise
+                    factor = max(0.5, min(2.0, chunk / dt))
+                    iters = max(8, min(1 << 17, int(iters * factor) or 8))
+                if time.perf_counter() - t0 >= budget:
+                    break
+            busy = time.perf_counter() - t0
+            # Idle long enough that busy/(busy+idle) == intensity, even when a
+            # single minimal burst overshoots the budget (slow devices): the
+            # fps drops but the average load stays honest.
+            idle_needed = busy * (100.0 - t) / t if t < 100 else 0.0
+            rest = max(interval - busy, idle_needed)
             if rest > 0:
                 time.sleep(rest)
 
@@ -979,7 +1000,7 @@ class App:
             self.root.winfo_rooty()))
         self._anim_lbl = tk.Label(win, bg=PAGE, bd=0)
         self._anim_lbl.pack(fill="both", expand=True, padx=10, pady=(10, 2))
-        tk.Label(win, text="enlarge the window to raise GPU load",
+        tk.Label(win, text="rendered on the GPU — the intensity slider sets the load",
                  font=self.f_small, bg=PAGE, fg=MUTED).pack(pady=(0, 6))
         win.protocol("WM_DELETE_WINDOW", self._close_anim_by_user)
         win.bind("<Configure>", self._on_anim_resize)

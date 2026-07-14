@@ -143,6 +143,24 @@ __kernel void frame(__global uchar *img, const float t, const int iters,
 """
 
 
+def pick_gpu_device(names):
+    """Index of the preferred device: discrete GPUs beat integrated ones."""
+    best, best_score = 0, None
+    for i, name in enumerate(names):
+        n = name.lower()
+        score = 0
+        for k in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla",
+                  "radeon", "instinct", "arc"):
+            if k in n:
+                score += 2
+        for k in ("intel", "uhd", "iris", "hd graphics"):
+            if k in n:
+                score -= 1
+        if best_score is None or score > best_score:
+            best, best_score = i, score
+    return best
+
+
 class GpuBurner:
     """Generates GPU load through OpenCL, which ships with GPU drivers on
     Windows/Linux/macOS — no Python packages needed. Renders a plasma
@@ -157,10 +175,12 @@ class GpuBurner:
     MAX_H = 1440
     FPS = 25
 
-    def __init__(self, device_type=_CL_DEVICE_TYPE_GPU):
+    def __init__(self, device_type=_CL_DEVICE_TYPE_GPU, device_index=None):
         self.available = False
         self.reason = None
         self.device_name = None
+        self.devices = []            # names of all detected GPU devices
+        self.device_index = 0
         self.intensity = 50.0
         self.frame = None            # latest rendered frame as binary PPM
         self._frame_lock = threading.Lock()
@@ -170,12 +190,12 @@ class GpuBurner:
         self._size = (self.FRAME_W, self.FRAME_H)
         self._last_pub = 0.0
         try:
-            self._init_cl(device_type)
+            self._init_cl(device_type, device_index)
             self.available = True
         except Exception as e:
             self.reason = str(e) or "OpenCL initialization failed"
 
-    def _init_cl(self, device_type):
+    def _init_cl(self, device_type, device_index=None):
         if IS_WINDOWS:
             names = ["OpenCL.dll"]
         elif sys.platform == "darwin":
@@ -202,21 +222,38 @@ class GpuBurner:
         plats = (ct.c_void_p * n.value)()
         cl.clGetPlatformIDs(n, plats, None)
 
-        dev = None
+        # collect every GPU device across all platforms (e.g. Intel + NVIDIA)
+        found = []
         for p in plats:
             dn = ct.c_uint(0)
             if cl.clGetDeviceIDs(ct.c_void_p(p), ct.c_ulonglong(device_type),
                                  0, None, ct.byref(dn)) == 0 and dn.value:
                 devs = (ct.c_void_p * dn.value)()
                 cl.clGetDeviceIDs(ct.c_void_p(p), ct.c_ulonglong(device_type), dn, devs, None)
-                dev = devs[0]
-                break
-        if dev is None:
+                for d in devs:
+                    namebuf = ct.create_string_buffer(256)
+                    cl.clGetDeviceInfo(ct.c_void_p(d), _CL_DEVICE_NAME,
+                                       ct.c_size_t(256), namebuf, None)
+                    name = namebuf.value.decode(errors="replace").strip() or "GPU"
+                    found.append((d, name))
+        if not found:
             raise RuntimeError("no OpenCL GPU device")
 
-        namebuf = ct.create_string_buffer(256)
-        cl.clGetDeviceInfo(ct.c_void_p(dev), _CL_DEVICE_NAME, ct.c_size_t(256), namebuf, None)
-        self.device_name = namebuf.value.decode(errors="replace") or "GPU"
+        names = []
+        for _, name in found:      # disambiguate identical twins for the picker
+            unique, i = name, 2
+            while unique in names:
+                unique = f"{name} #{i}"
+                i += 1
+            names.append(unique)
+        self.devices = names
+        if device_index is not None and 0 <= device_index < len(found):
+            idx = device_index
+        else:
+            idx = pick_gpu_device(names)
+        self.device_index = idx
+        dev = found[idx][0]
+        self.device_name = names[idx]
 
         err = ct.c_int(0)
         devarr = (ct.c_void_p * 1)(dev)
@@ -741,9 +778,20 @@ class App:
             self.gpu_slider = Slider(ctl, command=self._on_gpu_target, width=240)
             self.gpu_slider.pack(fill="x", padx=16)
             self.gpu_slider.set(50)
-            name = self.gpu.device_name or "GPU"
-            tk.Label(ctl, text=name[:34], font=self.f_small, bg=CARD, fg=MUTED
-                     ).pack(anchor="w", padx=16)
+            if len(self.gpu.devices) > 1:
+                self.gpu_dev_var = tk.StringVar(value=self.gpu.device_name)
+                om = tk.OptionMenu(ctl, self.gpu_dev_var, *self.gpu.devices,
+                                   command=self._on_gpu_device)
+                om.configure(bg=CARD2, fg=INK2, activebackground=CARD2,
+                             activeforeground=INK, relief="flat", bd=0,
+                             highlightthickness=1, highlightbackground=GRID,
+                             font=self.f_small, anchor="w", cursor="hand2")
+                om["menu"].configure(bg=CARD2, fg=INK, font=self.f_small,
+                                     activebackground=BLUE, activeforeground="#ffffff")
+                om.pack(anchor="w", fill="x", padx=16)
+            else:
+                tk.Label(ctl, text=(self.gpu.device_name or "GPU")[:34],
+                         font=self.f_small, bg=CARD, fg=MUTED).pack(anchor="w", padx=16)
         else:
             self.gpu_on = tk.BooleanVar(value=False)
             tk.Label(ctl, text="No OpenCL GPU detected", font=self.f_small,
@@ -835,6 +883,30 @@ class App:
     def _on_gpu_target(self, v):
         self.gpu_lbl.config(text=f"{int(float(v))}%")
         self.gpu.intensity = float(v)
+
+    def _on_gpu_device(self, name):
+        """Switch the burner to another GPU (e.g. onboard Intel -> NVIDIA)."""
+        try:
+            idx = self.gpu.devices.index(name)
+        except ValueError:
+            return
+        if idx == self.gpu.device_index:
+            return
+        was_running = self.gpu.running
+        old = self.gpu
+        old.stop()
+        new = GpuBurner(device_index=idx)
+        if not new.available:      # switch failed: keep the working burner
+            self.gpu_dev_var.set(old.device_name or "GPU")
+            if was_running:
+                old.start()
+            return
+        new.intensity = old.intensity
+        new.set_size(*old._size)
+        self.gpu = new
+        self._destroy_anim()       # reopen with the new device in the title
+        if was_running:
+            new.start()
 
     def _on_gpu_toggle(self):
         if not self.engine.running:

@@ -683,12 +683,27 @@ LOG_CHOICES = (("Off", 0), ("Every 1 min", 60),
                ("Every 5 min", 300), ("Every 10 min", 600))
 
 
-def default_log_path():
+def new_log_path():
+    """A fresh timestamped log file next to the program."""
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
     else:
         base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, "cpu_load_log.txt")
+    return os.path.join(base, time.strftime("cpu_load_log_%Y-%m-%d_%H-%M-%S.txt"))
+
+
+def open_in_file_manager(path):
+    """Open a file (or folder) with the OS default application."""
+    try:
+        if IS_WINDOWS:
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+        return True
+    except OSError:
+        return False
 
 
 # ----------------------------------------------------------------------- gui
@@ -803,9 +818,12 @@ class App:
         self._ctl_header(ctl, "Log to file").pack(anchor="w", padx=16, pady=(14, 4))
         self._log_interval = 0
         self._log_last = 0.0
-        self._log_path = default_log_path()
+        self._log_path = None            # current/most recent session log file
+        self._log_active = False
+        lrow = tk.Frame(ctl, bg=CARD)
+        lrow.pack(fill="x", padx=16)
         self.log_var = tk.StringVar(value=LOG_CHOICES[0][0])
-        lom = tk.OptionMenu(ctl, self.log_var, *(c[0] for c in LOG_CHOICES),
+        lom = tk.OptionMenu(lrow, self.log_var, *(c[0] for c in LOG_CHOICES),
                             command=self._on_log_change)
         lom.configure(bg=CARD2, fg=INK2, activebackground=CARD2, activeforeground=INK,
                       relief="flat", bd=0, highlightthickness=1,
@@ -813,7 +831,12 @@ class App:
                       cursor="hand2")
         lom["menu"].configure(bg=CARD2, fg=INK, font=self.f_small,
                               activebackground=BLUE, activeforeground="#ffffff")
-        lom.pack(anchor="w", fill="x", padx=16)
+        lom.pack(side="left", fill="x", expand=True)
+        tk.Button(lrow, text="Open log", font=self.f_small, command=self._open_log,
+                  bg=CARD2, fg=INK2, activebackground="#2e2e2c", activeforeground=INK,
+                  relief="flat", bd=0, padx=10, cursor="hand2",
+                  highlightthickness=1, highlightbackground=GRID
+                  ).pack(side="left", padx=(8, 0), fill="y")
         self.log_lbl = tk.Label(ctl, text="", font=self.f_small, bg=CARD, fg=MUTED)
         self.log_lbl.pack(anchor="w", padx=16)
 
@@ -941,15 +964,27 @@ class App:
     def _on_log_change(self, choice):
         self._log_interval = dict(LOG_CHOICES).get(choice, 0)
         if self._log_interval:
+            if not self._log_active:      # every new session gets a new file
+                self._log_path = new_log_path()
+                self._log_active = True
             self._write_log("--- logging started (%s) ---" % choice.lower())
             self._log_last = 0.0          # first sample on the next tick
-        else:
-            self.log_lbl.config(text="")
+        elif self._log_active:
+            self._write_log("--- logging stopped ---")
+            self._log_active = False
+
+    def _open_log(self):
+        """Open the current (or most recent) log file; its folder if none."""
+        target = self._log_path
+        if not target or not os.path.exists(target):
+            target = os.path.dirname(self._log_path or new_log_path())
+        if not open_in_file_manager(target):
+            self.log_lbl.config(text="cannot open: " + target)
 
     def _write_log(self, text):
         line = time.strftime("%Y-%m-%d %H:%M:%S") + " | " + text + "\n"
         for path in (self._log_path, os.path.join(os.path.expanduser("~"),
-                                                  "cpu_load_log.txt")):
+                                                  os.path.basename(self._log_path))):
             try:
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(line)

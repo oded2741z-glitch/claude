@@ -523,6 +523,69 @@ def is_windows_admin():
         return False
 
 
+def _program_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def find_hw_monitor():
+    """LibreHardwareMonitor/OpenHardwareMonitor exe shipped next to the app."""
+    if not IS_WINDOWS:
+        return None
+    base = _program_dir()
+    candidates = [os.path.join(base, "LibreHardwareMonitor.exe"),
+                  os.path.join(base, "OpenHardwareMonitor.exe")]
+    for pattern in ("*HardwareMonitor*", "*hardwaremonitor*"):
+        for sub in glob.glob(os.path.join(base, pattern)):
+            candidates.append(os.path.join(sub, "LibreHardwareMonitor.exe"))
+            candidates.append(os.path.join(sub, "OpenHardwareMonitor.exe"))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def _set_hw_monitor_minimized(exe):
+    """Set 'Start Minimized' + 'Minimize To Tray' in the monitor's own
+    config file (Libre/OpenHardwareMonitor persist options there), so it
+    comes up quietly in the tray instead of opening a window."""
+    cfg = os.path.splitext(exe)[0] + ".config"
+    try:
+        import xml.etree.ElementTree as ET
+        if os.path.exists(cfg):
+            tree = ET.parse(cfg)
+            root = tree.getroot()
+            apps = root.find("appSettings")
+            if apps is None:
+                apps = ET.SubElement(root, "appSettings")
+        else:
+            root = ET.Element("configuration")
+            apps = ET.SubElement(root, "appSettings")
+            tree = ET.ElementTree(root)
+        for key in ("startMinMenuItem", "minTrayMenuItem"):
+            node = next((a for a in apps.findall("add") if a.get("key") == key), None)
+            if node is None:
+                node = ET.SubElement(apps, "add")
+                node.set("key", key)
+            node.set("value", "true")
+        tree.write(cfg, encoding="utf-8", xml_declaration=True)
+    except Exception:
+        pass    # worst case it opens a window once
+
+
+def launch_hw_monitor(exe):
+    """Start the hardware monitor minimized to the tray; the shell handles
+    its UAC elevation (it needs admin for the sensor driver)."""
+    _set_hw_monitor_minimized(exe)
+    try:
+        rc = ct.windll.shell32.ShellExecuteW(
+            None, "open", exe, None, os.path.dirname(exe), 6)  # 6 = SW_MINIMIZE
+        return rc > 32
+    except (OSError, AttributeError):
+        return False
+
+
 def apply_dark_title_bar(win):
     """Ask Windows for a dark title bar (no-op elsewhere / on old builds)."""
     if not IS_WINDOWS:
@@ -902,7 +965,9 @@ class App:
         self.temp_hint = tk.Label(self.tile_temp.master, font=(base, 8, "underline"),
                                   bg=CARD, fg=BLUE, cursor="hand2")
         self.temp_hint.bind("<Button-1>", lambda e: self._temp_hint_click())
-        self._temp_hint_mode = None   # None | "elevate" | "lhm"
+        self._temp_hint_mode = None   # None | "starting" | "elevate" | "lhm"
+        self._hwmon_started_at = None
+        root.after(4000, self._autostart_hw_monitor)
 
         chart_card = self._card(dash)
         chart_card.grid(row=1, column=0, columnspan=5, sticky="nsew", pady=(12, 0))
@@ -1062,10 +1127,23 @@ class App:
         except ValueError:
             return self.engine.cpu_count
 
+    def _autostart_hw_monitor(self):
+        """If no CPU temp is readable but a LibreHardwareMonitor copy sits
+        next to the program, start it — its WMI sensors appear within
+        seconds and the temperature tile fills in automatically."""
+        if not IS_WINDOWS or self.sampler.temp is not None:
+            return
+        exe = find_hw_monitor()
+        if exe and launch_hw_monitor(exe):
+            self._hwmon_started_at = time.time()
+
     def _update_temp_hint(self, temp):
         """Offer a fix in the temperature tile when Windows shows no sensor."""
         if temp is not None or not IS_WINDOWS:
             mode = None
+        elif (self._hwmon_started_at is not None and
+              time.time() - self._hwmon_started_at < 40):
+            mode = "starting"
         elif not is_windows_admin():
             mode = "elevate"
         else:
@@ -1076,10 +1154,11 @@ class App:
         if mode is None:
             self.temp_hint.pack_forget()
         else:
-            self.temp_hint.config(
-                text="click to restart as Administrator" if mode == "elevate"
-                else "no sensor — install LibreHardwareMonitor",
-                cursor="hand2" if mode == "elevate" else "arrow")
+            texts = {"starting": "starting LibreHardwareMonitor…",
+                     "elevate": "click to restart as Administrator",
+                     "lhm": "no sensor — install LibreHardwareMonitor"}
+            self.temp_hint.config(text=texts[mode],
+                                  cursor="hand2" if mode == "elevate" else "arrow")
             self.temp_hint.pack(anchor="w", padx=14, pady=(0, 8))
 
     def _temp_hint_click(self):

@@ -36,7 +36,14 @@ No dependencies — Python standard library only.
 | Windows | WMI via PowerShell: [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) / OpenHardwareMonitor sensors if the app is running, otherwise the ACPI thermal zone |
 | WSL | Windows WMI through `powershell.exe` |
 
-**Windows note:** many PCs don't expose the ACPI thermal zone to regular users. When that happens the temperature tile shows "—" with a **"click to restart as Administrator"** link — clicking it relaunches the app elevated (UAC prompt), no manual steps needed. Alternatively, run **LibreHardwareMonitor** in the background and the app picks up its CPU sensor automatically. If your Windows account has no admin rights at all, Windows provides no way to read the CPU temperature and the tile stays "—".
+**Windows note:** many PCs don't expose CPU temperature to Windows at all — the reliable source is **LibreHardwareMonitor** ([download the ZIP](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases), free). **Put its folder inside the program's folder and you're done**: on startup, if no temperature is readable, the app finds it, configures it to start minimized to the tray, and launches it automatically (one UAC prompt) — the temperature fills in within seconds. Without it, the app falls back to the ACPI thermal zone, which usually needs the **"click to restart as Administrator"** link shown in the temperature tile — and on many desktops isn't available at all.
+
+```
+YourFolder/
+├── cpu_load_gui.py        (or your built .exe)
+└── LibreHardwareMonitor/
+    └── LibreHardwareMonitor.exe
+```
 
 **הערה ל-Windows:** אם הטמפרטורה מציגה "—", יופיע בכרטיס הטמפרטורה קישור **"click to restart as Administrator"** — לחיצה עליו מפעילה את התוכנה מחדש עם הרשאות מנהל (חלון UAC) באופן אוטומטי. לחלופין, הריצו LibreHardwareMonitor ברקע והתוכנה תזהה את החיישן שלו. אם לחשבון שלכם אין הרשאות מנהל בכלל — Windows לא מאפשר קריאת טמפרטורה, והכרטיס יישאר "—".
 

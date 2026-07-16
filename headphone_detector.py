@@ -35,6 +35,18 @@ HEADPHONE_KEYWORDS = (
     "airpods", "buds", "אוזניות",
 )
 
+# Software-only audio devices that are always "present" and would make the
+# detector report connected forever (Oculus/Steam/VB-Audio virtual sinks).
+VIRTUAL_DEVICE_KEYWORDS = (
+    "virtual", "vb-audio", "voicemeeter", "steam streaming", "cable input",
+    "cable output", "wave link", "nvidia broadcast",
+)
+
+
+def _is_virtual_device(name):
+    lowered = name.lower()
+    return any(keyword in lowered for keyword in VIRTUAL_DEVICE_KEYWORDS)
+
 
 def _run(cmd, timeout=10):
     """Run a command and return its stdout, or None on failure."""
@@ -214,6 +226,7 @@ def detect():
         devices = detect_macos()
     else:
         raise RuntimeError(f"Unsupported platform: {system}")
+    devices = [name for name in devices if not _is_virtual_device(name)]
     # Deduplicate while preserving order.
     return list(dict.fromkeys(devices))
 
@@ -356,7 +369,7 @@ class HeadphoneApp:
         open_check = ttk.Checkbutton(
             actions_frame,
             text="Open the program when headphones connect",
-            variable=self.open_var, command=self.persist_settings,
+            variable=self.open_var, command=self.on_open_toggled,
         )
         open_check.pack(anchor="w", padx=8)
 
@@ -364,7 +377,7 @@ class HeadphoneApp:
         close_check = ttk.Checkbutton(
             actions_frame,
             text="Close the program when headphones disconnect",
-            variable=self.close_var, command=self.persist_settings,
+            variable=self.close_var, command=self.on_close_toggled,
         )
         close_check.pack(anchor="w", padx=8, pady=(0, 8))
 
@@ -414,6 +427,18 @@ class HeadphoneApp:
             "open_on_connect": self.open_var.get(),
             "close_on_disconnect": self.close_var.get(),
         })
+
+    def on_open_toggled(self):
+        # If headphones are already connected when the option is turned on,
+        # act immediately instead of waiting for the next connect event.
+        self.persist_settings()
+        if self.open_var.get() and self.previous_connected:
+            self.log_event(self.controller.open(self.program_var.get()))
+
+    def on_close_toggled(self):
+        self.persist_settings()
+        if self.close_var.get() and self.previous_connected is False:
+            self.log_event(self.controller.close(self.program_var.get()))
 
     def open_log_file(self):
         if not os.path.exists(LOG_FILE):
@@ -472,6 +497,9 @@ class HeadphoneApp:
                 state = "CONNECTED" if connected else "DISCONNECTED"
                 detail = " - " + ", ".join(devices) if devices else ""
                 self.log_event(f"Started, initial state: {state}{detail}")
+                # Headphones already plugged in at startup count as connected.
+                if connected and self.open_var.get():
+                    self.log_event(self.controller.open(self.program_var.get()))
             elif connected:
                 self.log_event("CONNECTED - " + ", ".join(devices))
                 if self.open_var.get():

@@ -50,11 +50,17 @@ def _is_virtual_device(name):
     return any(keyword in lowered for keyword in VIRTUAL_DEVICE_KEYWORDS)
 
 
+# On Windows, keep child processes (PowerShell, taskkill) from flashing a
+# console window on every poll.
+_NO_WINDOW = 0x08000000 if platform.system() == "Windows" else 0
+
+
 def _run(cmd, timeout=10):
     """Run a command and return its stdout, or None on failure."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -538,7 +544,7 @@ class WindowsTrayIcon(threading.Thread):
 # GUI (tkinter — part of the standard library)
 # --------------------------------------------------------------------------
 
-POLL_INTERVAL_MS = 2000
+POLL_INTERVAL_MS = 10000  # check the connection every 10 seconds
 
 
 class HeadphoneApp:
@@ -859,8 +865,8 @@ def main():
         help="keep running in the terminal and report connect/disconnect",
     )
     parser.add_argument(
-        "--interval", type=float, default=2.0,
-        help="polling interval in seconds for --watch (default: 2)",
+        "--interval", type=float, default=10.0,
+        help="polling interval in seconds for --watch (default: 10)",
     )
     parser.add_argument(
         "--json", action="store_true", help="output JSON instead of text",

@@ -547,6 +547,17 @@ class WindowsTrayIcon(threading.Thread):
 POLL_INTERVAL_MS = 10000  # check the connection every 10 seconds
 OPEN_DELAY_MS = 5000      # wait 5 seconds after connect before opening
 
+# Dark theme with orange accents (matches the "Script Inject" look).
+COL_BG = "#1e1e1e"          # main window background
+COL_PANEL = "#1e1e1e"       # panels share the background
+COL_FG = "#e0e0e0"          # light text
+COL_ACCENT = "#ff6a00"      # orange accent (titles, highlights)
+COL_BUTTON = "#3a3a3a"      # button background
+COL_BUTTON_ACTIVE = "#4a4a4a"
+COL_ENTRY = "#2a2a2a"       # entry / listbox background
+COL_BORDER = "#3a3a3a"      # frame borders
+COL_MUTED = "#707070"       # dimmed text (watermark)
+
 
 class HeadphoneApp:
     def __init__(self, root, tk, ttk, filedialog, tray=None):
@@ -555,8 +566,10 @@ class HeadphoneApp:
         self.filedialog = filedialog
         self.tray = tray
         root.title("Headphone Detector")
-        root.geometry("520x330")
-        root.minsize(440, 300)
+        root.geometry("520x360")
+        root.minsize(440, 330)
+        root.configure(bg=COL_BG)
+        self._apply_theme(ttk)
 
         self.previous_connected = None
         self.after_id = None
@@ -565,11 +578,23 @@ class HeadphoneApp:
 
         settings = load_settings()
 
+        # Title header (orange, like the reference design).
+        header = tk.Label(
+            root, text="Headphone Detector", bg=COL_BG, fg=COL_ACCENT,
+            font=("Arial", 15, "bold"),
+        )
+        header.pack(pady=(10, 4))
+
         # Connected devices list.
         devices_frame = ttk.LabelFrame(root, text="Connected devices")
-        devices_frame.pack(fill="both", expand=True, padx=15, pady=(12, 8))
+        devices_frame.pack(fill="both", expand=True, padx=15, pady=(4, 8))
 
-        self.devices_list = tk.Listbox(devices_frame, font=("Arial", 11), height=4)
+        self.devices_list = tk.Listbox(
+            devices_frame, font=("Arial", 11), height=4,
+            bg=COL_ENTRY, fg=COL_FG, selectbackground=COL_ACCENT,
+            selectforeground="#ffffff", borderwidth=0, highlightthickness=0,
+            activestyle="none",
+        )
         self.devices_list.pack(fill="both", expand=True, padx=8, pady=8)
 
         # Program actions.
@@ -616,7 +641,8 @@ class HeadphoneApp:
 
         # "oT" watermark in the bottom-right corner.
         watermark = tk.Label(
-            root, text="oT", font=("Arial", 10, "italic"), fg="#a0a0a0",
+            root, text="oT", font=("Arial", 10, "italic"),
+            bg=COL_BG, fg=COL_MUTED,
         )
         watermark.place(relx=1.0, rely=1.0, x=-8, y=-4, anchor="se")
 
@@ -635,6 +661,48 @@ class HeadphoneApp:
         self.refresh()
 
     # -- helpers ----------------------------------------------------------
+
+    def _apply_theme(self, ttk):
+        """Dark theme with orange accents for all ttk widgets."""
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")  # 'clam' honours custom colours
+        except Exception:
+            pass
+        style.configure(".", background=COL_BG, foreground=COL_FG)
+        style.configure("TFrame", background=COL_BG)
+        style.configure("TLabel", background=COL_BG, foreground=COL_FG)
+        style.configure(
+            "TLabelframe", background=COL_BG, bordercolor=COL_BORDER,
+            relief="solid", borderwidth=1,
+        )
+        style.configure(
+            "TLabelframe.Label", background=COL_BG, foreground=COL_ACCENT,
+            font=("Arial", 10, "bold"),
+        )
+        style.configure(
+            "TButton", background=COL_BUTTON, foreground=COL_FG,
+            borderwidth=0, focuscolor=COL_BG, padding=6,
+        )
+        style.map(
+            "TButton",
+            background=[("active", COL_BUTTON_ACTIVE),
+                        ("pressed", COL_ACCENT)],
+            foreground=[("pressed", "#ffffff")],
+        )
+        style.configure(
+            "TCheckbutton", background=COL_BG, foreground=COL_FG,
+            focuscolor=COL_BG,
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", COL_BG)],
+            foreground=[("active", COL_ACCENT)],
+        )
+        style.configure(
+            "TEntry", fieldbackground=COL_ENTRY, foreground=COL_FG,
+            insertcolor=COL_FG, bordercolor=COL_BORDER, borderwidth=1,
+        )
 
     def browse(self):
         if platform.system() == "Windows":

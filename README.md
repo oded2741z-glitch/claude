@@ -79,5 +79,5 @@ python3 headphone_detector.py --json
 | מערכת הפעלה | שיטת הזיהוי |
 |---|---|
 | Linux | אוזניות USB דרך `/proc/asound/cards` (כרטיסי USB-Audio עם ערוץ השמעה), שקע אוזניות ו-Bluetooth דרך `pactl` (PulseAudio/PipeWire), עם fallback ל-`amixer` (ALSA) ו-`bluetoothctl` |
-| Windows | PowerShell — `Get-PnpDevice -Class AudioEndpoint` לפי שם ההתקן, ו-`Get-PnpDevice -Class MEDIA` להתקני שמע בחיבור USB |
+| Windows | קריאה ישירה מה-Registry (`winreg`) של התקני הפלט הפעילים ב-`MMDevices\Audio\Render` — קלה ומהירה, בלי להפעיל תהליכים חיצוניים; PowerShell משמש רק כגיבוי |
 | macOS | `system_profiler SPAudioDataType` — התקני פלט מסוג USB, אוזניות או Bluetooth |

@@ -50,11 +50,16 @@ def _is_virtual_device(name):
     return any(keyword in lowered for keyword in VIRTUAL_DEVICE_KEYWORDS)
 
 
+# On Windows, keep child processes from flashing a console window.
+_NO_WINDOW = 0x08000000 if platform.system() == "Windows" else 0
+
+
 def _run(cmd, timeout=10):
     """Run a command and return its stdout, or None on failure."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -153,10 +158,92 @@ def detect_linux():
 # Windows
 # --------------------------------------------------------------------------
 
-def detect_windows():
-    devices = []
+# Audio-endpoint properties in the registry (fmtid,pid of PKEY_* keys).
+_WIN_FRIENDLY_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
+_WIN_ENUMERATOR = "{a45c254e-df1c-4efd-8020-67d146a850e0},24"
+_WIN_RENDER_KEY = (
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
+)
+_DEVICE_STATE_ACTIVE = 0x00000001
 
-    # Audio endpoints whose name identifies them as headphones/headsets.
+
+def _windows_registry_audio():
+    """Enumerate active output audio endpoints from the registry.
+
+    Pure Python via winreg — no process is spawned, so this is far
+    lighter than shelling out to PowerShell on every poll. Returns a
+    list, or None if the registry can't be read (caller then falls back).
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    try:
+        render = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _WIN_RENDER_KEY)
+    except OSError:
+        return None
+
+    devices = []
+    try:
+        index = 0
+        while True:
+            try:
+                guid = winreg.EnumKey(render, index)
+            except OSError:
+                break
+            index += 1
+            try:
+                endpoint = winreg.OpenKey(render, guid)
+            except OSError:
+                continue
+            try:
+                try:
+                    state, _ = winreg.QueryValueEx(endpoint, "DeviceState")
+                except OSError:
+                    continue
+                # Skip disabled / unplugged / not-present endpoints; only
+                # currently active outputs count as "connected".
+                if state != _DEVICE_STATE_ACTIVE:
+                    continue
+                friendly, enumerator = "", ""
+                try:
+                    props = winreg.OpenKey(endpoint, "Properties")
+                    try:
+                        friendly = str(
+                            winreg.QueryValueEx(props, _WIN_FRIENDLY_NAME)[0]
+                        )
+                    except OSError:
+                        pass
+                    try:
+                        enumerator = str(
+                            winreg.QueryValueEx(props, _WIN_ENUMERATOR)[0]
+                        )
+                    except OSError:
+                        pass
+                    winreg.CloseKey(props)
+                except OSError:
+                    pass
+            finally:
+                winreg.CloseKey(endpoint)
+
+            if not friendly:
+                continue
+            enum_up = enumerator.upper()
+            if enum_up == "USB":
+                devices.append(f"{friendly} (USB)")
+            elif enum_up.startswith("BTH"):
+                devices.append(f"{friendly} (Bluetooth)")
+            elif _looks_like_headphones(friendly):
+                devices.append(friendly)
+    finally:
+        winreg.CloseKey(render)
+    return devices
+
+
+def _windows_powershell_audio():
+    """Fallback used only if the registry can't be read."""
+    devices = []
     script = (
         "Get-PnpDevice -Class AudioEndpoint -Status OK | "
         "ForEach-Object { $_.FriendlyName }"
@@ -167,20 +254,13 @@ def detect_windows():
             name = line.strip()
             if name and _looks_like_headphones(name):
                 devices.append(name)
+    return devices
 
-    # USB audio devices (USB headsets/headphones), regardless of name.
-    script = (
-        "Get-PnpDevice -Class MEDIA -Status OK | "
-        "Where-Object { $_.InstanceId -like 'USB*' } | "
-        "ForEach-Object { $_.FriendlyName }"
-    )
-    output = _run(["powershell", "-NoProfile", "-Command", script], timeout=30)
-    if output is not None:
-        for line in output.splitlines():
-            name = line.strip()
-            if name:
-                devices.append(f"{name} (USB)")
 
+def detect_windows():
+    devices = _windows_registry_audio()
+    if devices is None:
+        devices = _windows_powershell_audio()
     return devices
 
 

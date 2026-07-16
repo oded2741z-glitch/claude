@@ -614,6 +614,12 @@ class HeadphoneApp:
                                      command=self.open_log_file)
         open_log_button.pack(side="left", padx=4)
 
+        # "oT" watermark in the bottom-right corner.
+        watermark = tk.Label(
+            root, text="oT", font=("Arial", 10, "italic"), fg="#a0a0a0",
+        )
+        watermark.place(relx=1.0, rely=1.0, x=-8, y=-4, anchor="se")
+
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         if self.tray is not None:

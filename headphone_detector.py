@@ -538,7 +538,7 @@ class WindowsTrayIcon(threading.Thread):
 # GUI (tkinter — part of the standard library)
 # --------------------------------------------------------------------------
 
-POLL_INTERVAL_MS = 2000
+POLL_INTERVAL_MS = 30000  # check the connection every 30 seconds
 
 
 class HeadphoneApp:
@@ -859,8 +859,8 @@ def main():
         help="keep running in the terminal and report connect/disconnect",
     )
     parser.add_argument(
-        "--interval", type=float, default=2.0,
-        help="polling interval in seconds for --watch (default: 2)",
+        "--interval", type=float, default=30.0,
+        help="polling interval in seconds for --watch (default: 30)",
     )
     parser.add_argument(
         "--json", action="store_true", help="output JSON instead of text",

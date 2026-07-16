@@ -50,26 +50,11 @@ def _is_virtual_device(name):
     return any(keyword in lowered for keyword in VIRTUAL_DEVICE_KEYWORDS)
 
 
-# Names that clearly indicate speakers, so a USB/Bluetooth *speaker* is not
-# mistaken for headphones.
-SPEAKER_KEYWORDS = ("speaker", "רמקול", "monitor audio", "soundbar", "hdmi")
-
-
-def _looks_like_speakers(name):
-    lowered = name.lower()
-    return any(keyword in lowered for keyword in SPEAKER_KEYWORDS)
-
-
-# On Windows, keep child processes from flashing a console window.
-_NO_WINDOW = 0x08000000 if platform.system() == "Windows" else 0
-
-
 def _run(cmd, timeout=10):
     """Run a command and return its stdout, or None on failure."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
-            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -168,139 +153,10 @@ def detect_linux():
 # Windows
 # --------------------------------------------------------------------------
 
-# Audio-endpoint properties in the registry (fmtid,pid of PKEY_* keys).
-_WIN_FRIENDLY_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
-_WIN_DEVICE_DESC = "{a45c254e-df1c-4efd-8020-67d146a850e0},2"
-_WIN_ENUMERATOR = "{a45c254e-df1c-4efd-8020-67d146a850e0},24"
-_WIN_FORM_FACTOR = "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},0"
-_WIN_RENDER_KEY = (
-    r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
-)
-_DEVICE_STATE_ACTIVE = 0x00000001
-
-# EndpointFormFactor values.
-_FORM_FACTOR_HEADPHONES = 3
-_FORM_FACTOR_HEADSET = 5
-# Form factors that are definitely NOT headphones (speakers, digital out…).
-_SPEAKER_FORM_FACTORS = {0, 1, 2, 8, 9}  # RemoteNet, Speakers, LineLevel, SPDIF, HDMI
-
-
-def _classify_windows_endpoint(name, enumerator, form_factor):
-    """Return a display label if this endpoint is headphones, else None."""
-    is_headset_ff = form_factor in (
-        _FORM_FACTOR_HEADPHONES, _FORM_FACTOR_HEADSET
-    )
-    is_speaker_ff = form_factor in _SPEAKER_FORM_FACTORS
-
-    if is_headset_ff or _looks_like_headphones(name):
-        headphones = True
-    elif is_speaker_ff or _looks_like_speakers(name):
-        headphones = False  # a speaker (built-in, USB, HDMI, or Bluetooth)
-    elif enumerator.startswith("BTH") or enumerator == "USB":
-        # External audio with an unknown form factor and a neutral name —
-        # a USB/Bluetooth headset/dongle. Treat as headphones.
-        headphones = True
-    else:
-        headphones = False
-
-    if not headphones:
-        return None
-    if enumerator == "USB":
-        return f"{name} (USB)"
-    if enumerator.startswith("BTH"):
-        return f"{name} (Bluetooth)"
-    return name
-
-
-def _iter_windows_endpoints():
-    """Yield (friendly, enumerator, form_factor, state) for every render
-    audio endpoint in the registry. Empty generator if unreadable."""
-    try:
-        import winreg
-    except ImportError:
-        return
-
-    # Force the 64-bit view so 32-bit Python still sees the shared key.
-    access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
-    try:
-        render = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, _WIN_RENDER_KEY, 0, access
-        )
-    except OSError:
-        return
-
-    def _value(key, name):
-        try:
-            return winreg.QueryValueEx(key, name)[0]
-        except OSError:
-            return None
-
-    try:
-        index = 0
-        while True:
-            try:
-                guid = winreg.EnumKey(render, index)
-            except OSError:
-                break
-            index += 1
-            try:
-                endpoint = winreg.OpenKey(render, guid, 0, access)
-            except OSError:
-                continue
-            try:
-                state = _value(endpoint, "DeviceState")
-                friendly = enumerator = form_factor = None
-                try:
-                    props = winreg.OpenKey(endpoint, "Properties", 0, access)
-                    friendly = (_value(props, _WIN_FRIENDLY_NAME)
-                                or _value(props, _WIN_DEVICE_DESC))
-                    enumerator = _value(props, _WIN_ENUMERATOR)
-                    form_factor = _value(props, _WIN_FORM_FACTOR)
-                    winreg.CloseKey(props)
-                except OSError:
-                    pass
-            finally:
-                winreg.CloseKey(endpoint)
-            yield (
-                str(friendly) if friendly else "",
-                str(enumerator).upper() if enumerator else "",
-                form_factor,
-                state,
-            )
-    finally:
-        winreg.CloseKey(render)
-
-
-def _windows_registry_audio():
-    """Active output audio endpoints that look like headphones.
-
-    Pure Python via winreg — no process is spawned, so it's far lighter
-    than shelling out to PowerShell on every poll. Returns a list, or
-    None if the registry can't be read (caller then falls back).
-    """
-    if platform.system() != "Windows":
-        return None
-
-    found_any = False
+def detect_windows():
     devices = []
-    for friendly, enumerator, form_factor, state in _iter_windows_endpoints():
-        found_any = True
-        # Only currently active outputs count; skip disabled / unplugged.
-        if state != _DEVICE_STATE_ACTIVE:
-            continue
-        name = friendly or "Audio device"
-        label = _classify_windows_endpoint(name, enumerator, form_factor)
-        if label is not None:
-            devices.append(label)
 
-    if not found_any:
-        return None  # registry unreadable — let the caller fall back
-    return devices
-
-
-def _windows_powershell_audio():
-    """Fallback used only if the registry can't be read."""
-    devices = []
+    # Audio endpoints whose name identifies them as headphones/headsets.
     script = (
         "Get-PnpDevice -Class AudioEndpoint -Status OK | "
         "ForEach-Object { $_.FriendlyName }"
@@ -311,13 +167,20 @@ def _windows_powershell_audio():
             name = line.strip()
             if name and _looks_like_headphones(name):
                 devices.append(name)
-    return devices
 
+    # USB audio devices (USB headsets/headphones), regardless of name.
+    script = (
+        "Get-PnpDevice -Class MEDIA -Status OK | "
+        "Where-Object { $_.InstanceId -like 'USB*' } | "
+        "ForEach-Object { $_.FriendlyName }"
+    )
+    output = _run(["powershell", "-NoProfile", "-Command", script], timeout=30)
+    if output is not None:
+        for line in output.splitlines():
+            name = line.strip()
+            if name:
+                devices.append(f"{name} (USB)")
 
-def detect_windows():
-    devices = _windows_registry_audio()
-    if devices is None:
-        devices = _windows_powershell_audio()
     return devices
 
 
@@ -675,7 +538,7 @@ class WindowsTrayIcon(threading.Thread):
 # GUI (tkinter — part of the standard library)
 # --------------------------------------------------------------------------
 
-POLL_INTERVAL_MS = 30000  # check the connection every 30 seconds
+POLL_INTERVAL_MS = 2000
 
 
 class HeadphoneApp:
@@ -720,7 +583,7 @@ class HeadphoneApp:
         open_check = ttk.Checkbutton(
             actions_frame,
             text="Open the program when headphones connect",
-            variable=self.open_var, command=self.persist_settings,
+            variable=self.open_var, command=self.on_open_toggled,
         )
         open_check.pack(anchor="w", padx=8)
 
@@ -728,7 +591,7 @@ class HeadphoneApp:
         close_check = ttk.Checkbutton(
             actions_frame,
             text="Close the program when headphones disconnect",
-            variable=self.close_var, command=self.persist_settings,
+            variable=self.close_var, command=self.on_close_toggled,
         )
         close_check.pack(anchor="w", padx=8, pady=(0, 8))
 
@@ -778,6 +641,18 @@ class HeadphoneApp:
             "open_on_connect": self.open_var.get(),
             "close_on_disconnect": self.close_var.get(),
         })
+
+    def on_open_toggled(self):
+        # If headphones are already connected when the option is turned on,
+        # act immediately instead of waiting for the next connect event.
+        self.persist_settings()
+        if self.open_var.get() and self.previous_connected:
+            self.log_event(self.controller.open(self.program_var.get()))
+
+    def on_close_toggled(self):
+        self.persist_settings()
+        if self.close_var.get() and self.previous_connected is False:
+            self.log_event(self.controller.close(self.program_var.get()))
 
     def open_log_file(self):
         if not os.path.exists(LOG_FILE):
@@ -855,8 +730,7 @@ class HeadphoneApp:
                 state = "CONNECTED" if connected else "DISCONNECTED"
                 detail = " - " + ", ".join(devices) if devices else ""
                 self.log_event(f"Started, initial state: {state}{detail}")
-                # Headphones already plugged in at startup count as connected,
-                # so open the chosen program right away.
+                # Headphones already plugged in at startup count as connected.
                 if connected and self.open_var.get():
                     self.log_event(self.controller.open(self.program_var.get()))
             elif connected:
@@ -972,35 +846,6 @@ def run_cli(args):
     return 0 if devices else 1
 
 
-STATE_NAMES = {0x1: "ACTIVE", 0x2: "DISABLED", 0x4: "NOTPRESENT",
-               0x8: "UNPLUGGED"}
-FORM_FACTOR_NAMES = {0: "RemoteNetwork", 1: "Speakers", 2: "LineLevel",
-                     3: "Headphones", 4: "Microphone", 5: "Headset",
-                     6: "Handset", 7: "SPDIF-passthrough", 8: "SPDIF",
-                     9: "HDMI/Display", 10: "Unknown"}
-
-
-def run_diagnose():
-    """Dump every render audio endpoint so problems can be diagnosed."""
-    if platform.system() != "Windows":
-        print("--diagnose is only meaningful on Windows.")
-        return 0
-    endpoints = list(_iter_windows_endpoints())
-    if not endpoints:
-        print("Could not read audio endpoints from the registry.")
-        return 1
-    print(f"Found {len(endpoints)} output audio endpoint(s):\n")
-    for friendly, enumerator, form_factor, state in endpoints:
-        state_name = STATE_NAMES.get(state, str(state))
-        ff_name = FORM_FACTOR_NAMES.get(form_factor, str(form_factor))
-        print(f"  name       : {friendly or '(no name)'}")
-        print(f"  enumerator : {enumerator or '(none)'}")
-        print(f"  formFactor : {ff_name}")
-        print(f"  state      : {state_name}\n")
-    print("Detected as headphones:", detect() or "(none)")
-    return 0
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Detect whether headphones are connected."
@@ -1014,20 +859,13 @@ def main():
         help="keep running in the terminal and report connect/disconnect",
     )
     parser.add_argument(
-        "--interval", type=float, default=30.0,
-        help="polling interval in seconds for --watch (default: 30)",
+        "--interval", type=float, default=2.0,
+        help="polling interval in seconds for --watch (default: 2)",
     )
     parser.add_argument(
         "--json", action="store_true", help="output JSON instead of text",
     )
-    parser.add_argument(
-        "--diagnose", action="store_true",
-        help="print every audio output device Windows reports (for debugging)",
-    )
     args = parser.parse_args()
-
-    if args.diagnose:
-        return run_diagnose()
 
     # Any terminal-oriented flag selects CLI mode; the default is the GUI.
     if args.cli or args.watch or args.json:

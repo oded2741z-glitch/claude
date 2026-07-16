@@ -545,6 +545,7 @@ class WindowsTrayIcon(threading.Thread):
 # --------------------------------------------------------------------------
 
 POLL_INTERVAL_MS = 10000  # check the connection every 10 seconds
+OPEN_DELAY_MS = 5000      # wait 5 seconds after connect before opening
 
 
 class HeadphoneApp:
@@ -677,6 +678,21 @@ class HeadphoneApp:
         """Write the event to the TXT log file."""
         append_log(message)
 
+    def schedule_open(self):
+        """Open the chosen program 5 seconds after headphones connect."""
+        self.log_event(
+            f"Headphones connected — opening program in "
+            f"{OPEN_DELAY_MS // 1000}s."
+        )
+        self.root.after(OPEN_DELAY_MS, self._delayed_open)
+
+    def _delayed_open(self):
+        # Only open if headphones are still connected after the delay.
+        if self.previous_connected and self.open_var.get():
+            self.log_event(self.controller.open(self.program_var.get()))
+        else:
+            self.log_event("Open cancelled — headphones no longer connected.")
+
     # -- system tray --------------------------------------------------------
 
     def poll_tray(self):
@@ -738,11 +754,11 @@ class HeadphoneApp:
                 self.log_event(f"Started, initial state: {state}{detail}")
                 # Headphones already plugged in at startup count as connected.
                 if connected and self.open_var.get():
-                    self.log_event(self.controller.open(self.program_var.get()))
+                    self.schedule_open()
             elif connected:
                 self.log_event("CONNECTED - " + ", ".join(devices))
                 if self.open_var.get():
-                    self.log_event(self.controller.open(self.program_var.get()))
+                    self.schedule_open()
             else:
                 self.log_event("DISCONNECTED")
                 if self.close_var.get():

@@ -31,8 +31,7 @@ python3 headphone_detector.py
 2. **Program to open/close** — בוחרים תוכנה עם Browse ומסמנים:
    - "Open the program when headphones connect" — תיפתח בחיבור
    - "Close the program when headphones disconnect" — תיסגר בניתוק
-3. **Event log** — יומן האירועים, נשמר אוטומטית ל-`headphone_log.txt`
-4. **Open log file** — פותח את קובץ ה-TXT
+3. **Open log file** — פותח את קובץ ה-TXT (האירועים נשמרים אליו אוטומטית ברקע)
 
 ההגדרות נשמרות בקובץ `headphone_settings.json` וייטענו שוב בהפעלה הבאה.
 

@@ -317,9 +317,6 @@ class ProgramController:
 
 POLL_INTERVAL_MS = 2000
 
-CONNECTED_COLOR = "#1a7f37"
-DISCONNECTED_COLOR = "#c62828"
-
 
 class HeadphoneApp:
     def __init__(self, root, tk, ttk, filedialog):
@@ -327,8 +324,8 @@ class HeadphoneApp:
         self.tk = tk
         self.filedialog = filedialog
         root.title("Headphone Detector")
-        root.geometry("520x600")
-        root.minsize(440, 520)
+        root.geometry("520x330")
+        root.minsize(440, 300)
 
         self.previous_connected = None
         self.after_id = None
@@ -336,17 +333,9 @@ class HeadphoneApp:
 
         settings = load_settings()
 
-        # Big status area.
-        self.icon_label = tk.Label(root, text="…", font=("Segoe UI Emoji", 44))
-        self.icon_label.pack(pady=(15, 0))
-
-        self.status_label = tk.Label(root, text="Checking…",
-                                     font=("Arial", 17, "bold"))
-        self.status_label.pack(pady=(5, 10))
-
         # Connected devices list.
         devices_frame = ttk.LabelFrame(root, text="Connected devices")
-        devices_frame.pack(fill="both", expand=True, padx=15, pady=(0, 8))
+        devices_frame.pack(fill="both", expand=True, padx=15, pady=(12, 8))
 
         self.devices_list = tk.Listbox(devices_frame, font=("Arial", 11), height=4)
         self.devices_list.pack(fill="both", expand=True, padx=8, pady=8)
@@ -380,17 +369,6 @@ class HeadphoneApp:
             variable=self.close_var, command=self.on_close_toggled,
         )
         close_check.pack(anchor="w", padx=8, pady=(0, 8))
-
-        # Event log.
-        log_frame = ttk.LabelFrame(
-            root, text="Event log (saved to headphone_log.txt)"
-        )
-        log_frame.pack(fill="both", expand=True, padx=15, pady=(0, 8))
-
-        self.log_text = tk.Text(
-            log_frame, font=("Arial", 10), height=6, state="disabled"
-        )
-        self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
 
         # Bottom buttons.
         buttons_row = ttk.Frame(root)
@@ -451,17 +429,11 @@ class HeadphoneApp:
             else:
                 subprocess.Popen(["xdg-open", LOG_FILE])
         except OSError as error:
-            self.show_log(f"Could not open log file: {error}")
-
-    def show_log(self, line):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", line + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+            append_log(f"Could not open log file: {error}")
 
     def log_event(self, message):
-        """Write to the TXT log file and mirror it in the window."""
-        self.show_log(append_log(message))
+        """Write the event to the TXT log file."""
+        append_log(message)
 
     # -- main loop --------------------------------------------------------
 
@@ -474,23 +446,17 @@ class HeadphoneApp:
         try:
             devices = detect()
         except RuntimeError as error:
-            self.icon_label.configure(text="⚠️")
-            self.status_label.configure(text=str(error), fg="black")
+            self.devices_list.delete(0, "end")
+            self.devices_list.insert("end", f"  Error: {error}")
             return
         connected = bool(devices)
 
-        if connected:
-            self.icon_label.configure(text="🎧")
-            self.status_label.configure(text="Headphones connected",
-                                        fg=CONNECTED_COLOR)
-        else:
-            self.icon_label.configure(text="🔇")
-            self.status_label.configure(text="No headphones connected",
-                                        fg=DISCONNECTED_COLOR)
-
         self.devices_list.delete(0, "end")
-        for name in devices:
-            self.devices_list.insert("end", f"  {name}")
+        if connected:
+            for name in devices:
+                self.devices_list.insert("end", f"  🎧 {name}")
+        else:
+            self.devices_list.insert("end", "  (no headphones connected)")
 
         if connected != self.previous_connected:
             if self.previous_connected is None:

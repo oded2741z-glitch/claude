@@ -571,6 +571,16 @@ class HeadphoneApp:
         root.configure(bg=COL_BG)
         self._apply_theme(ttk)
 
+        # Hide the default window icon (transparent 1x1 image).
+        self._blank_icon = tk.PhotoImage(width=1, height=1)
+        try:
+            root.iconphoto(True, self._blank_icon)
+        except Exception:
+            pass
+
+        # Paint the native title bar to match the dark theme (Windows).
+        self._style_titlebar()
+
         self.previous_connected = None
         self.after_id = None
         self.controller = ProgramController()
@@ -661,6 +671,34 @@ class HeadphoneApp:
         self.refresh()
 
     # -- helpers ----------------------------------------------------------
+
+    def _style_titlebar(self):
+        """Recolor the native Windows title bar to match the dark theme."""
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+            self.root.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            set_attr = ctypes.windll.dwmapi.DwmSetWindowAttribute
+
+            def _set(attr, value):
+                val = ctypes.c_int(value)
+                return set_attr(hwnd, attr, ctypes.byref(val),
+                                ctypes.sizeof(val))
+
+            # Dark title bar. Attribute is 20 on current Windows 10/11,
+            # but 19 on older 10 builds — try both.
+            if _set(20, 1) != 0:
+                _set(19, 1)
+
+            # Title-bar (caption) color = program background. COLORREF is
+            # 0x00BBGGRR. Windows 11 22000+ only; ignored elsewhere.
+            hexcol = COL_BG.lstrip("#")
+            r, g, b = (int(hexcol[i:i + 2], 16) for i in (0, 2, 4))
+            _set(35, (b << 16) | (g << 8) | r)  # DWMWA_CAPTION_COLOR
+        except Exception:
+            pass
 
     def _apply_theme(self, ttk):
         """Dark theme with orange accents for all ttk widgets."""

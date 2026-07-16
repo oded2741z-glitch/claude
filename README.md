@@ -1,13 +1,22 @@
-# Headphone Detector | גלאי אוזניות 🎧
+# Headphone Detector 🎧
 
-תוכנה שמזהה אם אוזניות (חוטיות, USB או Bluetooth) מחוברות למחשב — עם ממשק גרפי.
+תוכנה שמזהה אם אוזניות (חוטיות, USB או Bluetooth) מחוברות למחשב — עם ממשק גרפי באנגלית.
 עובדת על **Windows, Linux ו-macOS**, ללא צורך בהתקנת ספריות חיצוניות — רק Python 3.
 
 A cross-platform tool that detects whether headphones (wired, USB, or
-Bluetooth) are currently connected, with a GUI. Works on Windows, Linux,
+Bluetooth) are connected, with an English GUI. Works on Windows, Linux,
 and macOS using only the Python standard library.
 
 **הכל בקובץ אחד** — `headphone_detector.py`. מורידים קובץ אחד ומריצים.
+
+## מה התוכנה עושה / Features
+
+- 🎧 מציגה בזמן אמת אם אוזניות מחוברות (מתעדכן כל 2 שניות)
+- 📝 **שומרת כל חיבור וניתוק לקובץ `headphone_log.txt`** עם תאריך ושעה
+- 🚀 **פותחת תוכנה לבחירתך כשהאוזניות מתחברות** (למשל נגן מוזיקה)
+- ❌ **סוגרת את התוכנה כשהאוזניות מתנתקות**
+- Every connect/disconnect event is saved to `headphone_log.txt`
+- Optionally opens a program of your choice on connect and closes it on disconnect
 
 ## ממשק גרפי / GUI
 
@@ -17,11 +26,15 @@ and macOS using only the Python standard library.
 python3 headphone_detector.py
 ```
 
-החלון מציג בזמן אמת:
-- 🎧 / 🔇 — מצב החיבור הנוכחי (מתעדכן כל 2 שניות)
-- רשימת ההתקנים המחוברים (כולל אוזניות USB ו-Bluetooth)
-- יומן אירועים — כל חיבור וניתוק עם שעה
-- כפתור רענון ידני
+בחלון:
+1. **Connected devices** — רשימת האוזניות המחוברות כרגע
+2. **Program to open/close** — בוחרים תוכנה עם Browse ומסמנים:
+   - "Open the program when headphones connect" — תיפתח בחיבור
+   - "Close the program when headphones disconnect" — תיסגר בניתוק
+3. **Event log** — יומן האירועים, נשמר אוטומטית ל-`headphone_log.txt`
+4. **Open log file** — פותח את קובץ ה-TXT
+
+ההגדרות נשמרות בקובץ `headphone_settings.json` וייטענו שוב בהפעלה הבאה.
 
 > בלינוקס ייתכן שצריך להתקין את tkinter פעם אחת: `sudo apt install python3-tk`
 > (ב-Windows וב-macOS הוא כבר מגיע עם Python).
@@ -32,23 +45,11 @@ python3 headphone_detector.py
 # בדיקה חד-פעמית / one-shot check
 python3 headphone_detector.py --cli
 
-# מעקב רציף — מדווח בכל חיבור/ניתוק / continuous monitoring
+# מעקב רציף — מדווח בכל חיבור/ניתוק וכותב ל-TXT / continuous monitoring
 python3 headphone_detector.py --watch
 
 # פלט JSON לשימוש בסקריפטים / machine-readable output
 python3 headphone_detector.py --json
-```
-
-### דוגמת פלט / Example output
-
-```
-🎧 Headphones connected:
-  - Logitech USB Headset (USB)
-  - AirPods Pro (Bluetooth)
-```
-
-```
-🔇 No headphones connected.
 ```
 
 ### קוד יציאה / Exit code
@@ -56,12 +57,16 @@ python3 headphone_detector.py --json
 - `0` — אוזניות מחוברות / headphones connected
 - `1` — לא מחוברות / not connected
 
-כך אפשר להשתמש בתוכנה ישירות בתוך סקריפטים:
+## קובץ הלוג / Log file
 
-```bash
-if python3 headphone_detector.py --cli > /dev/null; then
-    echo "connected"
-fi
+`headphone_log.txt` נוצר ליד התוכנה, ונראה כך:
+
+```
+2026-07-16 18:03:12 - Started, initial state: DISCONNECTED
+2026-07-16 18:05:47 - CONNECTED - Logitech USB Headset (USB)
+2026-07-16 18:05:47 - Opened program: spotify.exe
+2026-07-16 19:12:03 - DISCONNECTED
+2026-07-16 19:12:03 - Closed program.
 ```
 
 ## איך זה עובד / How it works

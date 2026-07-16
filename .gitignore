@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+headphone_log.txt
+headphone_settings.json

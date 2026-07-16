@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Headphone connection detector — single-file app (CLI + GUI).
 
-Detects whether headphones (wired, USB, or Bluetooth) are currently
-connected, on Windows, Linux, or macOS. Uses only the standard library.
+Detects whether headphones (wired, USB, or Bluetooth) are connected, on
+Windows, Linux, or macOS. Uses only the standard library.
+
+Every connect/disconnect event is appended to headphone_log.txt next to
+this script. The GUI can also open a chosen program when headphones
+connect and close it when they disconnect.
 
 Usage:
     python headphone_detector.py            # open the GUI (default)
@@ -14,11 +18,16 @@ Usage:
 import argparse
 import glob
 import json
+import os
 import platform
 import re
 import subprocess
 import sys
 import time
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE = os.path.join(BASE_DIR, "headphone_log.txt")
+SETTINGS_FILE = os.path.join(BASE_DIR, "headphone_settings.json")
 
 # Keywords that identify a headphone-like audio device by name.
 HEADPHONE_KEYWORDS = (
@@ -43,6 +52,17 @@ def _run(cmd, timeout=10):
 def _looks_like_headphones(name):
     lowered = name.lower()
     return any(keyword in lowered for keyword in HEADPHONE_KEYWORDS)
+
+
+def append_log(message):
+    """Append a timestamped line to headphone_log.txt and return it."""
+    line = time.strftime("%Y-%m-%d %H:%M:%S") + " - " + message
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as log_file:
+            log_file.write(line + "\n")
+    except OSError:
+        pass
+    return line
 
 
 # --------------------------------------------------------------------------
@@ -199,6 +219,86 @@ def detect():
 
 
 # --------------------------------------------------------------------------
+# Settings (persisted next to the script)
+# --------------------------------------------------------------------------
+
+DEFAULT_SETTINGS = {
+    "program_path": "",
+    "open_on_connect": False,
+    "close_on_disconnect": False,
+}
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as settings_file:
+            data = json.load(settings_file)
+    except (OSError, json.JSONDecodeError):
+        return dict(DEFAULT_SETTINGS)
+    settings = dict(DEFAULT_SETTINGS)
+    for key in settings:
+        if key in data:
+            settings[key] = data[key]
+    return settings
+
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as settings_file:
+            json.dump(settings, settings_file, indent=2)
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------
+# Program launcher (open on connect / close on disconnect)
+# --------------------------------------------------------------------------
+
+class ProgramController:
+    """Opens and closes the user-chosen program on headphone events."""
+
+    def __init__(self):
+        self.process = None
+
+    def open(self, path):
+        path = path.strip()
+        if not path:
+            return "No program selected."
+        if self.process is not None and self.process.poll() is None:
+            return "Program is already running."
+        try:
+            self.process = subprocess.Popen([path])
+        except OSError as error:
+            return f"Could not open program: {error}"
+        return f"Opened program: {os.path.basename(path)}"
+
+    def close(self, path):
+        path = path.strip()
+        # First choice: terminate the process we started ourselves.
+        if self.process is not None and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+            self.process = None
+            return "Closed program."
+        self.process = None
+        if not path:
+            return "No program selected."
+        # Fallback: close by executable name (works even if the program
+        # was already running before this tool started it).
+        exe_name = os.path.basename(path)
+        if platform.system() == "Windows":
+            result = _run(["taskkill", "/IM", exe_name, "/F"], timeout=15)
+        else:
+            result = _run(["pkill", "-f", exe_name], timeout=15)
+        if result is None:
+            return f"Program not running: {exe_name}"
+        return f"Closed program: {exe_name}"
+
+
+# --------------------------------------------------------------------------
 # GUI (tkinter — part of the standard library)
 # --------------------------------------------------------------------------
 
@@ -209,51 +309,136 @@ DISCONNECTED_COLOR = "#c62828"
 
 
 class HeadphoneApp:
-    def __init__(self, root, tk, ttk):
+    def __init__(self, root, tk, ttk, filedialog):
         self.root = root
         self.tk = tk
-        root.title("גלאי אוזניות | Headphone Detector")
-        root.geometry("460x420")
-        root.minsize(380, 340)
+        self.filedialog = filedialog
+        root.title("Headphone Detector")
+        root.geometry("520x600")
+        root.minsize(440, 520)
 
         self.previous_connected = None
         self.after_id = None
+        self.controller = ProgramController()
+
+        settings = load_settings()
 
         # Big status area.
-        self.icon_label = tk.Label(root, text="…", font=("Segoe UI Emoji", 48))
-        self.icon_label.pack(pady=(20, 0))
+        self.icon_label = tk.Label(root, text="…", font=("Segoe UI Emoji", 44))
+        self.icon_label.pack(pady=(15, 0))
 
-        self.status_label = tk.Label(root, text="בודק…", font=("Arial", 18, "bold"))
-        self.status_label.pack(pady=(5, 15))
+        self.status_label = tk.Label(root, text="Checking…",
+                                     font=("Arial", 17, "bold"))
+        self.status_label.pack(pady=(5, 10))
 
         # Connected devices list.
-        devices_frame = ttk.LabelFrame(root, text="התקנים מחוברים / Connected devices")
-        devices_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        devices_frame = ttk.LabelFrame(root, text="Connected devices")
+        devices_frame.pack(fill="both", expand=True, padx=15, pady=(0, 8))
 
-        self.devices_list = tk.Listbox(devices_frame, font=("Arial", 11), height=5)
+        self.devices_list = tk.Listbox(devices_frame, font=("Arial", 11), height=4)
         self.devices_list.pack(fill="both", expand=True, padx=8, pady=8)
 
+        # Program actions.
+        actions_frame = ttk.LabelFrame(root, text="Program to open/close")
+        actions_frame.pack(fill="x", padx=15, pady=(0, 8))
+
+        path_row = ttk.Frame(actions_frame)
+        path_row.pack(fill="x", padx=8, pady=(8, 4))
+
+        self.program_var = tk.StringVar(value=settings["program_path"])
+        self.program_entry = ttk.Entry(path_row, textvariable=self.program_var)
+        self.program_entry.pack(side="left", fill="x", expand=True)
+
+        browse_button = ttk.Button(path_row, text="Browse…", command=self.browse)
+        browse_button.pack(side="left", padx=(6, 0))
+
+        self.open_var = tk.BooleanVar(value=settings["open_on_connect"])
+        open_check = ttk.Checkbutton(
+            actions_frame,
+            text="Open the program when headphones connect",
+            variable=self.open_var, command=self.persist_settings,
+        )
+        open_check.pack(anchor="w", padx=8)
+
+        self.close_var = tk.BooleanVar(value=settings["close_on_disconnect"])
+        close_check = ttk.Checkbutton(
+            actions_frame,
+            text="Close the program when headphones disconnect",
+            variable=self.close_var, command=self.persist_settings,
+        )
+        close_check.pack(anchor="w", padx=8, pady=(0, 8))
+
         # Event log.
-        log_frame = ttk.LabelFrame(root, text="יומן אירועים / Event log")
-        log_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+        log_frame = ttk.LabelFrame(
+            root, text="Event log (saved to headphone_log.txt)"
+        )
+        log_frame.pack(fill="both", expand=True, padx=15, pady=(0, 8))
 
         self.log_text = tk.Text(
-            log_frame, font=("Arial", 10), height=5, state="disabled"
+            log_frame, font=("Arial", 10), height=6, state="disabled"
         )
         self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
 
-        # Manual refresh button.
-        refresh_button = ttk.Button(root, text="רענן עכשיו / Refresh", command=self.refresh)
-        refresh_button.pack(pady=(0, 12))
+        # Bottom buttons.
+        buttons_row = ttk.Frame(root)
+        buttons_row.pack(pady=(0, 12))
 
+        refresh_button = ttk.Button(buttons_row, text="Refresh now",
+                                    command=self.refresh)
+        refresh_button.pack(side="left", padx=4)
+
+        open_log_button = ttk.Button(buttons_row, text="Open log file",
+                                     command=self.open_log_file)
+        open_log_button.pack(side="left", padx=4)
+
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.refresh()
 
-    def log(self, message):
-        timestamp = time.strftime("%H:%M:%S")
+    # -- helpers ----------------------------------------------------------
+
+    def browse(self):
+        if platform.system() == "Windows":
+            filetypes = [("Programs", "*.exe"), ("All files", "*.*")]
+        else:
+            filetypes = [("All files", "*.*")]
+        path = self.filedialog.askopenfilename(
+            title="Choose a program", filetypes=filetypes
+        )
+        if path:
+            self.program_var.set(path)
+            self.persist_settings()
+
+    def persist_settings(self):
+        save_settings({
+            "program_path": self.program_var.get(),
+            "open_on_connect": self.open_var.get(),
+            "close_on_disconnect": self.close_var.get(),
+        })
+
+    def open_log_file(self):
+        if not os.path.exists(LOG_FILE):
+            append_log("Log file created.")
+        try:
+            if platform.system() == "Windows":
+                os.startfile(LOG_FILE)  # noqa: attribute exists on Windows
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", LOG_FILE])
+            else:
+                subprocess.Popen(["xdg-open", LOG_FILE])
+        except OSError as error:
+            self.show_log(f"Could not open log file: {error}")
+
+    def show_log(self, line):
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", f"[{timestamp}] {message}\n")
+        self.log_text.insert("end", line + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def log_event(self, message):
+        """Write to the TXT log file and mirror it in the window."""
+        self.show_log(append_log(message))
+
+    # -- main loop --------------------------------------------------------
 
     def refresh(self):
         # Cancel any pending poll so the manual refresh button can't stack
@@ -271,14 +456,12 @@ class HeadphoneApp:
 
         if connected:
             self.icon_label.configure(text="🎧")
-            self.status_label.configure(
-                text="אוזניות מחוברות / Connected", fg=CONNECTED_COLOR
-            )
+            self.status_label.configure(text="Headphones connected",
+                                        fg=CONNECTED_COLOR)
         else:
             self.icon_label.configure(text="🔇")
-            self.status_label.configure(
-                text="אוזניות לא מחוברות / Not connected", fg=DISCONNECTED_COLOR
-            )
+            self.status_label.configure(text="No headphones connected",
+                                        fg=DISCONNECTED_COLOR)
 
         self.devices_list.delete(0, "end")
         for name in devices:
@@ -286,27 +469,37 @@ class HeadphoneApp:
 
         if connected != self.previous_connected:
             if self.previous_connected is None:
-                self.log("מצב התחלתי: " + ("מחוברות 🎧" if connected else "לא מחוברות 🔇"))
+                state = "CONNECTED" if connected else "DISCONNECTED"
+                detail = " - " + ", ".join(devices) if devices else ""
+                self.log_event(f"Started, initial state: {state}{detail}")
             elif connected:
-                self.log("אוזניות חוברו 🎧 " + ", ".join(devices))
+                self.log_event("CONNECTED - " + ", ".join(devices))
+                if self.open_var.get():
+                    self.log_event(self.controller.open(self.program_var.get()))
             else:
-                self.log("אוזניות נותקו 🔇")
+                self.log_event("DISCONNECTED")
+                if self.close_var.get():
+                    self.log_event(self.controller.close(self.program_var.get()))
             self.previous_connected = connected
 
         self.after_id = self.root.after(POLL_INTERVAL_MS, self.refresh)
+
+    def on_close(self):
+        self.persist_settings()
+        self.root.destroy()
 
 
 def run_gui():
     """Open the GUI. Returns False if tkinter/display is unavailable."""
     try:
         import tkinter as tk
-        from tkinter import ttk
+        from tkinter import filedialog, ttk
         root = tk.Tk()
     except Exception as error:
         print(f"GUI unavailable ({error}); falling back to terminal mode.",
               file=sys.stderr)
         return False
-    HeadphoneApp(root, tk, ttk)
+    HeadphoneApp(root, tk, ttk, filedialog)
     root.mainloop()
     return True
 
@@ -341,12 +534,18 @@ def run_cli(args):
 
     if args.watch:
         previous = bool(devices)
+        state = "CONNECTED" if previous else "DISCONNECTED"
+        append_log(f"Watch started, initial state: {state}")
         try:
             while True:
                 time.sleep(args.interval)
                 devices = detect()
                 connected = bool(devices)
                 if connected != previous:
+                    if connected:
+                        append_log("CONNECTED - " + ", ".join(devices))
+                    else:
+                        append_log("DISCONNECTED")
                     timestamp = time.strftime("%H:%M:%S")
                     if not args.json:
                         print(f"[{timestamp}] state changed:")

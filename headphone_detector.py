@@ -20,9 +20,11 @@ import glob
 import json
 import os
 import platform
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -312,6 +314,196 @@ class ProgramController:
 
 
 # --------------------------------------------------------------------------
+# Windows system-tray icon (notification area, next to the clock)
+# --------------------------------------------------------------------------
+
+class WindowsTrayIcon(threading.Thread):
+    """Tray icon built directly on the Win32 API via ctypes (no packages).
+
+    Runs its own native message loop in a background thread and posts
+    "show" / "exit" commands to self.commands for the GUI thread to act on.
+    """
+
+    TRAY_MESSAGE = 0x0400 + 20  # WM_USER + 20
+    CMD_OPEN, CMD_EXIT = 1, 2
+
+    NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 0x1, 0x2, 0x4, 0x10
+    NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
+    WM_DESTROY, WM_CLOSE = 0x2, 0x10
+    WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_RBUTTONUP = 0x202, 0x203, 0x205
+
+    def __init__(self, tooltip):
+        super().__init__(daemon=True)
+        self.commands = queue.Queue()
+        self.tooltip = tooltip
+        self.hwnd = None
+        self.hicon = None
+        self.ready = threading.Event()
+
+    # -- runs in the tray thread -------------------------------------------
+
+    def run(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self.ctypes = ctypes
+        self.wintypes = wintypes
+        self.user32 = user32 = ctypes.windll.user32
+        self.shell32 = shell32 = ctypes.windll.shell32
+        kernel32 = ctypes.windll.kernel32
+
+        LRESULT = ctypes.c_ssize_t
+        WNDPROC = ctypes.WINFUNCTYPE(
+            LRESULT, wintypes.HWND, wintypes.UINT,
+            wintypes.WPARAM, wintypes.LPARAM,
+        )
+        user32.DefWindowProcW.restype = LRESULT
+        user32.DefWindowProcW.argtypes = (
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        )
+        user32.CreateWindowExW.restype = wintypes.HWND
+        user32.LoadIconW.restype = wintypes.HICON
+        user32.CreatePopupMenu.restype = wintypes.HMENU
+        shell32.ExtractIconW.restype = wintypes.HICON
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+
+        class WNDCLASSW(ctypes.Structure):
+            _fields_ = [
+                ("style", wintypes.UINT),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE),
+                ("hIcon", wintypes.HICON),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+            ]
+
+        class NOTIFYICONDATAW(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("hWnd", wintypes.HWND),
+                ("uID", wintypes.UINT),
+                ("uFlags", wintypes.UINT),
+                ("uCallbackMessage", wintypes.UINT),
+                ("hIcon", wintypes.HICON),
+                ("szTip", ctypes.c_wchar * 128),
+                ("dwState", wintypes.DWORD),
+                ("dwStateMask", wintypes.DWORD),
+                ("szInfo", ctypes.c_wchar * 256),
+                ("uTimeoutOrVersion", wintypes.UINT),
+                ("szInfoTitle", ctypes.c_wchar * 64),
+                ("dwInfoFlags", wintypes.DWORD),
+            ]
+
+        self.NOTIFYICONDATAW = NOTIFYICONDATAW
+
+        def wndproc(hwnd, msg, wparam, lparam):
+            if msg == self.TRAY_MESSAGE:
+                if lparam in (self.WM_LBUTTONUP, self.WM_LBUTTONDBLCLK):
+                    self.commands.put("show")
+                elif lparam == self.WM_RBUTTONUP:
+                    self._show_menu(hwnd)
+                return 0
+            if msg == self.WM_DESTROY:
+                data = self._make_data(0)
+                shell32.Shell_NotifyIconW(self.NIM_DELETE, ctypes.byref(data))
+                user32.PostQuitMessage(0)
+                return 0
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        # Keep a reference so the callback isn't garbage-collected.
+        self._wndproc = WNDPROC(wndproc)
+
+        hinstance = kernel32.GetModuleHandleW(None)
+        wc = WNDCLASSW()
+        wc.lpfnWndProc = self._wndproc
+        wc.hInstance = hinstance
+        wc.lpszClassName = "HeadphoneDetectorTray"
+        user32.RegisterClassW(ctypes.byref(wc))
+
+        self.hwnd = user32.CreateWindowExW(
+            0, wc.lpszClassName, "Headphone Detector",
+            0, 0, 0, 0, 0, None, None, hinstance, None,
+        )
+
+        # Speaker icon from Windows' own audio resources; generic fallback.
+        hicon = shell32.ExtractIconW(
+            hinstance, r"C:\Windows\System32\mmres.dll", 0
+        )
+        if not hicon or hicon == 1:
+            hicon = user32.LoadIconW(None, 32512)  # IDI_APPLICATION
+        self.hicon = hicon
+
+        data = self._make_data(self.NIF_MESSAGE | self.NIF_ICON | self.NIF_TIP)
+        shell32.Shell_NotifyIconW(self.NIM_ADD, ctypes.byref(data))
+        self.ready.set()
+
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    def _make_data(self, flags):
+        data = self.NOTIFYICONDATAW()
+        data.cbSize = self.ctypes.sizeof(data)
+        data.hWnd = self.hwnd
+        data.uID = 1
+        data.uFlags = flags
+        data.uCallbackMessage = self.TRAY_MESSAGE
+        data.hIcon = self.hicon
+        data.szTip = self.tooltip[:127]
+        return data
+
+    def _show_menu(self, hwnd):
+        user32, ctypes, wintypes = self.user32, self.ctypes, self.wintypes
+        menu = user32.CreatePopupMenu()
+        user32.AppendMenuW(menu, 0, self.CMD_OPEN, "Open")
+        user32.AppendMenuW(menu, 0, self.CMD_EXIT, "Exit")
+        point = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        # Required so the menu closes when clicking elsewhere.
+        user32.SetForegroundWindow(hwnd)
+        TPM_RIGHTBUTTON, TPM_RETURNCMD = 0x0002, 0x0100
+        cmd = user32.TrackPopupMenu(
+            menu, TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            point.x, point.y, 0, hwnd, None,
+        )
+        user32.DestroyMenu(menu)
+        if cmd == self.CMD_OPEN:
+            self.commands.put("show")
+        elif cmd == self.CMD_EXIT:
+            self.commands.put("exit")
+
+    # -- safe to call from the GUI thread ----------------------------------
+
+    def set_tooltip(self, text):
+        if not self.ready.is_set():
+            return
+        self.tooltip = text
+        data = self._make_data(self.NIF_TIP)
+        self.shell32.Shell_NotifyIconW(
+            self.NIM_MODIFY, self.ctypes.byref(data)
+        )
+
+    def balloon(self, title, text):
+        if not self.ready.is_set():
+            return
+        data = self._make_data(self.NIF_INFO)
+        data.szInfoTitle = title[:63]
+        data.szInfo = text[:255]
+        self.shell32.Shell_NotifyIconW(
+            self.NIM_MODIFY, self.ctypes.byref(data)
+        )
+
+    def stop(self):
+        if self.ready.is_set() and self.hwnd:
+            self.user32.PostMessageW(self.hwnd, self.WM_CLOSE, 0, 0)
+
+
+# --------------------------------------------------------------------------
 # GUI (tkinter — part of the standard library)
 # --------------------------------------------------------------------------
 
@@ -319,10 +511,11 @@ POLL_INTERVAL_MS = 2000
 
 
 class HeadphoneApp:
-    def __init__(self, root, tk, ttk, filedialog):
+    def __init__(self, root, tk, ttk, filedialog, tray=None):
         self.root = root
         self.tk = tk
         self.filedialog = filedialog
+        self.tray = tray
         root.title("Headphone Detector")
         root.geometry("520x330")
         root.minsize(440, 300)
@@ -330,6 +523,7 @@ class HeadphoneApp:
         self.previous_connected = None
         self.after_id = None
         self.controller = ProgramController()
+        self.hide_hint_shown = False
 
         settings = load_settings()
 
@@ -383,6 +577,17 @@ class HeadphoneApp:
         open_log_button.pack(side="left", padx=4)
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        if self.tray is not None:
+            # Start minimized to the notification area next to the clock.
+            root.withdraw()
+            self.tray.balloon(
+                "Headphone Detector",
+                "Running here in the notification area. "
+                "Click the icon to open the window.",
+            )
+            self.poll_tray()
+
         self.refresh()
 
     # -- helpers ----------------------------------------------------------
@@ -435,6 +640,32 @@ class HeadphoneApp:
         """Write the event to the TXT log file."""
         append_log(message)
 
+    # -- system tray --------------------------------------------------------
+
+    def poll_tray(self):
+        try:
+            while True:
+                command = self.tray.commands.get_nowait()
+                if command == "show":
+                    self.show_window()
+                elif command == "exit":
+                    self.exit_app()
+                    return
+        except queue.Empty:
+            pass
+        self.root.after(250, self.poll_tray)
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def exit_app(self):
+        self.persist_settings()
+        if self.tray is not None:
+            self.tray.stop()
+        self.root.destroy()
+
     # -- main loop --------------------------------------------------------
 
     def refresh(self):
@@ -458,6 +689,11 @@ class HeadphoneApp:
         else:
             self.devices_list.insert("end", "  (no headphones connected)")
 
+        if self.tray is not None and connected != self.previous_connected:
+            state = ("Headphones connected" if connected
+                     else "No headphones connected")
+            self.tray.set_tooltip(f"Headphone Detector — {state}")
+
         if connected != self.previous_connected:
             if self.previous_connected is None:
                 state = "CONNECTED" if connected else "DISCONNECTED"
@@ -479,6 +715,19 @@ class HeadphoneApp:
         self.after_id = self.root.after(POLL_INTERVAL_MS, self.refresh)
 
     def on_close(self):
+        # With a tray icon, closing the window keeps monitoring in the
+        # background; use the tray menu's Exit to really quit.
+        if self.tray is not None:
+            self.persist_settings()
+            self.root.withdraw()
+            if not self.hide_hint_shown:
+                self.hide_hint_shown = True
+                self.tray.balloon(
+                    "Headphone Detector",
+                    "Still running here. Right-click the icon and "
+                    "choose Exit to quit.",
+                )
+            return
         self.persist_settings()
         self.root.destroy()
 
@@ -493,7 +742,19 @@ def run_gui():
         print(f"GUI unavailable ({error}); falling back to terminal mode.",
               file=sys.stderr)
         return False
-    HeadphoneApp(root, tk, ttk, filedialog)
+
+    tray = None
+    if platform.system() == "Windows":
+        try:
+            tray = WindowsTrayIcon("Headphone Detector")
+            tray.start()
+            tray.ready.wait(timeout=5)
+        except Exception:
+            tray = None
+        if tray is not None and not tray.ready.is_set():
+            tray = None  # tray thread failed; run as a normal window
+
+    HeadphoneApp(root, tk, ttk, filedialog, tray)
     root.mainloop()
     return True
 

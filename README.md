@@ -26,6 +26,12 @@ and macOS using only the Python standard library.
 python3 headphone_detector.py
 ```
 
+**ב-Windows התוכנה נפתחת ישר למגש המערכת (System Tray) — ליד השעון:**
+- לחיצה על האייקון פותחת את החלון
+- סגירת החלון (X) מחזירה למגש — הניטור ממשיך ברקע
+- קליק ימני על האייקון → **Open** / **Exit**
+- ריחוף מעל האייקון מציג את המצב (connected / not connected)
+
 בחלון:
 1. **Connected devices** — רשימת האוזניות המחוברות כרגע
 2. **Program to open/close** — בוחרים תוכנה עם Browse ומסמנים:

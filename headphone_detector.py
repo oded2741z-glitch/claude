@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Headphone connection detector.
+"""Headphone connection detector — single-file app (CLI + GUI).
 
-Detects whether headphones (wired or Bluetooth) are currently connected,
-on Windows, Linux, or macOS. Uses only the standard library — platform
-audio state is queried through the native system tools.
+Detects whether headphones (wired, USB, or Bluetooth) are currently
+connected, on Windows, Linux, or macOS. Uses only the standard library.
 
 Usage:
-    python headphone_detector.py            # one-shot check
-    python headphone_detector.py --watch    # keep monitoring for changes
+    python headphone_detector.py            # open the GUI (default)
+    python headphone_detector.py --cli      # one-shot check in the terminal
+    python headphone_detector.py --watch    # keep monitoring in the terminal
     python headphone_detector.py --json     # machine-readable output
 """
 
@@ -180,7 +180,7 @@ def detect_macos():
 
 
 # --------------------------------------------------------------------------
-# Main
+# Detection entry point
 # --------------------------------------------------------------------------
 
 def detect():
@@ -198,6 +198,123 @@ def detect():
     return list(dict.fromkeys(devices))
 
 
+# --------------------------------------------------------------------------
+# GUI (tkinter — part of the standard library)
+# --------------------------------------------------------------------------
+
+POLL_INTERVAL_MS = 2000
+
+CONNECTED_COLOR = "#1a7f37"
+DISCONNECTED_COLOR = "#c62828"
+
+
+class HeadphoneApp:
+    def __init__(self, root, tk, ttk):
+        self.root = root
+        self.tk = tk
+        root.title("גלאי אוזניות | Headphone Detector")
+        root.geometry("460x420")
+        root.minsize(380, 340)
+
+        self.previous_connected = None
+        self.after_id = None
+
+        # Big status area.
+        self.icon_label = tk.Label(root, text="…", font=("Segoe UI Emoji", 48))
+        self.icon_label.pack(pady=(20, 0))
+
+        self.status_label = tk.Label(root, text="בודק…", font=("Arial", 18, "bold"))
+        self.status_label.pack(pady=(5, 15))
+
+        # Connected devices list.
+        devices_frame = ttk.LabelFrame(root, text="התקנים מחוברים / Connected devices")
+        devices_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+
+        self.devices_list = tk.Listbox(devices_frame, font=("Arial", 11), height=5)
+        self.devices_list.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # Event log.
+        log_frame = ttk.LabelFrame(root, text="יומן אירועים / Event log")
+        log_frame.pack(fill="both", expand=True, padx=15, pady=(0, 10))
+
+        self.log_text = tk.Text(
+            log_frame, font=("Arial", 10), height=5, state="disabled"
+        )
+        self.log_text.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # Manual refresh button.
+        refresh_button = ttk.Button(root, text="רענן עכשיו / Refresh", command=self.refresh)
+        refresh_button.pack(pady=(0, 12))
+
+        self.refresh()
+
+    def log(self, message):
+        timestamp = time.strftime("%H:%M:%S")
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", f"[{timestamp}] {message}\n")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def refresh(self):
+        # Cancel any pending poll so the manual refresh button can't stack
+        # multiple polling loops.
+        if self.after_id is not None:
+            self.root.after_cancel(self.after_id)
+            self.after_id = None
+        try:
+            devices = detect()
+        except RuntimeError as error:
+            self.icon_label.configure(text="⚠️")
+            self.status_label.configure(text=str(error), fg="black")
+            return
+        connected = bool(devices)
+
+        if connected:
+            self.icon_label.configure(text="🎧")
+            self.status_label.configure(
+                text="אוזניות מחוברות / Connected", fg=CONNECTED_COLOR
+            )
+        else:
+            self.icon_label.configure(text="🔇")
+            self.status_label.configure(
+                text="אוזניות לא מחוברות / Not connected", fg=DISCONNECTED_COLOR
+            )
+
+        self.devices_list.delete(0, "end")
+        for name in devices:
+            self.devices_list.insert("end", f"  {name}")
+
+        if connected != self.previous_connected:
+            if self.previous_connected is None:
+                self.log("מצב התחלתי: " + ("מחוברות 🎧" if connected else "לא מחוברות 🔇"))
+            elif connected:
+                self.log("אוזניות חוברו 🎧 " + ", ".join(devices))
+            else:
+                self.log("אוזניות נותקו 🔇")
+            self.previous_connected = connected
+
+        self.after_id = self.root.after(POLL_INTERVAL_MS, self.refresh)
+
+
+def run_gui():
+    """Open the GUI. Returns False if tkinter/display is unavailable."""
+    try:
+        import tkinter as tk
+        from tkinter import ttk
+        root = tk.Tk()
+    except Exception as error:
+        print(f"GUI unavailable ({error}); falling back to terminal mode.",
+              file=sys.stderr)
+        return False
+    HeadphoneApp(root, tk, ttk)
+    root.mainloop()
+    return True
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
 def report(devices, as_json):
     if as_json:
         print(json.dumps(
@@ -213,23 +330,7 @@ def report(devices, as_json):
         print("🔇 No headphones connected.")
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Detect whether headphones are connected."
-    )
-    parser.add_argument(
-        "--watch", action="store_true",
-        help="keep running and report when headphones connect/disconnect",
-    )
-    parser.add_argument(
-        "--interval", type=float, default=2.0,
-        help="polling interval in seconds for --watch (default: 2)",
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="output JSON instead of text",
-    )
-    args = parser.parse_args()
-
+def run_cli(args):
     try:
         devices = detect()
     except RuntimeError as error:
@@ -258,6 +359,35 @@ def main():
     # Exit code mirrors the result so scripts can use it directly:
     # 0 = connected, 1 = not connected.
     return 0 if devices else 1
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Detect whether headphones are connected."
+    )
+    parser.add_argument(
+        "--cli", action="store_true",
+        help="run a one-shot check in the terminal instead of opening the GUI",
+    )
+    parser.add_argument(
+        "--watch", action="store_true",
+        help="keep running in the terminal and report connect/disconnect",
+    )
+    parser.add_argument(
+        "--interval", type=float, default=2.0,
+        help="polling interval in seconds for --watch (default: 2)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="output JSON instead of text",
+    )
+    args = parser.parse_args()
+
+    # Any terminal-oriented flag selects CLI mode; the default is the GUI.
+    if args.cli or args.watch or args.json:
+        return run_cli(args)
+    if run_gui():
+        return 0
+    return run_cli(args)
 
 
 if __name__ == "__main__":

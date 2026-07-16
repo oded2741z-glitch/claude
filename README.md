@@ -7,10 +7,14 @@ A cross-platform tool that detects whether headphones (wired, USB, or
 Bluetooth) are currently connected, with a GUI. Works on Windows, Linux,
 and macOS using only the Python standard library.
 
+**הכל בקובץ אחד** — `headphone_detector.py`. מורידים קובץ אחד ומריצים.
+
 ## ממשק גרפי / GUI
 
+לחיצה כפולה על הקובץ, או:
+
 ```bash
-python3 headphone_gui.py
+python3 headphone_detector.py
 ```
 
 החלון מציג בזמן אמת:
@@ -26,7 +30,7 @@ python3 headphone_gui.py
 
 ```bash
 # בדיקה חד-פעמית / one-shot check
-python3 headphone_detector.py
+python3 headphone_detector.py --cli
 
 # מעקב רציף — מדווח בכל חיבור/ניתוק / continuous monitoring
 python3 headphone_detector.py --watch
@@ -55,7 +59,7 @@ python3 headphone_detector.py --json
 כך אפשר להשתמש בתוכנה ישירות בתוך סקריפטים:
 
 ```bash
-if python3 headphone_detector.py --json > /dev/null; then
+if python3 headphone_detector.py --cli > /dev/null; then
     echo "connected"
 fi
 ```

@@ -50,6 +50,16 @@ def _is_virtual_device(name):
     return any(keyword in lowered for keyword in VIRTUAL_DEVICE_KEYWORDS)
 
 
+# Names that clearly indicate speakers, so a USB/Bluetooth *speaker* is not
+# mistaken for headphones.
+SPEAKER_KEYWORDS = ("speaker", "רמקול", "monitor audio", "soundbar", "hdmi")
+
+
+def _looks_like_speakers(name):
+    lowered = name.lower()
+    return any(keyword in lowered for keyword in SPEAKER_KEYWORDS)
+
+
 # On Windows, keep child processes from flashing a console window.
 _NO_WINDOW = 0x08000000 if platform.system() == "Windows" else 0
 
@@ -168,9 +178,38 @@ _WIN_RENDER_KEY = (
 )
 _DEVICE_STATE_ACTIVE = 0x00000001
 
-# EndpointFormFactor values that represent something worn on the head.
+# EndpointFormFactor values.
 _FORM_FACTOR_HEADPHONES = 3
 _FORM_FACTOR_HEADSET = 5
+# Form factors that are definitely NOT headphones (speakers, digital out…).
+_SPEAKER_FORM_FACTORS = {0, 1, 2, 8, 9}  # RemoteNet, Speakers, LineLevel, SPDIF, HDMI
+
+
+def _classify_windows_endpoint(name, enumerator, form_factor):
+    """Return a display label if this endpoint is headphones, else None."""
+    is_headset_ff = form_factor in (
+        _FORM_FACTOR_HEADPHONES, _FORM_FACTOR_HEADSET
+    )
+    is_speaker_ff = form_factor in _SPEAKER_FORM_FACTORS
+
+    if is_headset_ff or _looks_like_headphones(name):
+        headphones = True
+    elif is_speaker_ff or _looks_like_speakers(name):
+        headphones = False  # a speaker (built-in, USB, HDMI, or Bluetooth)
+    elif enumerator.startswith("BTH") or enumerator == "USB":
+        # External audio with an unknown form factor and a neutral name —
+        # a USB/Bluetooth headset/dongle. Treat as headphones.
+        headphones = True
+    else:
+        headphones = False
+
+    if not headphones:
+        return None
+    if enumerator == "USB":
+        return f"{name} (USB)"
+    if enumerator.startswith("BTH"):
+        return f"{name} (Bluetooth)"
+    return name
 
 
 def _iter_windows_endpoints():
@@ -250,15 +289,9 @@ def _windows_registry_audio():
         if state != _DEVICE_STATE_ACTIVE:
             continue
         name = friendly or "Audio device"
-        is_headset = form_factor in (
-            _FORM_FACTOR_HEADPHONES, _FORM_FACTOR_HEADSET
-        )
-        if enumerator == "USB":
-            devices.append(f"{name} (USB)")
-        elif enumerator.startswith("BTH"):
-            devices.append(f"{name} (Bluetooth)")
-        elif is_headset or _looks_like_headphones(name):
-            devices.append(name)
+        label = _classify_windows_endpoint(name, enumerator, form_factor)
+        if label is not None:
+            devices.append(label)
 
     if not found_any:
         return None  # registry unreadable — let the caller fall back

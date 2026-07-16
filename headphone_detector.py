@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import glob
 import json
 import platform
 import re
@@ -48,8 +49,29 @@ def _looks_like_headphones(name):
 # Linux
 # --------------------------------------------------------------------------
 
+def _linux_usb_audio():
+    """USB audio devices with playback capability (headsets, USB headphones)."""
+    devices = []
+    try:
+        with open("/proc/asound/cards") as cards_file:
+            content = cards_file.read()
+    except OSError:
+        return devices
+    # Lines look like: " 1 [Headset ]: USB-Audio - Logitech USB Headset"
+    for match in re.finditer(
+        r"^\s*(\d+)\s+\[.*?\]:\s+USB-Audio\s+-\s+(.+)$", content, re.M
+    ):
+        card, name = match.group(1), match.group(2).strip()
+        # Only cards with a playback PCM stream — rules out USB webcams/mics.
+        if glob.glob(f"/proc/asound/card{card}/pcm*p"):
+            devices.append(f"{name} (USB)")
+    return devices
+
+
 def detect_linux():
     devices = []
+
+    devices.extend(_linux_usb_audio())
 
     # PulseAudio / PipeWire: inspect sink ports and their jack availability.
     output = _run(["pactl", "list", "sinks"])
@@ -99,6 +121,8 @@ def detect_linux():
 
 def detect_windows():
     devices = []
+
+    # Audio endpoints whose name identifies them as headphones/headsets.
     script = (
         "Get-PnpDevice -Class AudioEndpoint -Status OK | "
         "ForEach-Object { $_.FriendlyName }"
@@ -109,6 +133,20 @@ def detect_windows():
             name = line.strip()
             if name and _looks_like_headphones(name):
                 devices.append(name)
+
+    # USB audio devices (USB headsets/headphones), regardless of name.
+    script = (
+        "Get-PnpDevice -Class MEDIA -Status OK | "
+        "Where-Object { $_.InstanceId -like 'USB*' } | "
+        "ForEach-Object { $_.FriendlyName }"
+    )
+    output = _run(["powershell", "-NoProfile", "-Command", script], timeout=30)
+    if output is not None:
+        for line in output.splitlines():
+            name = line.strip()
+            if name:
+                devices.append(f"{name} (USB)")
+
     return devices
 
 
@@ -129,7 +167,11 @@ def detect_macos():
                 name = item.get("_name", "")
                 is_output = item.get("coreaudio_device_output") is not None
                 transport = item.get("coreaudio_device_transport", "")
-                if is_output and (
+                if not is_output:
+                    continue
+                if transport == "coreaudio_device_type_usb":
+                    devices.append(f"{name} (USB)")
+                elif (
                     _looks_like_headphones(name)
                     or transport == "coreaudio_device_type_bluetooth"
                 ):
@@ -145,12 +187,15 @@ def detect():
     """Return a list of connected headphone device names."""
     system = platform.system()
     if system == "Linux":
-        return detect_linux()
-    if system == "Windows":
-        return detect_windows()
-    if system == "Darwin":
-        return detect_macos()
-    raise RuntimeError(f"Unsupported platform: {system}")
+        devices = detect_linux()
+    elif system == "Windows":
+        devices = detect_windows()
+    elif system == "Darwin":
+        devices = detect_macos()
+    else:
+        raise RuntimeError(f"Unsupported platform: {system}")
+    # Deduplicate while preserving order.
+    return list(dict.fromkeys(devices))
 
 
 def report(devices, as_json):

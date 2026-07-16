@@ -361,11 +361,42 @@ class WindowsTrayIcon(threading.Thread):
         user32.DefWindowProcW.argtypes = (
             wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
         )
-        user32.CreateWindowExW.restype = wintypes.HWND
+        # Declare handle-typed returns and arguments so ctypes uses
+        # pointer-sized values on 64-bit Python (otherwise handles are
+        # truncated to a C int and CreateWindowExW raises OverflowError).
+        HMENU = wintypes.HMENU
+        HWND = wintypes.HWND
+        user32.CreateWindowExW.restype = HWND
+        user32.CreateWindowExW.argtypes = (
+            wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
+            wintypes.DWORD, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, HWND, HMENU,
+            wintypes.HINSTANCE, wintypes.LPVOID,
+        )
         user32.LoadIconW.restype = wintypes.HICON
-        user32.CreatePopupMenu.restype = wintypes.HMENU
+        user32.CreatePopupMenu.restype = HMENU
+        user32.AppendMenuW.argtypes = (
+            HMENU, wintypes.UINT, ctypes.c_void_p, wintypes.LPCWSTR,
+        )
+        user32.TrackPopupMenu.argtypes = (
+            HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, HWND, wintypes.LPVOID,
+        )
+        user32.DestroyMenu.argtypes = (HMENU,)
+        user32.SetForegroundWindow.argtypes = (HWND,)
+        user32.PostMessageW.argtypes = (
+            HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+        )
+        user32.PostQuitMessage.argtypes = (ctypes.c_int,)
         shell32.ExtractIconW.restype = wintypes.HICON
+        shell32.ExtractIconW.argtypes = (
+            wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+        )
+        shell32.Shell_NotifyIconW.argtypes = (
+            wintypes.DWORD, ctypes.c_void_p,
+        )
         kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
 
         class WNDCLASSW(ctypes.Structure):
             _fields_ = [

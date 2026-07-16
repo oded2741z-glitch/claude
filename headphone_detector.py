@@ -852,13 +852,13 @@ class HeadphoneApp:
 
         if connected != self.previous_connected:
             if self.previous_connected is None:
-                # Always start clean: record the baseline silently and do
-                # NOT open/close anything just because headphones happen to
-                # be plugged in at launch. Actions fire only on a real
-                # connect/disconnect that happens while the app is running.
                 state = "CONNECTED" if connected else "DISCONNECTED"
                 detail = " - " + ", ".join(devices) if devices else ""
                 self.log_event(f"Started, initial state: {state}{detail}")
+                # Headphones already plugged in at startup count as connected,
+                # so open the chosen program right away.
+                if connected and self.open_var.get():
+                    self.log_event(self.controller.open(self.program_var.get()))
             elif connected:
                 self.log_event("CONNECTED - " + ", ".join(devices))
                 if self.open_var.get():

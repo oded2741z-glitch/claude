@@ -34,6 +34,12 @@ import numpy as np
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="ouster")
 
+try:  # optional - used to draw the Python-logo app icon
+    from PIL import Image, ImageDraw
+    HAVE_PIL = True
+except ImportError:
+    HAVE_PIL = False
+
 # --- ouster-sdk imports (support SDK >= 1.0 and older releases) --------------
 try:
     from ouster.sdk import open_source
@@ -77,6 +83,10 @@ class Theme:
     LOG_BG    = "#0d1017"
     LOG_FG    = "#9fe8a9"
     STATUS_BG = "#0d1017"
+    # Python brand palette (header bar + app icon)
+    PY_BLUE   = "#3776AB"
+    PY_BLUE_D = "#2b5b8c"
+    PY_YELLOW = "#FFD43B"
 
 
 def apply_theme(root: tk.Tk):
@@ -103,12 +113,16 @@ def apply_theme(root: tk.Tk):
     style.configure("TLabel", background=Theme.PANEL, foreground=Theme.FG)
     style.configure("Muted.TLabel", background=Theme.PANEL,
                     foreground=Theme.MUTED)
-    style.configure("AppTitle.TLabel", background=Theme.BG,
-                    foreground=Theme.FG, font=(base_font.actual("family"),
-                                               14, "bold"))
-    style.configure("AppDot.TLabel", background=Theme.BG,
-                    foreground=Theme.ACCENT, font=(base_font.actual("family"),
-                                                   14, "bold"))
+    # Python-styled header bar
+    style.configure("Header.TFrame", background=Theme.PY_BLUE)
+    style.configure("HeaderStrip.TFrame", background=Theme.PY_YELLOW)
+    style.configure("HeaderTitle.TLabel", background=Theme.PY_BLUE,
+                    foreground="#ffffff",
+                    font=(base_font.actual("family"), 14, "bold"))
+    style.configure("HeaderSub.TLabel", background=Theme.PY_BLUE,
+                    foreground=Theme.PY_YELLOW,
+                    font=(base_font.actual("family"), 9))
+    style.configure("HeaderIcon.TLabel", background=Theme.PY_BLUE)
     style.configure("Info.TLabel", background=Theme.PANEL,
                     foreground=Theme.FG, font=("monospace", 9))
     style.configure("Status.TLabel", background=Theme.STATUS_BG,
@@ -152,6 +166,52 @@ def apply_theme(root: tk.Tk):
     root.option_add("*TCombobox*Listbox.foreground", Theme.FG)
     root.option_add("*TCombobox*Listbox.selectBackground", Theme.ACCENT)
     root.option_add("*TCombobox*Listbox.selectForeground", Theme.BG)
+
+
+def make_python_logo(size: int = 64):
+    """Draw a simplified Python two-snakes logo and return a tk.PhotoImage.
+
+    Drawn in code with Pillow (no asset files); returns None if Pillow is
+    not installed.
+    """
+    if not HAVE_PIL:
+        return None
+    import base64
+    import io
+
+    s = 4  # supersampling factor for smooth edges
+    n = 128 * s
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    # dark rounded badge behind the snakes, so the blue snake stays visible
+    # on the blue header bar
+    badge = ImageDraw.Draw(img)
+    badge.rounded_rectangle([0, 0, n - 1, n - 1], radius=30 * s,
+                            fill=Theme.BG)
+
+    def snake(color):
+        piece = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+        d = ImageDraw.Draw(piece)
+        r = 20 * s
+        # head + body (wide top bar) and neck (left column), L-shaped;
+        # stops just above the centerline so the mirrored snake interlocks
+        d.rounded_rectangle([18 * s, 8 * s, 110 * s, 61 * s],
+                            radius=r, fill=color)
+        d.rounded_rectangle([18 * s, 8 * s, 62 * s, 61 * s],
+                            radius=r, fill=color)
+        d.rectangle([18 * s, 30 * s, 62 * s, 61 * s], fill=color)
+        # eye
+        d.ellipse([38 * s, 18 * s, 50 * s, 30 * s], fill="#ffffff")
+        return piece
+
+    blue = snake("#4B8BBE")  # lighter Python blue, readable on dark badge
+    yellow = snake(Theme.PY_YELLOW).rotate(180)
+    img.alpha_composite(blue)
+    img.alpha_composite(yellow)
+    img = img.resize((size, size), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode())
 
 
 LIDAR_MODES = ["512x10", "512x20", "1024x10", "1024x20", "2048x10"]
@@ -319,12 +379,26 @@ class OusterGuiApp:
 
     # ------------------------------------------------------------------ UI --
     def _build_ui(self):
-        # header bar ------------------------------------------------------------
-        header = ttk.Frame(self.root, padding=(14, 10, 14, 6))
+        # header bar (Python-branded: blue bar, yellow strip, snakes logo) -----
+        header = ttk.Frame(self.root, style="Header.TFrame",
+                           padding=(14, 8, 14, 8))
         header.pack(fill=tk.X)
-        ttk.Label(header, text="●", style="AppDot.TLabel").pack(side=tk.LEFT)
-        ttk.Label(header, text=" OUSTER  ·  Digital Lidar Control",
-                  style="AppTitle.TLabel").pack(side=tk.LEFT)
+        self.logo_img = make_python_logo(36)
+        self.icon_img = make_python_logo(64)
+        if self.logo_img is not None:
+            ttk.Label(header, image=self.logo_img,
+                      style="HeaderIcon.TLabel").pack(side=tk.LEFT,
+                                                      padx=(0, 10))
+        if self.icon_img is not None:
+            self.root.iconphoto(True, self.icon_img)
+        titles = ttk.Frame(header, style="Header.TFrame")
+        titles.pack(side=tk.LEFT)
+        ttk.Label(titles, text="Ouster Digital Lidar Control",
+                  style="HeaderTitle.TLabel").pack(anchor=tk.W)
+        ttk.Label(titles, text="Powered by Python  ·  ouster-sdk",
+                  style="HeaderSub.TLabel").pack(anchor=tk.W)
+        ttk.Frame(self.root, style="HeaderStrip.TFrame",
+                  height=3).pack(fill=tk.X)
 
         main = ttk.Frame(self.root, padding=(10, 4, 10, 6))
         main.pack(fill=tk.BOTH, expand=True)

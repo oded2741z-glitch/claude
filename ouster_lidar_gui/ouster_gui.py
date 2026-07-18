@@ -28,7 +28,7 @@ import threading
 import time
 import tkinter as tk
 import warnings
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
 import numpy as np
 
@@ -58,6 +58,100 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+
+
+# ----------------------------------------------------------------- theme ----
+class Theme:
+    """Dark UI palette, applied through pure-ttk styling (no extra deps)."""
+    BG        = "#12151d"   # window background
+    PANEL     = "#1a1e29"   # side panel / cards
+    CARD      = "#1f2431"   # inputs card surface
+    FIELD     = "#262c3c"   # entry / combobox fields
+    BORDER    = "#2c3345"
+    FG        = "#e8ebf2"   # primary text
+    MUTED     = "#8b93a7"   # secondary text
+    ACCENT    = "#38bdf8"   # cyan accent (headers, highlights)
+    GREEN     = "#34d399"   # start
+    RED       = "#f87171"   # stop / record
+    AMBER     = "#fbbf24"   # apply / warning
+    LOG_BG    = "#0d1017"
+    LOG_FG    = "#9fe8a9"
+    STATUS_BG = "#0d1017"
+
+
+def apply_theme(root: tk.Tk):
+    root.configure(bg=Theme.BG)
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+
+    base_font = tkfont.nametofont("TkDefaultFont")
+    base_font.configure(size=10)
+    root.option_add("*Font", base_font)
+
+    style.configure(".", background=Theme.PANEL, foreground=Theme.FG,
+                    bordercolor=Theme.BORDER, darkcolor=Theme.PANEL,
+                    lightcolor=Theme.PANEL, troughcolor=Theme.FIELD,
+                    focuscolor=Theme.ACCENT, selectbackground=Theme.ACCENT,
+                    selectforeground=Theme.BG)
+
+    style.configure("TFrame", background=Theme.BG)
+    style.configure("Panel.TFrame", background=Theme.PANEL)
+
+    style.configure("TLabel", background=Theme.PANEL, foreground=Theme.FG)
+    style.configure("Muted.TLabel", background=Theme.PANEL,
+                    foreground=Theme.MUTED)
+    style.configure("AppTitle.TLabel", background=Theme.BG,
+                    foreground=Theme.FG, font=(base_font.actual("family"),
+                                               14, "bold"))
+    style.configure("AppDot.TLabel", background=Theme.BG,
+                    foreground=Theme.ACCENT, font=(base_font.actual("family"),
+                                                   14, "bold"))
+    style.configure("Info.TLabel", background=Theme.PANEL,
+                    foreground=Theme.FG, font=("monospace", 9))
+    style.configure("Status.TLabel", background=Theme.STATUS_BG,
+                    foreground=Theme.MUTED, padding=(10, 4))
+
+    style.configure("TLabelframe", background=Theme.PANEL,
+                    bordercolor=Theme.BORDER, relief="solid", borderwidth=1)
+    style.configure("TLabelframe.Label", background=Theme.PANEL,
+                    foreground=Theme.ACCENT,
+                    font=(base_font.actual("family"), 9, "bold"))
+
+    # buttons -----------------------------------------------------------------
+    def button(name, bg, fg=Theme.BG, active=None):
+        style.configure(name, background=bg, foreground=fg,
+                        bordercolor=bg, focusthickness=1, padding=(8, 6),
+                        font=(base_font.actual("family"), 10, "bold"))
+        style.map(name,
+                  background=[("active", active or Theme.ACCENT),
+                              ("disabled", Theme.FIELD)],
+                  foreground=[("disabled", Theme.MUTED)])
+
+    button("TButton", Theme.FIELD, fg=Theme.FG, active=Theme.BORDER)
+    button("Accent.TButton", Theme.ACCENT)
+    button("Start.TButton", Theme.GREEN)
+    button("Stop.TButton", Theme.RED)
+    button("Record.TButton", Theme.RED)
+    button("Apply.TButton", Theme.AMBER)
+
+    # inputs -------------------------------------------------------------------
+    style.configure("TEntry", fieldbackground=Theme.FIELD,
+                    foreground=Theme.FG, bordercolor=Theme.BORDER,
+                    insertcolor=Theme.FG, padding=4)
+    style.configure("TCombobox", fieldbackground=Theme.FIELD,
+                    background=Theme.FIELD, foreground=Theme.FG,
+                    bordercolor=Theme.BORDER, arrowcolor=Theme.ACCENT,
+                    padding=4)
+    style.map("TCombobox",
+              fieldbackground=[("readonly", Theme.FIELD)],
+              foreground=[("readonly", Theme.FG)])
+    root.option_add("*TCombobox*Listbox.background", Theme.FIELD)
+    root.option_add("*TCombobox*Listbox.foreground", Theme.FG)
+    root.option_add("*TCombobox*Listbox.selectBackground", Theme.ACCENT)
+    root.option_add("*TCombobox*Listbox.selectForeground", Theme.BG)
 
 
 LIDAR_MODES = ["512x10", "512x20", "1024x10", "1024x20", "2048x10"]
@@ -206,10 +300,11 @@ class OusterGuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("Ouster Digital Lidar - Control & Visualization")
-        root.geometry("1250x850")
+        root.geometry("1280x860")
+        apply_theme(root)
 
         self.reader = None
-        self.frame_queue = queue.Queue(maxsize=2)
+        self.frame_queue = queue.Queue(maxsize=4)
         self.record_proc = None
         self.viz_proc = None
         self.image_artists = {}
@@ -224,108 +319,136 @@ class OusterGuiApp:
 
     # ------------------------------------------------------------------ UI --
     def _build_ui(self):
-        main = ttk.Frame(self.root, padding=8)
+        # header bar ------------------------------------------------------------
+        header = ttk.Frame(self.root, padding=(14, 10, 14, 6))
+        header.pack(fill=tk.X)
+        ttk.Label(header, text="●", style="AppDot.TLabel").pack(side=tk.LEFT)
+        ttk.Label(header, text=" OUSTER  ·  Digital Lidar Control",
+                  style="AppTitle.TLabel").pack(side=tk.LEFT)
+
+        main = ttk.Frame(self.root, padding=(10, 4, 10, 6))
         main.pack(fill=tk.BOTH, expand=True)
 
         left = ttk.Frame(main, width=330)
-        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
         left.pack_propagate(False)
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # --- Connection -------------------------------------------------------
-        conn = ttk.LabelFrame(left, text="Sensor Connection", padding=8)
+        conn = ttk.LabelFrame(left, text="  SENSOR CONNECTION  ", padding=10)
         conn.pack(fill=tk.X, pady=4)
-        ttk.Label(conn, text="Hostname / IP:").pack(anchor=tk.W)
+        ttk.Label(conn, text="Hostname / IP:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
         self.host_var = tk.StringVar(value="os-122xxxxxxxxxx.local")
-        ttk.Entry(conn, textvariable=self.host_var).pack(fill=tk.X, pady=2)
-        row = ttk.Frame(conn)
-        row.pack(fill=tk.X, pady=2)
-        ttk.Button(row, text="Get Sensor Info",
+        ttk.Entry(conn, textvariable=self.host_var).pack(fill=tk.X, pady=3)
+        row = ttk.Frame(conn, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Button(row, text="Get Sensor Info", style="Accent.TButton",
                    command=self.on_get_info).pack(side=tk.LEFT, expand=True,
-                                                  fill=tk.X, padx=(0, 2))
+                                                  fill=tk.X, padx=(0, 3))
         ttk.Button(row, text="Get Config",
                    command=self.on_get_config).pack(side=tk.LEFT, expand=True,
-                                                    fill=tk.X, padx=(2, 0))
+                                                    fill=tk.X, padx=(3, 0))
 
         # --- Configuration ----------------------------------------------------
-        cfg = ttk.LabelFrame(left, text="Sensor Configuration", padding=8)
+        cfg = ttk.LabelFrame(left, text="  SENSOR CONFIGURATION  ", padding=10)
         cfg.pack(fill=tk.X, pady=4)
-        ttk.Label(cfg, text="Lidar mode:").pack(anchor=tk.W)
+        ttk.Label(cfg, text="Lidar mode:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
         self.mode_var = tk.StringVar(value="1024x10")
         ttk.Combobox(cfg, textvariable=self.mode_var, values=LIDAR_MODES,
-                     state="readonly").pack(fill=tk.X, pady=2)
-        ttk.Label(cfg, text="Timestamp mode:").pack(anchor=tk.W)
+                     state="readonly").pack(fill=tk.X, pady=3)
+        ttk.Label(cfg, text="Timestamp mode:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
         self.ts_var = tk.StringVar(value=TIMESTAMP_MODES[0])
         ttk.Combobox(cfg, textvariable=self.ts_var, values=TIMESTAMP_MODES,
-                     state="readonly").pack(fill=tk.X, pady=2)
-        ports = ttk.Frame(cfg)
-        ports.pack(fill=tk.X, pady=2)
-        ttk.Label(ports, text="Lidar port:").grid(row=0, column=0, sticky=tk.W)
+                     state="readonly").pack(fill=tk.X, pady=3)
+        ports = ttk.Frame(cfg, style="Panel.TFrame")
+        ports.pack(fill=tk.X, pady=3)
+        ttk.Label(ports, text="Lidar port:",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky=tk.W,
+                                             pady=1)
         self.lidar_port_var = tk.StringVar(value="7502")
         ttk.Entry(ports, textvariable=self.lidar_port_var,
-                  width=8).grid(row=0, column=1, padx=4)
-        ttk.Label(ports, text="IMU port:").grid(row=1, column=0, sticky=tk.W)
+                  width=8).grid(row=0, column=1, padx=6, pady=1)
+        ttk.Label(ports, text="IMU port:",
+                  style="Muted.TLabel").grid(row=1, column=0, sticky=tk.W,
+                                             pady=1)
         self.imu_port_var = tk.StringVar(value="7503")
         ttk.Entry(ports, textvariable=self.imu_port_var,
-                  width=8).grid(row=1, column=1, padx=4)
-        ttk.Button(cfg, text="Apply Configuration",
-                   command=self.on_apply_config).pack(fill=tk.X, pady=(6, 0))
+                  width=8).grid(row=1, column=1, padx=6, pady=1)
+        ttk.Button(cfg, text="Apply Configuration", style="Apply.TButton",
+                   command=self.on_apply_config).pack(fill=tk.X, pady=(8, 0))
 
         # --- Streaming ----------------------------------------------------------
-        stream = ttk.LabelFrame(left, text="Live Stream", padding=8)
+        stream = ttk.LabelFrame(left, text="  LIVE STREAM  ", padding=10)
         stream.pack(fill=tk.X, pady=4)
-        self.start_btn = ttk.Button(stream, text="▶ Start Stream",
+        self.start_btn = ttk.Button(stream, text="▶  Start Stream",
+                                    style="Start.TButton",
                                     command=self.on_start_stream)
-        self.start_btn.pack(fill=tk.X, pady=2)
-        self.stop_btn = ttk.Button(stream, text="■ Stop Stream",
+        self.start_btn.pack(fill=tk.X, pady=3)
+        self.stop_btn = ttk.Button(stream, text="■  Stop Stream",
+                                   style="Stop.TButton",
                                    command=self.on_stop_stream,
                                    state=tk.DISABLED)
-        self.stop_btn.pack(fill=tk.X, pady=2)
+        self.stop_btn.pack(fill=tk.X, pady=3)
         ttk.Button(stream, text="Open 3D Viewer (point cloud)",
-                   command=self.on_open_3d).pack(fill=tk.X, pady=2)
+                   command=self.on_open_3d).pack(fill=tk.X, pady=3)
 
         # --- Recording / Playback ------------------------------------------------
-        rec = ttk.LabelFrame(left, text="Record / Playback", padding=8)
+        rec = ttk.LabelFrame(left, text="  RECORD / PLAYBACK  ", padding=10)
         rec.pack(fill=tk.X, pady=4)
-        self.record_btn = ttk.Button(rec, text="● Start Recording",
+        self.record_btn = ttk.Button(rec, text="●  Start Recording",
+                                     style="Record.TButton",
                                      command=self.on_toggle_record)
-        self.record_btn.pack(fill=tk.X, pady=2)
+        self.record_btn.pack(fill=tk.X, pady=3)
         ttk.Button(rec, text="Open PCAP / OSF File...",
-                   command=self.on_open_file).pack(fill=tk.X, pady=2)
+                   command=self.on_open_file).pack(fill=tk.X, pady=3)
 
         # --- Log --------------------------------------------------------------------
-        logf = ttk.LabelFrame(left, text="Log", padding=4)
+        logf = ttk.LabelFrame(left, text="  LOG  ", padding=6)
         logf.pack(fill=tk.BOTH, expand=True, pady=4)
-        self.log_widget = scrolledtext.ScrolledText(logf, height=8,
-                                                    state=tk.DISABLED,
-                                                    font=("monospace", 8))
+        self.log_widget = scrolledtext.ScrolledText(
+            logf, height=8, state=tk.DISABLED, font=("monospace", 8),
+            bg=Theme.LOG_BG, fg=Theme.LOG_FG, insertbackground=Theme.LOG_FG,
+            relief=tk.FLAT, borderwidth=0, highlightthickness=0)
         self.log_widget.pack(fill=tk.BOTH, expand=True)
 
         # --- Right side: sensor info + image canvas -----------------------------------
-        info = ttk.LabelFrame(right, text="Sensor Metadata", padding=4)
+        info = ttk.LabelFrame(right, text="  SENSOR METADATA  ", padding=8)
         info.pack(fill=tk.X)
         self.info_var = tk.StringVar(value="Not connected.")
-        ttk.Label(info, textvariable=self.info_var,
-                  font=("monospace", 9), justify=tk.LEFT).pack(anchor=tk.W)
+        ttk.Label(info, textvariable=self.info_var, style="Info.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
 
-        viz = ttk.LabelFrame(right, text="2D Field Images (destaggered)",
-                             padding=4)
-        viz.pack(fill=tk.BOTH, expand=True, pady=4)
-        self.fig = Figure(figsize=(8, 6), dpi=90, tight_layout=True)
+        viz = ttk.LabelFrame(right, text="  2D FIELD IMAGES (DESTAGGERED)  ",
+                             padding=6)
+        viz.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.fig = Figure(figsize=(8, 6), dpi=90, tight_layout=True,
+                          facecolor=Theme.PANEL)
         self.axes = {}
         for i, (name, title, cmap) in enumerate(FIELD_SPECS):
             ax = self.fig.add_subplot(len(FIELD_SPECS), 1, i + 1)
-            ax.set_title(title, fontsize=9)
-            ax.set_xticks([])
-            ax.set_yticks([])
+            self._style_axis(ax, title)
             self.axes[name] = (ax, cmap)
         self.canvas = FigureCanvasTkAgg(self.fig, master=viz)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        widget = self.canvas.get_tk_widget()
+        widget.configure(bg=Theme.PANEL, highlightthickness=0)
+        widget.pack(fill=tk.BOTH, expand=True)
 
         self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN,
+        ttk.Label(self.root, textvariable=self.status_var,
+                  style="Status.TLabel",
                   anchor=tk.W).pack(side=tk.BOTTOM, fill=tk.X)
+
+    def _style_axis(self, ax, title):
+        ax.set_facecolor(Theme.BG)
+        ax.set_title(title, fontsize=9, color=Theme.FG, loc="left")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
 
     # ------------------------------------------------------------- helpers --
     def log(self, msg: str):
@@ -491,7 +614,7 @@ class OusterGuiApp:
             cmd = ["ouster-cli", "source", host, "save", path]
             try:
                 self.record_proc = subprocess.Popen(cmd)
-                self.record_btn.configure(text="■ Stop Recording")
+                self.record_btn.configure(text="■  Stop Recording")
                 self.log("Recording started: " + " ".join(cmd))
             except FileNotFoundError:
                 messagebox.showerror(
@@ -501,7 +624,7 @@ class OusterGuiApp:
         else:
             self.record_proc.terminate()
             self.record_proc = None
-            self.record_btn.configure(text="● Start Recording")
+            self.record_btn.configure(text="●  Start Recording")
             self.log("Recording stopped.")
 
     # ------------------------------------------------------------ rendering --
@@ -530,9 +653,7 @@ class OusterGuiApp:
             artist = self.image_artists.get(name)
             if artist is None or artist.get_array().shape != img.shape:
                 ax.clear()
-                ax.set_title(FIELD_TITLES[name], fontsize=9)
-                ax.set_xticks([])
-                ax.set_yticks([])
+                self._style_axis(ax, FIELD_TITLES[name])
                 self.image_artists[name] = ax.imshow(
                     img, cmap=cmap, aspect="auto", vmin=0.0, vmax=1.0)
             else:
@@ -554,10 +675,6 @@ class OusterGuiApp:
 
 def main():
     root = tk.Tk()
-    try:
-        ttk.Style().theme_use("clam")
-    except tk.TclError:
-        pass
     app = OusterGuiApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()

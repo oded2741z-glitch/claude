@@ -105,8 +105,8 @@ def apply_theme(root: tk.Tk):
     style.configure("TLabel", background=Theme.PANEL, foreground=Theme.FG)
     style.configure("Muted.TLabel", background=Theme.PANEL,
                     foreground=Theme.MUTED)
-    # thin Python-yellow accent strip under the title bar
-    style.configure("HeaderStrip.TFrame", background=Theme.PY_YELLOW)
+    # thin orange accent strip under the title bar, matching section titles
+    style.configure("HeaderStrip.TFrame", background=Theme.ORANGE)
     style.configure("Info.TLabel", background=Theme.PANEL,
                     foreground=Theme.FG, font=("monospace", 9))
 

@@ -24,6 +24,7 @@ Run:  python3 ouster_gui.py
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -112,16 +113,8 @@ def apply_theme(root: tk.Tk):
     style.configure("TLabel", background=Theme.PANEL, foreground=Theme.FG)
     style.configure("Muted.TLabel", background=Theme.PANEL,
                     foreground=Theme.MUTED)
-    # Python-styled header bar
-    style.configure("Header.TFrame", background=Theme.PY_BLUE)
+    # thin Python-yellow accent strip under the title bar
     style.configure("HeaderStrip.TFrame", background=Theme.PY_YELLOW)
-    style.configure("HeaderTitle.TLabel", background=Theme.PY_BLUE,
-                    foreground="#ffffff",
-                    font=(base_font.actual("family"), 14, "bold"))
-    style.configure("HeaderSub.TLabel", background=Theme.PY_BLUE,
-                    foreground=Theme.PY_YELLOW,
-                    font=(base_font.actual("family"), 9))
-    style.configure("HeaderIcon.TLabel", background=Theme.PY_BLUE)
     style.configure("Info.TLabel", background=Theme.PANEL,
                     foreground=Theme.FG, font=("monospace", 9))
     # bottom status bar in Python blue, matching the header
@@ -358,12 +351,32 @@ class ScanReader(threading.Thread):
         return images
 
 
+def enable_dark_title_bar(root: tk.Tk):
+    """Ask Windows to draw this window's title bar dark (no-op elsewhere;
+    on Linux the title bar color follows the desktop theme)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (new/old id)
+            value = ctypes.c_int(1)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attr, ctypes.byref(value),
+                    ctypes.sizeof(value)) == 0:
+                break
+    except Exception:
+        pass
+
+
 class OusterGuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("Ouster Digital Lidar - Control & Visualization")
-        root.geometry("1280x920")
+        root.title("Ouster Digital Lidar Control  ·  Powered by Python")
+        root.geometry("1280x860")
         apply_theme(root)
+        enable_dark_title_bar(root)
 
         self.reader = None
         self.frame_queue = queue.Queue(maxsize=4)
@@ -381,24 +394,11 @@ class OusterGuiApp:
 
     # ------------------------------------------------------------------ UI --
     def _build_ui(self):
-        # header bar (Python-branded: blue bar, yellow strip, snakes logo) -----
-        header = ttk.Frame(self.root, style="Header.TFrame",
-                           padding=(14, 8, 14, 8))
-        header.pack(fill=tk.X)
-        self.logo_img = make_python_logo(36)
+        # No in-app header bar: the window's own title bar carries the app
+        # name and the Python-logo icon. Just a thin yellow accent strip.
         self.icon_img = make_python_logo(64)
-        if self.logo_img is not None:
-            ttk.Label(header, image=self.logo_img,
-                      style="HeaderIcon.TLabel").pack(side=tk.LEFT,
-                                                      padx=(0, 10))
         if self.icon_img is not None:
             self.root.iconphoto(True, self.icon_img)
-        titles = ttk.Frame(header, style="Header.TFrame")
-        titles.pack(side=tk.LEFT)
-        ttk.Label(titles, text="Ouster Digital Lidar Control",
-                  style="HeaderTitle.TLabel").pack(anchor=tk.W)
-        ttk.Label(titles, text="Powered by Python  ·  ouster-sdk",
-                  style="HeaderSub.TLabel").pack(anchor=tk.W)
         ttk.Frame(self.root, style="HeaderStrip.TFrame",
                   height=3).pack(fill=tk.X)
 

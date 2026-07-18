@@ -76,17 +76,16 @@ class Theme:
     BORDER    = "#2c3345"
     FG        = "#e8ebf2"   # primary text
     MUTED     = "#8b93a7"   # secondary text
-    ACCENT    = "#38bdf8"   # cyan accent (headers, highlights)
+    # Python brand palette drives the whole design
+    PY_BLUE   = "#3776AB"   # header / status bars
+    PY_BLUE_L = "#4B8BBE"   # lighter Python blue (accents, hover)
+    PY_YELLOW = "#FFD43B"   # section titles, apply button, strips
+    ACCENT    = PY_BLUE_L
     GREEN     = "#34d399"   # start
     RED       = "#f87171"   # stop / record
-    AMBER     = "#fbbf24"   # apply / warning
+    AMBER     = PY_YELLOW   # apply
     LOG_BG    = "#0d1017"
     LOG_FG    = "#9fe8a9"
-    STATUS_BG = "#0d1017"
-    # Python brand palette (header bar + app icon)
-    PY_BLUE   = "#3776AB"
-    PY_BLUE_D = "#2b5b8c"
-    PY_YELLOW = "#FFD43B"
 
 
 def apply_theme(root: tk.Tk):
@@ -125,13 +124,15 @@ def apply_theme(root: tk.Tk):
     style.configure("HeaderIcon.TLabel", background=Theme.PY_BLUE)
     style.configure("Info.TLabel", background=Theme.PANEL,
                     foreground=Theme.FG, font=("monospace", 9))
-    style.configure("Status.TLabel", background=Theme.STATUS_BG,
-                    foreground=Theme.MUTED, padding=(10, 4))
+    # bottom status bar in Python blue, matching the header
+    style.configure("Status.TLabel", background=Theme.PY_BLUE,
+                    foreground="#ffffff", padding=(10, 5))
+    style.configure("StatusStrip.TFrame", background=Theme.PY_YELLOW)
 
     style.configure("TLabelframe", background=Theme.PANEL,
                     bordercolor=Theme.BORDER, relief="solid", borderwidth=1)
     style.configure("TLabelframe.Label", background=Theme.PANEL,
-                    foreground=Theme.ACCENT,
+                    foreground=Theme.PY_YELLOW,
                     font=(base_font.actual("family"), 9, "bold"))
 
     # buttons -----------------------------------------------------------------
@@ -144,12 +145,13 @@ def apply_theme(root: tk.Tk):
                               ("disabled", Theme.FIELD)],
                   foreground=[("disabled", Theme.MUTED)])
 
-    button("TButton", Theme.FIELD, fg=Theme.FG, active=Theme.BORDER)
-    button("Accent.TButton", Theme.ACCENT)
+    button("TButton", Theme.FIELD, fg=Theme.FG, active=Theme.PY_BLUE)
+    button("Accent.TButton", Theme.PY_BLUE, fg="#ffffff",
+           active=Theme.PY_BLUE_L)
     button("Start.TButton", Theme.GREEN)
     button("Stop.TButton", Theme.RED)
     button("Record.TButton", Theme.RED)
-    button("Apply.TButton", Theme.AMBER)
+    button("Apply.TButton", Theme.PY_YELLOW, active="#ffe873")
 
     # inputs -------------------------------------------------------------------
     style.configure("TEntry", fieldbackground=Theme.FIELD,
@@ -360,7 +362,7 @@ class OusterGuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title("Ouster Digital Lidar - Control & Visualization")
-        root.geometry("1280x860")
+        root.geometry("1280x920")
         apply_theme(root)
 
         self.reader = None
@@ -399,6 +401,14 @@ class OusterGuiApp:
                   style="HeaderSub.TLabel").pack(anchor=tk.W)
         ttk.Frame(self.root, style="HeaderStrip.TFrame",
                   height=3).pack(fill=tk.X)
+
+        # status bar packed before the main area so it always gets space
+        self.status_var = tk.StringVar(value="Ready.")
+        ttk.Label(self.root, textvariable=self.status_var,
+                  style="Status.TLabel",
+                  anchor=tk.W).pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Frame(self.root, style="StatusStrip.TFrame",
+                  height=3).pack(side=tk.BOTTOM, fill=tk.X)
 
         main = ttk.Frame(self.root, padding=(10, 4, 10, 6))
         main.pack(fill=tk.BOTH, expand=True)
@@ -510,11 +520,6 @@ class OusterGuiApp:
         widget = self.canvas.get_tk_widget()
         widget.configure(bg=Theme.PANEL, highlightthickness=0)
         widget.pack(fill=tk.BOTH, expand=True)
-
-        self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(self.root, textvariable=self.status_var,
-                  style="Status.TLabel",
-                  anchor=tk.W).pack(side=tk.BOTTOM, fill=tk.X)
 
     def _style_axis(self, ax, title):
         ax.set_facecolor(Theme.BG)

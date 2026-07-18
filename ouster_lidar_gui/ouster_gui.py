@@ -35,12 +35,6 @@ import numpy as np
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="ouster")
 
-try:  # optional - used to draw the Python-logo app icon
-    from PIL import Image, ImageDraw
-    HAVE_PIL = True
-except ImportError:
-    HAVE_PIL = False
-
 # --- ouster-sdk imports (support SDK >= 1.0 and older releases) --------------
 try:
     from ouster.sdk import open_source
@@ -77,14 +71,12 @@ class Theme:
     BORDER    = "#2c3345"
     FG        = "#e8ebf2"   # primary text
     MUTED     = "#8b93a7"   # secondary text
-    # Python brand palette drives the whole design
-    PY_BLUE   = "#3776AB"   # header / status bars
-    PY_BLUE_L = "#4B8BBE"   # lighter Python blue (accents, hover)
-    PY_YELLOW = "#FFD43B"   # section titles, apply button, strips
+    # Python brand palette
+    PY_BLUE   = "#3776AB"
+    PY_BLUE_L = "#4B8BBE"   # lighter Python blue (focus, hover)
+    PY_YELLOW = "#FFD43B"   # top accent strip
+    ORANGE    = "#FF8C00"   # section titles
     ACCENT    = PY_BLUE_L
-    GREEN     = "#34d399"   # start
-    RED       = "#f87171"   # stop / record
-    AMBER     = PY_YELLOW   # apply
     LOG_BG    = "#0d1017"
     LOG_FG    = "#9fe8a9"
 
@@ -117,34 +109,22 @@ def apply_theme(root: tk.Tk):
     style.configure("HeaderStrip.TFrame", background=Theme.PY_YELLOW)
     style.configure("Info.TLabel", background=Theme.PANEL,
                     foreground=Theme.FG, font=("monospace", 9))
-    # bottom status bar in Python blue, matching the header
-    style.configure("Status.TLabel", background=Theme.PY_BLUE,
-                    foreground="#ffffff", padding=(10, 5))
-    style.configure("StatusStrip.TFrame", background=Theme.PY_YELLOW)
 
     style.configure("TLabelframe", background=Theme.PANEL,
                     bordercolor=Theme.BORDER, relief="solid", borderwidth=1)
     style.configure("TLabelframe.Label", background=Theme.PANEL,
-                    foreground=Theme.PY_YELLOW,
+                    foreground=Theme.ORANGE,
                     font=(base_font.actual("family"), 9, "bold"))
 
-    # buttons -----------------------------------------------------------------
-    def button(name, bg, fg=Theme.BG, active=None):
-        style.configure(name, background=bg, foreground=fg,
-                        bordercolor=bg, focusthickness=1, padding=(8, 6),
-                        font=(base_font.actual("family"), 10, "bold"))
-        style.map(name,
-                  background=[("active", active or Theme.ACCENT),
-                              ("disabled", Theme.FIELD)],
-                  foreground=[("disabled", Theme.MUTED)])
-
-    button("TButton", Theme.FIELD, fg=Theme.FG, active=Theme.PY_BLUE)
-    button("Accent.TButton", Theme.PY_BLUE, fg="#ffffff",
-           active=Theme.PY_BLUE_L)
-    button("Start.TButton", Theme.GREEN)
-    button("Stop.TButton", Theme.RED)
-    button("Record.TButton", Theme.RED)
-    button("Apply.TButton", Theme.PY_YELLOW, active="#ffe873")
+    # buttons: one uniform style for every button ------------------------------
+    style.configure("TButton", background=Theme.FIELD, foreground=Theme.FG,
+                    bordercolor=Theme.FIELD, focusthickness=1,
+                    padding=(8, 6),
+                    font=(base_font.actual("family"), 10, "bold"))
+    style.map("TButton",
+              background=[("active", Theme.BORDER),
+                          ("disabled", Theme.FIELD)],
+              foreground=[("disabled", Theme.MUTED)])
 
     # inputs -------------------------------------------------------------------
     style.configure("TEntry", fieldbackground=Theme.FIELD,
@@ -161,52 +141,6 @@ def apply_theme(root: tk.Tk):
     root.option_add("*TCombobox*Listbox.foreground", Theme.FG)
     root.option_add("*TCombobox*Listbox.selectBackground", Theme.ACCENT)
     root.option_add("*TCombobox*Listbox.selectForeground", Theme.BG)
-
-
-def make_python_logo(size: int = 64):
-    """Draw a simplified Python two-snakes logo and return a tk.PhotoImage.
-
-    Drawn in code with Pillow (no asset files); returns None if Pillow is
-    not installed.
-    """
-    if not HAVE_PIL:
-        return None
-    import base64
-    import io
-
-    s = 4  # supersampling factor for smooth edges
-    n = 128 * s
-    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    # dark rounded badge behind the snakes, so the blue snake stays visible
-    # on the blue header bar
-    badge = ImageDraw.Draw(img)
-    badge.rounded_rectangle([0, 0, n - 1, n - 1], radius=30 * s,
-                            fill=Theme.BG)
-
-    def snake(color):
-        piece = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-        d = ImageDraw.Draw(piece)
-        r = 20 * s
-        # head + body (wide top bar) and neck (left column), L-shaped;
-        # stops just above the centerline so the mirrored snake interlocks
-        d.rounded_rectangle([18 * s, 8 * s, 110 * s, 61 * s],
-                            radius=r, fill=color)
-        d.rounded_rectangle([18 * s, 8 * s, 62 * s, 61 * s],
-                            radius=r, fill=color)
-        d.rectangle([18 * s, 30 * s, 62 * s, 61 * s], fill=color)
-        # eye
-        d.ellipse([38 * s, 18 * s, 50 * s, 30 * s], fill="#ffffff")
-        return piece
-
-    blue = snake("#4B8BBE")  # lighter Python blue, readable on dark badge
-    yellow = snake(Theme.PY_YELLOW).rotate(180)
-    img.alpha_composite(blue)
-    img.alpha_composite(yellow)
-    img = img.resize((size, size), Image.LANCZOS)
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode())
 
 
 LIDAR_MODES = ["512x10", "512x20", "1024x10", "1024x20", "2048x10"]
@@ -394,21 +328,11 @@ class OusterGuiApp:
 
     # ------------------------------------------------------------------ UI --
     def _build_ui(self):
-        # No in-app header bar: the window's own title bar carries the app
-        # name and the Python-logo icon. Just a thin yellow accent strip.
-        self.icon_img = make_python_logo(64)
-        if self.icon_img is not None:
-            self.root.iconphoto(True, self.icon_img)
+        # Blank (transparent) window icon - hides Tk's default feather icon
+        self.icon_img = tk.PhotoImage(width=16, height=16)
+        self.root.iconphoto(True, self.icon_img)
         ttk.Frame(self.root, style="HeaderStrip.TFrame",
                   height=3).pack(fill=tk.X)
-
-        # status bar packed before the main area so it always gets space
-        self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(self.root, textvariable=self.status_var,
-                  style="Status.TLabel",
-                  anchor=tk.W).pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Frame(self.root, style="StatusStrip.TFrame",
-                  height=3).pack(side=tk.BOTTOM, fill=tk.X)
 
         main = ttk.Frame(self.root, padding=(10, 4, 10, 6))
         main.pack(fill=tk.BOTH, expand=True)
@@ -428,7 +352,7 @@ class OusterGuiApp:
         ttk.Entry(conn, textvariable=self.host_var).pack(fill=tk.X, pady=3)
         row = ttk.Frame(conn, style="Panel.TFrame")
         row.pack(fill=tk.X, pady=3)
-        ttk.Button(row, text="Get Sensor Info", style="Accent.TButton",
+        ttk.Button(row, text="Get Sensor Info",
                    command=self.on_get_info).pack(side=tk.LEFT, expand=True,
                                                   fill=tk.X, padx=(0, 3))
         ttk.Button(row, text="Get Config",
@@ -462,18 +386,16 @@ class OusterGuiApp:
         self.imu_port_var = tk.StringVar(value="7503")
         ttk.Entry(ports, textvariable=self.imu_port_var,
                   width=8).grid(row=1, column=1, padx=6, pady=1)
-        ttk.Button(cfg, text="Apply Configuration", style="Apply.TButton",
+        ttk.Button(cfg, text="Apply Configuration",
                    command=self.on_apply_config).pack(fill=tk.X, pady=(8, 0))
 
         # --- Streaming ----------------------------------------------------------
         stream = ttk.LabelFrame(left, text="  LIVE STREAM  ", padding=10)
         stream.pack(fill=tk.X, pady=4)
         self.start_btn = ttk.Button(stream, text="▶  Start Stream",
-                                    style="Start.TButton",
                                     command=self.on_start_stream)
         self.start_btn.pack(fill=tk.X, pady=3)
         self.stop_btn = ttk.Button(stream, text="■  Stop Stream",
-                                   style="Stop.TButton",
                                    command=self.on_stop_stream,
                                    state=tk.DISABLED)
         self.stop_btn.pack(fill=tk.X, pady=3)
@@ -484,7 +406,6 @@ class OusterGuiApp:
         rec = ttk.LabelFrame(left, text="  RECORD / PLAYBACK  ", padding=10)
         rec.pack(fill=tk.X, pady=4)
         self.record_btn = ttk.Button(rec, text="●  Start Recording",
-                                     style="Record.TButton",
                                      command=self.on_toggle_record)
         self.record_btn.pack(fill=tk.X, pady=3)
         ttk.Button(rec, text="Open PCAP / OSF File...",
@@ -647,7 +568,6 @@ class OusterGuiApp:
         self.reader.start()
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
-        self.status_var.set(f"Streaming from {url} ...")
 
     def on_stop_stream(self):
         if self.reader is not None:
@@ -655,7 +575,6 @@ class OusterGuiApp:
             self.reader = None
         self.start_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
-        self.status_var.set("Stream stopped.")
 
     def on_open_file(self):
         if not self._require_sdk():
@@ -738,7 +657,6 @@ class OusterGuiApp:
             else:
                 artist.set_data(img)
         self.canvas.draw_idle()
-        self.status_var.set(f"Streaming... frame {frame_id}")
 
     # ------------------------------------------------------------- shutdown --
     def on_close(self):

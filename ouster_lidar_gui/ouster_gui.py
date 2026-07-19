@@ -429,6 +429,10 @@ class OusterGuiApp:
         ttk.Button(rec, text="Open PCAP / OSF File...",
                    command=self.on_open_file).pack(fill=tk.X, pady=3)
 
+        # --- Help ---------------------------------------------------------------
+        ttk.Button(left, text="?  Help",
+                   command=self.on_help).pack(fill=tk.X, pady=4)
+
         # --- Log --------------------------------------------------------------------
         logf = ttk.LabelFrame(left, text="  LOG  ", padding=6)
         logf.pack(fill=tk.BOTH, expand=True, pady=4)
@@ -610,6 +614,42 @@ class OusterGuiApp:
         if path:
             self.on_stop_stream()
             self.on_start_stream(source_url=path, is_file=True)
+
+    def on_help(self):
+        """Open README.md in a scrollable window inside the app."""
+        readme = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "README.md")
+        try:
+            with open(readme, encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:
+            messagebox.showerror("Help", f"Could not open README.md:\n{e}")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Help  ·  README")
+        win.geometry("820x640")
+        win.configure(bg=Theme.BG)
+        win.transient(self.root)
+
+        body = scrolledtext.ScrolledText(
+            win, wrap=tk.WORD, font=("monospace", 10),
+            bg=Theme.PANEL, fg=Theme.FG, insertbackground=Theme.FG,
+            relief=tk.FLAT, borderwidth=0, highlightthickness=0,
+            padx=14, pady=10)
+        body.pack(fill=tk.BOTH, expand=True)
+        # highlight markdown headings in orange
+        body.tag_configure("heading", foreground=Theme.ORANGE,
+                           font=("monospace", 11, "bold"))
+        for line in text.splitlines(keepends=True):
+            if line.startswith("#"):
+                body.insert(tk.END, line, "heading")
+            else:
+                body.insert(tk.END, line)
+        body.configure(state=tk.DISABLED)
+
+        ttk.Button(win, text="Close",
+                   command=win.destroy).pack(pady=6)
 
     def on_open_3d(self):
         """Launch Ouster's official 3D point-cloud viewer via ouster-cli."""

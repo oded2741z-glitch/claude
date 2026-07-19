@@ -287,21 +287,39 @@ class ScanReader(threading.Thread):
 
 def enable_dark_title_bar(root: tk.Tk):
     """Ask Windows to draw this window's title bar dark (no-op elsewhere;
-    on Linux the title bar color follows the desktop theme)."""
+    on Linux the title bar color follows the desktop theme).
+
+    Windows only repaints the frame on certain events, so without a nudge
+    the bar stays white until the first click. We apply the attribute
+    twice: once immediately, and once shortly after the window is mapped,
+    followed by a 1-pixel resize bounce that forces DWM to redraw the
+    frame right away.
+    """
     if sys.platform != "win32":
         return
-    try:
-        import ctypes
-        root.update_idletasks()
-        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
-        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (new/old id)
-            value = ctypes.c_int(1)
-            if ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    hwnd, attr, ctypes.byref(value),
-                    ctypes.sizeof(value)) == 0:
-                break
-    except Exception:
-        pass
+
+    def apply(repaint: bool):
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+            for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (new/old)
+                value = ctypes.c_int(1)
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attr, ctypes.byref(value),
+                        ctypes.sizeof(value)) == 0:
+                    break
+            if repaint:
+                w, h = root.winfo_width(), root.winfo_height()
+                if w > 1 and h > 1:
+                    root.geometry(f"{w}x{h + 1}")
+                    root.update_idletasks()
+                    root.geometry(f"{w}x{h}")
+        except Exception:
+            pass
+
+    root.update_idletasks()
+    apply(False)
+    root.after(150, lambda: apply(True))
 
 
 class OusterGuiApp:
@@ -441,6 +459,12 @@ class OusterGuiApp:
         widget = self.canvas.get_tk_widget()
         widget.configure(bg=Theme.PANEL, highlightthickness=0)
         widget.pack(fill=tk.BOTH, expand=True)
+
+        # "oT" watermark, bottom-right corner, floating above everything
+        watermark = tk.Label(self.root, text="oT", bg=Theme.PANEL,
+                             fg=Theme.MUTED, font=("TkDefaultFont", 11,
+                                                   "bold italic"))
+        watermark.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-10, y=-8)
 
     def _style_axis(self, ax, title):
         ax.set_facecolor(Theme.BG)

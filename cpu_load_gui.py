@@ -10,6 +10,7 @@ Usage:
     python3 cpu_load_gui.py
 """
 
+import csv
 import ctypes as ct
 import glob
 import multiprocessing as mp
@@ -744,15 +745,16 @@ TICK_MS = 500          # GUI refresh interval
 
 LOG_CHOICES = (("Off", 0), ("Every 1 min", 60),
                ("Every 5 min", 300), ("Every 10 min", 600))
+LOG_FORMATS = (("Text (.txt)", "txt"), ("Excel (.csv)", "csv"))
+CSV_HEADER = ["Time", "CPU %", "CPU Temp (C)", "GPU %", "GPU Temp (C)",
+              "Load", "CPU Target %", "Workers", "GPU Intensity %", "Seconds Left"]
 
 
-def new_log_path():
+def new_log_path(fmt="txt"):
     """A fresh timestamped log file next to the program."""
-    if getattr(sys, "frozen", False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, time.strftime("cpu_load_log_%Y-%m-%d_%H-%M-%S.txt"))
+    ext = "csv" if fmt == "csv" else "txt"
+    return os.path.join(_program_dir(),
+                        time.strftime("cpu_load_log_%Y-%m-%d_%H-%M-%S." + ext))
 
 
 def open_in_file_manager(path):
@@ -883,6 +885,7 @@ class App:
         self._log_last = 0.0
         self._log_path = None            # current/most recent session log file
         self._log_active = False
+        self._log_format = "txt"
         lrow = tk.Frame(ctl, bg=CARD)
         lrow.pack(fill="x", padx=16)
         self.log_var = tk.StringVar(value=LOG_CHOICES[0][0])
@@ -900,6 +903,16 @@ class App:
                   relief="flat", bd=0, padx=10, cursor="hand2",
                   highlightthickness=1, highlightbackground=GRID
                   ).pack(side="left", padx=(8, 0), fill="y")
+        self.logfmt_var = tk.StringVar(value=LOG_FORMATS[0][0])
+        fom = tk.OptionMenu(ctl, self.logfmt_var, *(c[0] for c in LOG_FORMATS),
+                            command=self._on_log_format_change)
+        fom.configure(bg=CARD2, fg=INK2, activebackground=CARD2, activeforeground=INK,
+                      relief="flat", bd=0, highlightthickness=1,
+                      highlightbackground=GRID, font=self.f_small, anchor="w",
+                      cursor="hand2")
+        fom["menu"].configure(bg=CARD2, fg=INK, font=self.f_small,
+                              activebackground=BLUE, activeforeground="#ffffff")
+        fom.pack(anchor="w", fill="x", padx=16, pady=(6, 0))
         self.log_lbl = tk.Label(ctl, text="", font=self.f_small, bg=CARD, fg=MUTED)
         self.log_lbl.pack(anchor="w", padx=16)
 
@@ -1028,31 +1041,54 @@ class App:
     # -- stats logging ----------------------------------------------------------
     def _on_log_change(self, choice):
         self._log_interval = dict(LOG_CHOICES).get(choice, 0)
-        if self._log_interval:
-            if not self._log_active:      # every new session gets a new file
-                self._log_path = new_log_path()
-                self._log_active = True
-            self._write_log("--- logging started (%s) ---" % choice.lower())
-            self._log_last = 0.0          # first sample on the next tick
-        elif self._log_active:
+        if self._log_interval and not self._log_active:
+            self._start_log_session()
+        elif not self._log_interval and self._log_active:
+            self._end_log_session()
+
+    def _on_log_format_change(self, choice):
+        fmt = dict(LOG_FORMATS).get(choice, "txt")
+        if fmt == self._log_format:
+            return
+        if self._log_active:          # close current file, then restart in new format
+            self._end_log_session()
+            self._log_format = fmt
+            self._start_log_session()
+        else:
+            self._log_format = fmt
+
+    def _start_log_session(self):
+        """Begin a new timestamped log file in the current format."""
+        self._log_path = new_log_path(self._log_format)
+        self._log_active = True
+        if self._log_format == "csv":
+            self._write_csv(CSV_HEADER)
+        else:
+            self._write_log("--- logging started (%s) ---" % self.log_var.get().lower())
+        self._log_last = 0.0              # first sample on the next tick
+
+    def _end_log_session(self):
+        if not self._log_active:
+            return
+        if self._log_format == "txt":
             self._write_log("--- logging stopped ---")
-            self._log_active = False
+        self._log_active = False
 
     def _open_log(self):
         """Open the current (or most recent) log file; its folder if none."""
         target = self._log_path
         if not target or not os.path.exists(target):
-            target = os.path.dirname(self._log_path or new_log_path())
+            target = os.path.dirname(self._log_path or new_log_path(self._log_format))
         if not open_in_file_manager(target):
             self.log_lbl.config(text="cannot open: " + target)
 
-    def _write_log(self, text):
-        line = time.strftime("%Y-%m-%d %H:%M:%S") + " | " + text + "\n"
+    def _log_write(self, writer, newline=None):
+        """Run writer(file) on the log path, falling back to the home dir."""
         for path in (self._log_path, os.path.join(os.path.expanduser("~"),
                                                   os.path.basename(self._log_path))):
             try:
-                with open(path, "a", encoding="utf-8") as f:
-                    f.write(line)
+                with open(path, "a", encoding="utf-8", newline=newline) as f:
+                    writer(f)
                 self._log_path = path
                 shown = path if len(path) <= 36 else "…" + path[-35:]
                 self.log_lbl.config(text="→ " + shown)
@@ -1061,21 +1097,41 @@ class App:
                 continue
         self.log_lbl.config(text="cannot write log file")
 
+    def _write_log(self, text):
+        line = time.strftime("%Y-%m-%d %H:%M:%S") + " | " + text + "\n"
+        self._log_write(lambda f: f.write(line))
+
+    def _write_csv(self, row):
+        self._log_write(lambda f: csv.writer(f).writerow(row), newline="")
+
     def _maybe_log(self, now):
         if not self._log_interval or now - self._log_last < self._log_interval:
             return
         self._log_last = now
         s = self.sampler
+        running = self.engine.running
+        rem = self.engine.remaining
+        if self._log_format == "csv":
+            num = lambda v: "" if v is None else round(v)
+            self._write_csv([
+                time.strftime("%Y-%m-%d %H:%M:%S"),
+                num(s.total), num(s.temp), num(s.gpu_util), num(s.gpu_temp),
+                "ON" if running else "off",
+                int(self.engine.target) if running else "",
+                self.engine.workers if running else "",
+                int(self.gpu.intensity) if (running and self.gpu.running) else "",
+                int(rem) if (running and rem is not None) else "",
+            ])
+            return
         fmt = lambda v, u: "—" if v is None else "%.0f%s" % (v, u)
         text = "CPU %s %s | GPU %s %s" % (
             fmt(s.total, "%"), fmt(s.temp, "°C"),
             fmt(s.gpu_util, "%"), fmt(s.gpu_temp, "°C"))
-        if self.engine.running:
+        if running:
             text += " | load ON: target %d%%, workers %d" % (
                 int(self.engine.target), self.engine.workers)
             if self.gpu.running:
                 text += ", GPU intensity %d%%" % int(self.gpu.intensity)
-            rem = self.engine.remaining
             if rem is not None:
                 text += ", %ds left" % int(rem)
         else:

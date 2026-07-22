@@ -745,16 +745,80 @@ TICK_MS = 500          # GUI refresh interval
 
 LOG_CHOICES = (("Off", 0), ("Every 1 min", 60),
                ("Every 5 min", 300), ("Every 10 min", 600))
-LOG_FORMATS = (("Text (.txt)", "txt"), ("Excel (.csv)", "csv"))
+LOG_FORMATS = (("Text (.txt)", "txt"), ("CSV (.csv)", "csv"), ("Excel (.xlsx)", "xlsx"))
 CSV_HEADER = ["Time", "CPU %", "CPU Temp (C)", "GPU %", "GPU Temp (C)",
               "Load", "CPU Target %", "Workers", "GPU Intensity %", "Seconds Left"]
 
 
 def new_log_path(fmt="txt"):
     """A fresh timestamped log file next to the program."""
-    ext = "csv" if fmt == "csv" else "txt"
+    ext = {"csv": "csv", "xlsx": "xlsx"}.get(fmt, "txt")
     return os.path.join(_program_dir(),
                         time.strftime("cpu_load_log_%Y-%m-%d_%H-%M-%S." + ext))
+
+
+def write_xlsx(path, rows):
+    """Write rows (list of lists) as a minimal .xlsx workbook — pure stdlib
+    (an .xlsx is just a zip of XML parts). int/float values become numeric
+    cells; everything else becomes an inline string; blanks stay empty."""
+    import zipfile
+    from xml.sax.saxutils import escape
+
+    def col(c):
+        s = ""
+        c += 1
+        while c:
+            c, r = divmod(c - 1, 26)
+            s = chr(65 + r) + s
+        return s
+
+    body = []
+    for ri, row in enumerate(rows, 1):
+        cells = []
+        for ci, val in enumerate(row):
+            ref = col(ci) + str(ri)
+            if val is None or val == "":
+                cells.append('<c r="%s"/>' % ref)
+            elif isinstance(val, bool):
+                cells.append('<c r="%s" t="inlineStr"><is><t>%s</t></is></c>' % (ref, val))
+            elif isinstance(val, (int, float)):
+                cells.append('<c r="%s"><v>%s</v></c>' % (ref, val))
+            else:
+                cells.append('<c r="%s" t="inlineStr"><is><t xml:space="preserve">%s'
+                             '</t></is></c>' % (ref, escape(str(val))))
+        body.append('<row r="%d">%s</row>' % (ri, "".join(cells)))
+    sheet = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             '<sheetData>%s</sheetData></worksheet>' % "".join(body))
+    parts = {
+        "[Content_Types].xml":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '</Types>',
+        "_rels/.rels":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>',
+        "xl/workbook.xml":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Log" sheetId="1" r:id="rId1"/></sheets></workbook>',
+        "xl/_rels/workbook.xml.rels":
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '</Relationships>',
+        "xl/worksheets/sheet1.xml": sheet,
+    }
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in parts.items():
+            z.writestr(name, data)
 
 
 def open_in_file_manager(path):
@@ -886,6 +950,7 @@ class App:
         self._log_path = None            # current/most recent session log file
         self._log_active = False
         self._log_format = "txt"
+        self._xlsx_rows = []             # accumulated rows for the .xlsx format
         lrow = tk.Frame(ctl, bg=CARD)
         lrow.pack(fill="x", padx=16)
         self.log_var = tk.StringVar(value=LOG_CHOICES[0][0])
@@ -1063,6 +1128,9 @@ class App:
         self._log_active = True
         if self._log_format == "csv":
             self._write_csv(CSV_HEADER)
+        elif self._log_format == "xlsx":
+            self._xlsx_rows = [list(CSV_HEADER)]
+            self._write_xlsx()
         else:
             self._write_log("--- logging started (%s) ---" % self.log_var.get().lower())
         self._log_last = 0.0              # first sample on the next tick
@@ -1104,6 +1172,20 @@ class App:
     def _write_csv(self, row):
         self._log_write(lambda f: csv.writer(f).writerow(row), newline="")
 
+    def _write_xlsx(self):
+        """Rewrite the whole .xlsx (zip files can't be appended to)."""
+        for path in (self._log_path, os.path.join(os.path.expanduser("~"),
+                                                  os.path.basename(self._log_path))):
+            try:
+                write_xlsx(path, self._xlsx_rows)
+                self._log_path = path
+                shown = path if len(path) <= 36 else "…" + path[-35:]
+                self.log_lbl.config(text="→ " + shown)
+                return
+            except OSError:
+                continue
+        self.log_lbl.config(text="cannot write log file")
+
     def _maybe_log(self, now):
         if not self._log_interval or now - self._log_last < self._log_interval:
             return
@@ -1111,9 +1193,9 @@ class App:
         s = self.sampler
         running = self.engine.running
         rem = self.engine.remaining
-        if self._log_format == "csv":
+        if self._log_format in ("csv", "xlsx"):
             num = lambda v: "" if v is None else round(v)
-            self._write_csv([
+            row = [
                 time.strftime("%Y-%m-%d %H:%M:%S"),
                 num(s.total), num(s.temp), num(s.gpu_util), num(s.gpu_temp),
                 "ON" if running else "off",
@@ -1121,7 +1203,12 @@ class App:
                 self.engine.workers if running else "",
                 int(self.gpu.intensity) if (running and self.gpu.running) else "",
                 int(rem) if (running and rem is not None) else "",
-            ])
+            ]
+            if self._log_format == "csv":
+                self._write_csv(row)
+            else:
+                self._xlsx_rows.append(row)
+                self._write_xlsx()
             return
         fmt = lambda v, u: "—" if v is None else "%.0f%s" % (v, u)
         text = "CPU %s %s | GPU %s %s" % (

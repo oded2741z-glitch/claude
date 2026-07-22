@@ -12,6 +12,8 @@ A Python desktop app (tkinter GUI, English UI) that stresses the CPU at a chosen
 python3 cpu_load_gui.py
 ```
 
+The window sizes itself to fit all the controls (it grows with your core count), and opens centered on screen.
+
 No dependencies — Python standard library only.
 
 - **Linux (Debian/Ubuntu):** if tkinter is missing, `sudo apt install python3-tk`.

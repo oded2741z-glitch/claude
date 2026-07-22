@@ -882,8 +882,7 @@ class App:
         self.gpu_hist = []                     # (timestamp, gpu %)
         root.title("CPU Load Generator")
         root.configure(bg=PAGE)
-        root.geometry("1080x660")
-        root.minsize(880, 560)
+        self._ctl = None               # the control column (set below)
         self._blank_icon = tk.PhotoImage(width=16, height=16)   # hides the Tk feather
         root.iconphoto(True, self._blank_icon)
         root.after(150, lambda: apply_dark_title_bar(root))
@@ -916,6 +915,7 @@ class App:
         # controls card (left) ----------------------------------------------
         ctl = self._card(body)
         ctl.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+        self._ctl = ctl
 
         self._ctl_header(ctl, "LOAD CONTROL").pack(anchor="w", padx=16, pady=(14, 2))
 
@@ -1066,8 +1066,23 @@ class App:
         self._anim_lbl = None
         self._anim_img = None
         self._anim_closed = False    # user closed the window during this run
+        self._fit_window()
         self._tick()
         self._anim_tick()
+
+    def _fit_window(self):
+        """Open tall enough for the whole control column (which grows with
+        core count and the extra panels), then center on screen."""
+        self.root.update_idletasks()
+        need_h = self._ctl.winfo_reqheight() + 28 * 2 + 40   # padding + title bar
+        h = max(660, need_h)
+        w = 1080
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        h = min(h, sh - 60)                                  # never taller than screen
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2 - 20)
+        self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        self.root.minsize(880, min(h, 620))
 
     # -- widget helpers ------------------------------------------------------
     def _card(self, parent):

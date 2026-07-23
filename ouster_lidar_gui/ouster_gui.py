@@ -21,12 +21,14 @@ Tested with ouster-sdk 1.0.0; also compatible with the older
 Run:  python3 ouster_gui.py
 """
 
+import json
 import os
 import queue
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 import tkinter as tk
 import warnings
@@ -46,6 +48,13 @@ try:
         from ouster.sdk import client as ouster_core
         get_config = ouster_core.get_config
         set_config = ouster_core.set_config
+    try:
+        from ouster.sdk.sensor import SensorHttp
+    except Exception:
+        try:
+            from ouster.sdk.client import SensorHttp
+        except Exception:
+            SensorHttp = None
     HAVE_OUSTER = True
     OUSTER_IMPORT_ERROR = None
 except Exception as _e:  # SDK missing entirely
@@ -54,6 +63,7 @@ except Exception as _e:  # SDK missing entirely
     ouster_core = None
     open_source = None
     get_config = set_config = None
+    SensorHttp = None
 
 # --- matplotlib embedded in Tk ------------------------------------------------
 import matplotlib
@@ -127,6 +137,13 @@ def apply_theme(root: tk.Tk):
                           ("disabled", Theme.FIELD)],
               foreground=[("disabled", Theme.MUTED)])
 
+    style.configure("TCheckbutton", background=Theme.PANEL,
+                    foreground=Theme.FG, focuscolor=Theme.PANEL)
+    style.map("TCheckbutton",
+              background=[("active", Theme.PANEL)],
+              indicatorcolor=[("selected", Theme.ORANGE),
+                              ("!selected", Theme.FIELD)])
+
     # inputs -------------------------------------------------------------------
     style.configure("TEntry", fieldbackground=Theme.FIELD,
                     foreground=Theme.FG, bordercolor=Theme.BORDER,
@@ -149,6 +166,16 @@ TIMESTAMP_MODES = [
     "TIME_FROM_INTERNAL_OSC",
     "TIME_FROM_SYNC_PULSE_IN",
     "TIME_FROM_PTP_1588",
+]
+OPERATING_MODES = ["NORMAL", "STANDBY"]
+SIGNAL_MULTIPLIERS = ["1", "2", "3", "0.5", "0.25"]
+UNCHANGED = "(leave unchanged)"
+UDP_PROFILES = [
+    UNCHANGED,
+    "RNG19_RFL8_SIG16_NIR16",        # standard single return
+    "RNG19_RFL8_SIG16_NIR16_DUAL",   # dual return
+    "RNG15_RFL8_NIR8",               # low data rate
+    "LEGACY",
 ]
 
 # (field name, plot title, colormap)
@@ -251,7 +278,8 @@ class ScanReader(threading.Thread):
                         pass
                     for ev in pending:
                         self.out_queue.put(ev)
-                    self.out_queue.put(("frame", images, frame.frame_id))
+                    self.out_queue.put(("frame", images, frame.frame_id,
+                                        self._frame_status(frame)))
                 if self.is_file:
                     time.sleep(0.1)  # pace file playback at ~10 Hz
 
@@ -284,6 +312,21 @@ class ScanReader(threading.Thread):
             except Exception:
                 continue
         return images
+
+    @staticmethod
+    def _frame_status(frame):
+        """Runtime health flags carried on each frame."""
+        status = {}
+        for attr in ("shot_limiting", "shot_limiting_countdown",
+                     "thermal_shutdown", "shutdown_countdown",
+                     "frame_status"):
+            try:
+                val = getattr(frame, attr, None)
+                if val is not None:
+                    status[attr] = str(val)
+            except Exception:
+                pass
+        return status
 
 
 def enable_dark_title_bar(root: tk.Tk):
@@ -336,6 +379,7 @@ class OusterGuiApp:
         self.record_proc = None
         self.viz_proc = None
         self.image_artists = {}
+        self.last_frame_status = {}
 
         self._build_ui()
         self._poll_queue()
@@ -356,9 +400,38 @@ class OusterGuiApp:
         main = ttk.Frame(self.root, padding=(10, 4, 10, 6))
         main.pack(fill=tk.BOTH, expand=True)
 
-        left = ttk.Frame(main, width=330)
-        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
-        left.pack_propagate(False)
+        # scrollable left panel (the controls can be taller than the window)
+        left_container = ttk.Frame(main, width=348)
+        left_container.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left_container.pack_propagate(False)
+        left_canvas = tk.Canvas(left_container, bg=Theme.BG,
+                                highlightthickness=0, bd=0)
+        vbar = ttk.Scrollbar(left_container, orient="vertical",
+                             command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        left = ttk.Frame(left_canvas)
+        win_id = left_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>", lambda e: left_canvas.configure(
+            scrollregion=left_canvas.bbox("all")))
+        left_canvas.bind("<Configure>", lambda e: left_canvas.itemconfigure(
+            win_id, width=e.width))
+
+        def _wheel(e):
+            delta = -1 if getattr(e, "num", None) == 5 else (
+                1 if getattr(e, "num", None) == 4 else int(-e.delta / 120))
+            left_canvas.yview_scroll(delta, "units")
+        # only scroll the panel while the pointer is actually over it
+        left_container.bind("<Enter>", lambda e: (
+            left_canvas.bind_all("<MouseWheel>", _wheel),
+            left_canvas.bind_all("<Button-4>", _wheel),
+            left_canvas.bind_all("<Button-5>", _wheel)))
+        left_container.bind("<Leave>", lambda e: (
+            left_canvas.unbind_all("<MouseWheel>"),
+            left_canvas.unbind_all("<Button-4>"),
+            left_canvas.unbind_all("<Button-5>")))
+
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -377,6 +450,14 @@ class OusterGuiApp:
         ttk.Button(row, text="Get Config",
                    command=self.on_get_config).pack(side=tk.LEFT, expand=True,
                                                     fill=tk.X, padx=(3, 0))
+        row2 = ttk.Frame(conn, style="Panel.TFrame")
+        row2.pack(fill=tk.X, pady=(0, 2))
+        ttk.Button(row2, text="Get Status",
+                   command=self.on_get_status).pack(side=tk.LEFT, expand=True,
+                                                    fill=tk.X, padx=(0, 3))
+        ttk.Button(row2, text="Reinitialize",
+                   command=self.on_reinit).pack(side=tk.LEFT, expand=True,
+                                                fill=tk.X, padx=(3, 0))
 
         # --- Configuration ----------------------------------------------------
         cfg = ttk.LabelFrame(left, text="  SENSOR CONFIGURATION  ", padding=10)
@@ -391,6 +472,36 @@ class OusterGuiApp:
         self.ts_var = tk.StringVar(value=TIMESTAMP_MODES[0])
         ttk.Combobox(cfg, textvariable=self.ts_var, values=TIMESTAMP_MODES,
                      state="readonly").pack(fill=tk.X, pady=3)
+        ttk.Label(cfg, text="Operating mode:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.opmode_var = tk.StringVar(value=OPERATING_MODES[0])
+        ttk.Combobox(cfg, textvariable=self.opmode_var,
+                     values=OPERATING_MODES,
+                     state="readonly").pack(fill=tk.X, pady=3)
+        ttk.Label(cfg, text="Signal multiplier:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.sigmult_var = tk.StringVar(value=SIGNAL_MULTIPLIERS[0])
+        ttk.Combobox(cfg, textvariable=self.sigmult_var,
+                     values=SIGNAL_MULTIPLIERS,
+                     state="readonly").pack(fill=tk.X, pady=3)
+        ttk.Label(cfg, text="UDP data profile:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.profile_var = tk.StringVar(value=UNCHANGED)
+        ttk.Combobox(cfg, textvariable=self.profile_var, values=UDP_PROFILES,
+                     state="readonly").pack(fill=tk.X, pady=3)
+        az = ttk.Frame(cfg, style="Panel.TFrame")
+        az.pack(fill=tk.X, pady=3)
+        ttk.Label(az, text="Azimuth window (deg):",
+                  style="Muted.TLabel").grid(row=0, column=0, columnspan=4,
+                                             sticky=tk.W)
+        ttk.Label(az, text="start", style="Muted.TLabel").grid(row=1, column=0)
+        self.az_start_var = tk.StringVar(value="0")
+        ttk.Entry(az, textvariable=self.az_start_var,
+                  width=6).grid(row=1, column=1, padx=(2, 8))
+        ttk.Label(az, text="end", style="Muted.TLabel").grid(row=1, column=2)
+        self.az_end_var = tk.StringVar(value="360")
+        ttk.Entry(az, textvariable=self.az_end_var,
+                  width=6).grid(row=1, column=3, padx=2)
         ports = ttk.Frame(cfg, style="Panel.TFrame")
         ports.pack(fill=tk.X, pady=3)
         ttk.Label(ports, text="Lidar port:",
@@ -405,8 +516,12 @@ class OusterGuiApp:
         self.imu_port_var = tk.StringVar(value="7503")
         ttk.Entry(ports, textvariable=self.imu_port_var,
                   width=8).grid(row=1, column=1, padx=6, pady=1)
+        self.persist_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(cfg, text="Persist (keep after reboot)",
+                        variable=self.persist_var,
+                        style="TCheckbutton").pack(anchor=tk.W, pady=(6, 0))
         ttk.Button(cfg, text="Apply Configuration",
-                   command=self.on_apply_config).pack(fill=tk.X, pady=(8, 0))
+                   command=self.on_apply_config).pack(fill=tk.X, pady=(6, 0))
 
         # --- Streaming ----------------------------------------------------------
         stream = ttk.LabelFrame(left, text="  LIVE STREAM  ", padding=10)
@@ -436,12 +551,12 @@ class OusterGuiApp:
 
         # --- Log --------------------------------------------------------------------
         logf = ttk.LabelFrame(left, text="  LOG  ", padding=6)
-        logf.pack(fill=tk.BOTH, expand=True, pady=4)
+        logf.pack(fill=tk.X, pady=4)
         self.log_widget = scrolledtext.ScrolledText(
-            logf, height=8, state=tk.DISABLED, font=("monospace", 8),
+            logf, height=7, state=tk.DISABLED, font=("monospace", 8),
             bg=Theme.LOG_BG, fg=Theme.LOG_FG, insertbackground=Theme.LOG_FG,
             relief=tk.FLAT, borderwidth=0, highlightthickness=0)
-        self.log_widget.pack(fill=tk.BOTH, expand=True)
+        self.log_widget.pack(fill=tk.X)
 
         # --- Right side: sensor info + image canvas -----------------------------------
         info = ttk.LabelFrame(right, text="  SENSOR METADATA  ", padding=8)
@@ -609,17 +724,114 @@ class OusterGuiApp:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def on_reinit(self):
+        """Reinitialize (restart the data path / relaser) of the sensor."""
+        if not self._require_sdk():
+            return
+        if SensorHttp is None:
+            messagebox.showerror("Reinitialize",
+                                 "This ouster-sdk version does not expose "
+                                 "the sensor HTTP API.")
+            return
+        host = self._host()
+        if not messagebox.askyesno(
+                "Reinitialize sensor",
+                f"Reinitialize {host}?\n\nThe sensor will briefly stop "
+                "sending data while it restarts (a few seconds)."):
+            return
+        if self.reader is not None:
+            self.on_stop_stream()
+
+        def work():
+            try:
+                http = SensorHttp.create(host)
+                http.reinitialize()
+                self.log("Sensor reinitialized.")
+            except Exception as e:
+                self.log(f"ERROR reinitializing: {e}")
+
+        self.log(f"Reinitializing {host} ...")
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_get_status(self):
+        """Query the sensor for status / telemetry and show it in a window."""
+        if not self._require_sdk():
+            return
+        host = self._host()
+        self.log(f"Querying status from {host} ...")
+        threading.Thread(target=self._fetch_status, args=(host,),
+                         daemon=True).start()
+
+    def _fetch_status(self, host):
+        sections = {}
+        # 1. sensor info (status, product, firmware) via SDK HTTP API
+        if SensorHttp is not None:
+            try:
+                http = SensorHttp.create(host)
+                sections["Sensor Info"] = json.loads(http.sensor_info())
+            except Exception as e:
+                sections["Sensor Info"] = {"error": str(e)}
+        # 2. telemetry (voltage, current, temperatures) via HTTP endpoint
+        for name, ep in (("Telemetry", "/api/v1/sensor/telemetry"),
+                         ("Alerts", "/api/v1/sensor/alerts")):
+            try:
+                url = f"http://{host}{ep}"
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    sections[name] = json.loads(resp.read().decode())
+            except Exception as e:
+                sections[name] = {"error": str(e)}
+        # 3. live shot-limiting / thermal state from the most recent frame
+        if self.reader is not None and self.last_frame_status:
+            sections["Live frame status"] = self.last_frame_status
+        self.root.after(0, lambda: self._show_status(host, sections))
+
+    def _show_status(self, host, sections):
+        self.log("Sensor status received.")
+        win = tk.Toplevel(self.root)
+        win.title(f"Sensor Status  ·  {host}")
+        win.geometry("560x620")
+        win.configure(bg=Theme.BG)
+        win.transient(self.root)
+
+        body = scrolledtext.ScrolledText(
+            win, wrap=tk.WORD, font=("monospace", 10),
+            bg=Theme.PANEL, fg=Theme.FG, insertbackground=Theme.FG,
+            relief=tk.FLAT, borderwidth=0, highlightthickness=0,
+            padx=14, pady=10)
+        body.pack(fill=tk.BOTH, expand=True)
+        body.tag_configure("heading", foreground=Theme.ORANGE,
+                           font=("monospace", 11, "bold"))
+        for title, data in sections.items():
+            body.insert(tk.END, f"{title}\n", "heading")
+            body.insert(tk.END, json.dumps(data, indent=2) + "\n\n")
+        body.configure(state=tk.DISABLED)
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=6)
+
     def on_apply_config(self):
         if not self._require_sdk():
             return
         host = self._host()
         mode = self.mode_var.get()
         ts = self.ts_var.get()
+        opmode = self.opmode_var.get()
+        sigmult = self.sigmult_var.get()
+        profile = self.profile_var.get()
+        persist = self.persist_var.get()
         try:
             lidar_port = int(self.lidar_port_var.get())
             imu_port = int(self.imu_port_var.get())
         except ValueError:
             messagebox.showerror("Invalid port", "Ports must be integers.")
+            return
+        try:
+            az_start = float(self.az_start_var.get())
+            az_end = float(self.az_end_var.get())
+            if not (0 <= az_start <= 360 and 0 <= az_end <= 360):
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Invalid azimuth window",
+                                 "Azimuth start/end must be numbers "
+                                 "between 0 and 360.")
             return
 
         def work():
@@ -627,11 +839,24 @@ class OusterGuiApp:
                 cfg = ouster_core.SensorConfig()
                 cfg.lidar_mode = parse_lidar_mode(mode)
                 cfg.timestamp_mode = getattr(ouster_core.TimestampMode, ts)
+                cfg.operating_mode = getattr(ouster_core.OperatingMode,
+                                             opmode)
+                cfg.signal_multiplier = float(sigmult)
+                # azimuth window in millidegrees
+                cfg.azimuth_window = (int(az_start * 1000),
+                                      int(az_end * 1000))
+                if profile != UNCHANGED:
+                    cfg.udp_profile_lidar = getattr(
+                        ouster_core.UDPProfileLidar, profile)
                 cfg.udp_port_lidar = lidar_port
                 cfg.udp_port_imu = imu_port
-                set_config(host, cfg, persist=False, udp_dest_auto=True)
-                self.log(f"Configuration applied: mode={mode}, ts={ts}, "
-                         f"ports={lidar_port}/{imu_port}")
+                set_config(host, cfg, persist=persist, udp_dest_auto=True)
+                self.log(
+                    f"Configuration applied: mode={mode}, ts={ts}, "
+                    f"op={opmode}, signal_mult={sigmult}, "
+                    f"azimuth=({az_start},{az_end})deg, "
+                    f"profile={profile}, ports={lidar_port}/{imu_port}, "
+                    f"persist={persist}")
             except Exception as e:
                 self.log(f"ERROR: {e}")
 
@@ -777,6 +1002,8 @@ class OusterGuiApp:
                 kind = item[0]
                 if kind == "frame":
                     self._draw_frame(item[1], item[2])
+                    if len(item) > 3:
+                        self.last_frame_status = item[3]
                 elif kind == "metadata":
                     self._show_metadata(item[1])
                 elif kind == "error":

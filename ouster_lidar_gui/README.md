@@ -9,13 +9,19 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
 ## Features
 
 - **Sensor connection** by hostname or IP address (e.g. `os-122xxxxxxxxxx.local`)
-- **Sensor metadata** — product line, serial number, firmware, resolution and mode
+- **Get Sensor Info** — opens the sensor's built-in web dashboard in your browser
+- **Get Status** — temperature/voltage telemetry, alerts, run status and live
+  shot-limiting / thermal state, shown in a pop-up window
+- **Reinitialize** — restart the sensor's data path from the app
 - **Sensor configuration** — lidar mode (512x10 up to 2048x10), timestamp mode,
-  UDP ports
+  operating mode (NORMAL/STANDBY), signal multiplier, UDP data profile,
+  azimuth window (horizontal field of view), UDP ports, and a **Persist**
+  option to keep settings after reboot
 - **Live streaming** — destaggered 2D images of the four sensor fields:
-  RANGE, SIGNAL, REFLECTIVITY and NEAR_IR (ambient light), updated in real time
-- **3D viewer** — launches Ouster's official point-cloud viewer
-  (`ouster-cli ... viz`) with one click
+  RANGE, SIGNAL, REFLECTIVITY and NEAR_IR (ambient light), updated in real time.
+  Click any image (or use the **View** buttons) to enlarge a single field;
+  click again to return to the 4-up grid
+- **3D viewer** — launches Ouster's official point-cloud viewer with one click
 - **Record & playback** — save the stream to a PCAP file and replay
   PCAP / OSF recordings with no physical sensor attached
 - **Help** — this README opens inside the app via the Help button
@@ -82,13 +88,22 @@ python ouster_gui.py
 
 ### Basic usage
 
-1. Enter the sensor's hostname / IP and click **Get Sensor Info**.
-2. Pick a lidar mode (e.g. `1024x10`) and click **Apply Configuration** —
-   the sensor reinitializes itself (about 10 seconds).
-3. Click **Start Stream** for the live 2D view inside the window.
-4. Click **Open 3D Viewer** for the 3D point cloud (Ouster's SimpleViz).
+1. Enter the sensor's hostname / IP. **Get Sensor Info** opens the sensor's
+   web dashboard; **Get Status** shows telemetry and health.
+2. Pick a lidar mode (e.g. `1024x10`) and any other settings, then click
+   **Apply Configuration** — the sensor reinitializes itself (a few seconds).
+   Leave **Persist** unchecked to have the change reset on the next reboot,
+   or check it to store the setting on the sensor.
+3. Click **Start Stream** for the live 2D view inside the window. Click an
+   image to enlarge just that field; click again to go back to all four.
+4. Click **Open 3D Viewer** for the 3D point cloud (this stops the 2D stream
+   first, then opens Ouster's viewer in a separate window).
 5. **Start Recording** captures to a PCAP file; **Open PCAP / OSF File**
    replays a recording — works with no sensor connected.
+
+> Note: **Apply Configuration** with **Persist** off changes the sensor only
+> until its next power cycle; with **Persist** on, the settings are saved on
+> the sensor and survive a reboot.
 
 ### No sensor? Try a sample recording
 

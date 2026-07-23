@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
@@ -452,17 +453,39 @@ class OusterGuiApp:
         viz = ttk.LabelFrame(right, text="  2D FIELD IMAGES (DESTAGGERED)  ",
                              padding=6)
         viz.pack(fill=tk.BOTH, expand=True, pady=6)
+
+        # view selector: show all four, or one field enlarged
+        toolbar = ttk.Frame(viz, style="Panel.TFrame")
+        toolbar.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(toolbar, text="View:",
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=(2, 6))
+        self.view_buttons = {}
+        btn = ttk.Button(toolbar, text="⊞ All (4)",
+                         command=lambda: self._set_view(None))
+        btn.pack(side=tk.LEFT, padx=2)
+        self.view_buttons[None] = btn
+        for name, title, _cmap in FIELD_SPECS:
+            short = title.split(" [")[0].split(" (")[0]
+            b = ttk.Button(toolbar, text=short,
+                           command=lambda n=name: self._set_view(n))
+            b.pack(side=tk.LEFT, padx=2)
+            self.view_buttons[name] = b
+        ttk.Label(toolbar, text="(tip: click an image to enlarge it)",
+                  style="Muted.TLabel").pack(side=tk.RIGHT, padx=4)
+
+        self.view_field = None       # None = 4-up grid; else a field name
+        self.last_images = {}        # freshest frame, for instant redraw
+        self.last_frame_id = 0
+
         self.fig = Figure(figsize=(8, 6), dpi=90, tight_layout=True,
                           facecolor=Theme.PANEL)
         self.axes = {}
-        for i, (name, title, cmap) in enumerate(FIELD_SPECS):
-            ax = self.fig.add_subplot(len(FIELD_SPECS), 1, i + 1)
-            self._style_axis(ax, title)
-            self.axes[name] = (ax, cmap)
         self.canvas = FigureCanvasTkAgg(self.fig, master=viz)
+        self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
         widget = self.canvas.get_tk_widget()
         widget.configure(bg=Theme.PANEL, highlightthickness=0)
         widget.pack(fill=tk.BOTH, expand=True)
+        self._build_axes()
 
         # "oT" watermark, bottom-right corner, floating above everything
         watermark = tk.Label(self.root, text="oT", bg=Theme.PANEL,
@@ -477,6 +500,40 @@ class OusterGuiApp:
         ax.set_yticks([])
         for spine in ax.spines.values():
             spine.set_color(Theme.BORDER)
+
+    def _build_axes(self):
+        """(Re)create the subplots for the current view (all 4 or one)."""
+        self.fig.clear()
+        self.axes = {}
+        self.image_artists = {}
+        specs = (FIELD_SPECS if self.view_field is None
+                 else [s for s in FIELD_SPECS if s[0] == self.view_field])
+        for i, (name, title, cmap) in enumerate(specs):
+            ax = self.fig.add_subplot(len(specs), 1, i + 1)
+            self._style_axis(ax, title)
+            self.axes[name] = (ax, cmap)
+        # highlight the active view button
+        for key, b in self.view_buttons.items():
+            b.state(["pressed"] if key == self.view_field else ["!pressed"])
+        self.canvas.draw_idle()
+
+    def _set_view(self, field):
+        if field == self.view_field:
+            return
+        self.view_field = field
+        self._build_axes()
+        if self.last_images:                 # redraw immediately, no wait
+            self._draw_frame(self.last_images, self.last_frame_id)
+
+    def _on_canvas_click(self, event):
+        """Click an image to enlarge it; click again to return to the grid."""
+        if self.view_field is not None:
+            self._set_view(None)             # already enlarged -> back to grid
+            return
+        for name, (ax, _cmap) in self.axes.items():
+            if event.inaxes is ax:
+                self._set_view(name)
+                return
 
     # ------------------------------------------------------------- helpers --
     def log(self, msg: str):
@@ -503,24 +560,21 @@ class OusterGuiApp:
 
     # ------------------------------------------------------------- actions --
     def on_get_info(self):
-        if not self._require_sdk():
-            return
+        """Open the sensor's built-in web dashboard in the default browser."""
         host = self._host()
-        self.log(f"Fetching metadata from {host} ...")
-        threading.Thread(target=self._fetch_info, args=(host,),
-                         daemon=True).start()
-
-    def _fetch_info(self, host):
+        if not host:
+            messagebox.showerror("Get Sensor Info",
+                                 "Please enter the sensor hostname or IP.")
+            return
+        url = host if host.startswith(("http://", "https://")) \
+            else f"http://{host}"
+        self.log(f"Opening sensor web page: {url}")
         try:
-            src = open_source(host, sensor_idx=0)
-            info = source_metadata(src)
-            try:
-                src.close()
-            except Exception:
-                pass
-            self.root.after(0, lambda: self._show_metadata(info))
+            webbrowser.open(url)
         except Exception as e:
-            self.log(f"ERROR: {e}")
+            self.log(f"ERROR opening browser: {e}")
+            messagebox.showerror("Get Sensor Info",
+                                 f"Could not open the browser:\n{e}")
 
     def _show_metadata(self, info):
         if info is None:
@@ -651,18 +705,41 @@ class OusterGuiApp:
         ttk.Button(win, text="Close",
                    command=win.destroy).pack(pady=6)
 
+    def _ouster_cli_cmd(self, *args):
+        """Build an ouster-cli command that always uses this venv's Python,
+        so it works even when 'ouster-cli' is not on PATH (e.g. on Windows
+        when the app is started by double-click)."""
+        return [sys.executable, "-c",
+                "from ouster.cli.core import run; run()", *args]
+
     def on_open_3d(self):
-        """Launch Ouster's official 3D point-cloud viewer via ouster-cli."""
+        """Launch Ouster's official 3D point-cloud viewer.
+
+        The live 2D stream binds the UDP data port, so a separate viewer
+        process cannot open the sensor at the same time. We stop the 2D
+        stream first, then launch the viewer a moment later.
+        """
+        if not self._require_sdk():
+            return
+        if self.reader is not None:
+            self.on_stop_stream()
+            self.log("Stopped 2D stream to free the sensor; "
+                     "opening 3D viewer...")
+            self.root.after(1500, self._launch_3d)
+        else:
+            self._launch_3d()
+
+    def _launch_3d(self):
         host = self._host()
-        cmd = ["ouster-cli", "source", host, "viz"]
+        cmd = self._ouster_cli_cmd("source", host, "viz")
         try:
             self.viz_proc = subprocess.Popen(cmd)
-            self.log("Launched 3D viewer: " + " ".join(cmd))
-        except FileNotFoundError:
-            messagebox.showerror(
-                "ouster-cli not found",
-                "ouster-cli was not found on PATH.\n"
-                "It is installed together with:  pip install ouster-sdk")
+            self.log(f"Launched 3D viewer for {host} "
+                     "(a separate window will open shortly).")
+        except Exception as e:
+            self.log(f"ERROR launching 3D viewer: {e}")
+            messagebox.showerror("3D Viewer",
+                                 f"Could not launch the 3D viewer:\n{e}")
 
     def on_toggle_record(self):
         if self.record_proc is None:
@@ -672,17 +749,20 @@ class OusterGuiApp:
                 filetypes=[("PCAP files", "*.pcap")])
             if not path:
                 return
+            if self.reader is not None:
+                self.on_stop_stream()
+                self.log("Stopped 2D stream to free the sensor for "
+                         "recording.")
             host = self._host()
-            cmd = ["ouster-cli", "source", host, "save", path]
+            cmd = self._ouster_cli_cmd("source", host, "save", path)
             try:
                 self.record_proc = subprocess.Popen(cmd)
                 self.record_btn.configure(text="■  Stop Recording")
-                self.log("Recording started: " + " ".join(cmd))
-            except FileNotFoundError:
-                messagebox.showerror(
-                    "ouster-cli not found",
-                    "ouster-cli was not found on PATH.\n"
-                    "It is installed together with:  pip install ouster-sdk")
+                self.log(f"Recording started -> {path}")
+            except Exception as e:
+                self.log(f"ERROR starting recording: {e}")
+                messagebox.showerror("Recording",
+                                     f"Could not start recording:\n{e}")
         else:
             self.record_proc.terminate()
             self.record_proc = None
@@ -710,7 +790,11 @@ class OusterGuiApp:
         self.root.after(50, self._poll_queue)
 
     def _draw_frame(self, images: dict, frame_id: int):
+        self.last_images = images
+        self.last_frame_id = frame_id
         for name, img in images.items():
+            if name not in self.axes:        # not shown in current view
+                continue
             ax, cmap = self.axes[name]
             artist = self.image_artists.get(name)
             if artist is None or artist.get_array().shape != img.shape:

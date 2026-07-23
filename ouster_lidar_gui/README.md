@@ -13,6 +13,8 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
 - **Get Status** — temperature/voltage telemetry, alerts, run status and live
   shot-limiting / thermal state, shown in a pop-up window
 - **Reinitialize** — restart the sensor's data path from the app
+- **Network / IP** — view the sensor's network config, set a static IP
+  (with optional gateway), or revert it to DHCP / link-local
 - **Sensor configuration** — lidar mode (512x10 up to 2048x10), timestamp mode,
   operating mode (NORMAL/STANDBY), signal multiplier, UDP data profile,
   azimuth window (horizontal field of view), UDP ports, and a **Persist**

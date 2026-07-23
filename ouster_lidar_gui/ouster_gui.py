@@ -458,6 +458,8 @@ class OusterGuiApp:
         ttk.Button(row2, text="Reinitialize",
                    command=self.on_reinit).pack(side=tk.LEFT, expand=True,
                                                 fill=tk.X, padx=(3, 0))
+        ttk.Button(conn, text="Network / IP address...",
+                   command=self.on_network).pack(fill=tk.X, pady=(2, 0))
 
         # --- Configuration ----------------------------------------------------
         cfg = ttk.LabelFrame(left, text="  SENSOR CONFIGURATION  ", padding=10)
@@ -752,6 +754,121 @@ class OusterGuiApp:
 
         self.log(f"Reinitializing {host} ...")
         threading.Thread(target=work, daemon=True).start()
+
+    def on_network(self):
+        """Open a dialog to view / change the sensor's IP configuration."""
+        if not self._require_sdk():
+            return
+        if SensorHttp is None:
+            messagebox.showerror("Network",
+                                 "This ouster-sdk version does not expose "
+                                 "the sensor HTTP API.")
+            return
+        host = self._host()
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Network / IP  ·  {host}")
+        win.geometry("560x520")
+        win.configure(bg=Theme.BG)
+        win.transient(self.root)
+
+        cur = ttk.LabelFrame(win, text="  CURRENT NETWORK CONFIG  ", padding=8)
+        cur.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 6))
+        cfg_text = scrolledtext.ScrolledText(
+            cur, wrap=tk.WORD, font=("monospace", 9), height=10,
+            bg=Theme.PANEL, fg=Theme.FG, relief=tk.FLAT, borderwidth=0,
+            highlightthickness=0)
+        cfg_text.pack(fill=tk.BOTH, expand=True)
+        cfg_text.insert(tk.END, "Loading...")
+        cfg_text.configure(state=tk.DISABLED)
+
+        def refresh():
+            def work():
+                try:
+                    data = json.loads(SensorHttp.create(host).network())
+                    txt = json.dumps(data, indent=2)
+                except Exception as e:
+                    txt = f"Could not read network config:\n{e}"
+                def show():
+                    cfg_text.configure(state=tk.NORMAL)
+                    cfg_text.delete("1.0", tk.END)
+                    cfg_text.insert(tk.END, txt)
+                    cfg_text.configure(state=tk.DISABLED)
+                self.root.after(0, show)
+            threading.Thread(target=work, daemon=True).start()
+
+        refresh()
+
+        setf = ttk.LabelFrame(win, text="  SET STATIC IP  ", padding=8)
+        setf.pack(fill=tk.X, padx=10, pady=6)
+        ttk.Label(setf, text="IP / CIDR (e.g. 192.168.1.50/24):",
+                  style="Muted.TLabel").grid(row=0, column=0, columnspan=2,
+                                             sticky=tk.W)
+        ip_var = tk.StringVar()
+        ttk.Entry(setf, textvariable=ip_var, width=28).grid(
+            row=1, column=0, columnspan=2, sticky=tk.W, pady=2)
+        ttk.Label(setf, text="Gateway (optional):",
+                  style="Muted.TLabel").grid(row=2, column=0, columnspan=2,
+                                             sticky=tk.W)
+        gw_var = tk.StringVar()
+        ttk.Entry(setf, textvariable=gw_var, width=28).grid(
+            row=3, column=0, columnspan=2, sticky=tk.W, pady=2)
+
+        def run_action(desc, fn, confirm):
+            if not messagebox.askyesno("Change sensor IP", confirm,
+                                       parent=win):
+                return
+            if self.reader is not None:
+                self.on_stop_stream()
+
+            def work():
+                try:
+                    fn()
+                    self.log(desc + " - done. The sensor is applying the new "
+                             "network settings; reconnect with the new "
+                             "address.")
+                except Exception as e:
+                    self.log(f"ERROR ({desc}): {e}")
+                self.root.after(1500, refresh)
+            self.log(desc + " ...")
+            threading.Thread(target=work, daemon=True).start()
+
+        def apply_static():
+            ip = ip_var.get().strip()
+            gw = gw_var.get().strip()
+            if not ip:
+                messagebox.showerror("Set Static IP",
+                                     "Please enter an IP / CIDR.", parent=win)
+                return
+            run_action(
+                f"Setting static IP {ip}",
+                (lambda: SensorHttp.create(host).set_static_ip(ip, gw)) if gw
+                else (lambda: SensorHttp.create(host).set_static_ip(ip)),
+                f"Set the sensor's static IP to:\n  {ip}"
+                + (f"  (gateway {gw})" if gw else "")
+                + "\n\nWARNING: you will lose the current connection and must "
+                  "reconnect using the NEW address. Continue?")
+
+        ttk.Button(setf, text="Apply Static IP",
+                   command=apply_static).grid(row=4, column=0, sticky=tk.W,
+                                              pady=(6, 0))
+
+        def revert_dhcp():
+            run_action(
+                "Reverting to DHCP / link-local",
+                lambda: SensorHttp.create(host).delete_static_ip(),
+                "Remove the static IP and return the sensor to "
+                "DHCP / link-local addressing?\n\nWARNING: the sensor's "
+                "address will change and you must reconnect. Continue?")
+
+        btns = ttk.Frame(win, style="TFrame")
+        btns.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ttk.Button(btns, text="Revert to DHCP / Link-Local",
+                   command=revert_dhcp).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Refresh",
+                   command=refresh).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="Close",
+                   command=win.destroy).pack(side=tk.RIGHT)
 
     def on_get_status(self):
         """Query the sensor for status / telemetry and show it in a window."""

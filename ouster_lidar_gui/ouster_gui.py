@@ -116,6 +116,9 @@ def apply_theme(root: tk.Tk):
     style.configure("TLabel", background=Theme.PANEL, foreground=Theme.FG)
     style.configure("Muted.TLabel", background=Theme.PANEL,
                     foreground=Theme.MUTED)
+    style.configure("Hint.TLabel", background=Theme.PANEL,
+                    foreground=Theme.MUTED,
+                    font=(base_font.actual("family"), 8))
     # thin orange accent strip under the title bar, matching section titles
     style.configure("HeaderStrip.TFrame", background=Theme.ORANGE)
     style.configure("Info.TLabel", background=Theme.PANEL,
@@ -445,7 +448,9 @@ class OusterGuiApp:
         ttk.Label(conn, text="Hostname / IP:",
                   style="Muted.TLabel").pack(anchor=tk.W)
         self.host_var = tk.StringVar(value="os-122xxxxxxxxxx.local")
-        ttk.Entry(conn, textvariable=self.host_var).pack(fill=tk.X, pady=3)
+        ttk.Entry(conn, textvariable=self.host_var).pack(fill=tk.X, pady=(3, 0))
+        ttk.Label(conn, text="e.g. os-122xxxxxxxxxx.local  or  192.168.1.50",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(0, 3))
         row = ttk.Frame(conn, style="Panel.TFrame")
         row.pack(fill=tk.X, pady=3)
         ttk.Button(row, text="Get Sensor Info",

@@ -26,6 +26,9 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
 - **3D viewer** — launches Ouster's official point-cloud viewer with one click
 - **Record & playback** — save the stream to a PCAP file and replay
   PCAP / OSF recordings with no physical sensor attached
+- **Remembers your settings** — the hostname/IP and all configuration fields
+  are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
+  you never have to retype the sensor address
 - **Help** — this README opens inside the app via the Help button
 
 ## Installation

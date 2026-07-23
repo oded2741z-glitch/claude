@@ -167,6 +167,9 @@ TIMESTAMP_MODES = [
     "TIME_FROM_SYNC_PULSE_IN",
     "TIME_FROM_PTP_1588",
 ]
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"),
+                             ".ouster_lidar_gui.json")
+
 OPERATING_MODES = ["NORMAL", "STANDBY"]
 SIGNAL_MULTIPLIERS = ["1", "2", "3", "0.5", "0.25"]
 UNCHANGED = "(leave unchanged)"
@@ -380,6 +383,7 @@ class OusterGuiApp:
         self.viz_proc = None
         self.image_artists = {}
         self.last_frame_status = {}
+        self.settings = self._load_settings()
 
         self._build_ui()
         self._poll_queue()
@@ -609,6 +613,48 @@ class OusterGuiApp:
                              fg=Theme.MUTED, font=("TkDefaultFont", 11,
                                                    "bold italic"))
         watermark.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-10, y=-8)
+
+        # remember the form fields between sessions
+        self._persist_vars = {
+            "host": self.host_var,
+            "lidar_mode": self.mode_var,
+            "timestamp_mode": self.ts_var,
+            "operating_mode": self.opmode_var,
+            "signal_multiplier": self.sigmult_var,
+            "udp_profile": self.profile_var,
+            "az_start": self.az_start_var,
+            "az_end": self.az_end_var,
+            "lidar_port": self.lidar_port_var,
+            "imu_port": self.imu_port_var,
+            "persist": self.persist_var,
+        }
+        for key, var in self._persist_vars.items():
+            if key in self.settings:
+                try:
+                    var.set(self.settings[key])
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------ settings --
+    def _load_settings(self):
+        try:
+            with open(SETTINGS_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_settings(self):
+        data = {}
+        for key, var in getattr(self, "_persist_vars", {}).items():
+            try:
+                data[key] = var.get()
+            except Exception:
+                pass
+        try:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            self.log(f"Could not save settings: {e}")
 
     def _style_axis(self, ax, title):
         ax.set_facecolor(Theme.BG)
@@ -977,6 +1023,7 @@ class OusterGuiApp:
             except Exception as e:
                 self.log(f"ERROR: {e}")
 
+        self._save_settings()
         self.log("Applying configuration (sensor will reinitialize)...")
         threading.Thread(target=work, daemon=True).start()
 
@@ -986,6 +1033,8 @@ class OusterGuiApp:
         if self.reader is not None:
             self.log("Stream already running.")
             return
+        if not is_file:
+            self._save_settings()
         url = source_url or self._host()
         self.reader = ScanReader(url, self.frame_queue, self.log,
                                  is_file=is_file)
@@ -1152,6 +1201,7 @@ class OusterGuiApp:
 
     # ------------------------------------------------------------- shutdown --
     def on_close(self):
+        self._save_settings()
         self.on_stop_stream()
         for proc in (self.record_proc, self.viz_proc):
             if proc is not None:

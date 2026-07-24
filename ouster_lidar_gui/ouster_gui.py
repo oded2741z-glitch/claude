@@ -243,12 +243,13 @@ class ScanReader(threading.Thread):
     and pushes the latest destaggered field images into a queue."""
 
     def __init__(self, source_url: str, out_queue: queue.Queue, log_fn,
-                 is_file: bool = False):
+                 is_file: bool = False, loop: bool = False):
         super().__init__(daemon=True)
         self.source_url = source_url
         self.out_queue = out_queue
         self.log = log_fn
         self.is_file = is_file
+        self.loop = loop
         self._stop_event = threading.Event()
         self.metadata = None
 
@@ -256,14 +257,34 @@ class ScanReader(threading.Thread):
         self._stop_event.set()
 
     def run(self):
+        try:
+            first = True
+            while not self._stop_event.is_set():
+                self._play_once(first)
+                first = False
+                # loop only recorded files, and only if asked to
+                if not (self.is_file and self.loop):
+                    break
+                if self._stop_event.is_set():
+                    break
+                self.log("Looping recording...")
+            self.log("Stream ended.")
+        except Exception as e:
+            self.out_queue.put(("error", str(e)))
+        finally:
+            self.out_queue.put(("stopped", None))
+
+    def _play_once(self, announce=True):
         source = None
         try:
-            self.log(f"Opening source: {self.source_url} ...")
+            if announce:
+                self.log(f"Opening source: {self.source_url} ...")
             source = open_source(self.source_url, sensor_idx=0)
             self.metadata = source_metadata(source)
             if self.metadata is not None:
                 self.out_queue.put(("metadata", self.metadata))
-            self.log("Source opened, streaming...")
+            if announce:
+                self.log("Source opened, streaming...")
 
             for item in source:
                 if self._stop_event.is_set():
@@ -288,17 +309,12 @@ class ScanReader(threading.Thread):
                                         self._frame_status(frame)))
                 if self.is_file:
                     time.sleep(0.1)  # pace file playback at ~10 Hz
-
-            self.log("Stream ended.")
-        except Exception as e:
-            self.out_queue.put(("error", str(e)))
         finally:
             if source is not None:
                 try:
                     source.close()
                 except Exception:
                     pass
-            self.out_queue.put(("stopped", None))
 
     def _extract_images(self, frame):
         info = getattr(frame, "sensor_info", None) or self.metadata
@@ -553,8 +569,12 @@ class OusterGuiApp:
         self.record_btn = ttk.Button(rec, text="●  Start Recording",
                                      command=self.on_toggle_record)
         self.record_btn.pack(fill=tk.X, pady=3)
-        ttk.Button(rec, text="Open PCAP / OSF File...",
+        ttk.Button(rec, text="▶  Play Recording (PCAP / OSF)...",
                    command=self.on_open_file).pack(fill=tk.X, pady=3)
+        self.loop_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(rec, text="Loop playback (repeat)",
+                        variable=self.loop_var,
+                        style="TCheckbutton").pack(anchor=tk.W, pady=(2, 0))
 
         # --- Help ---------------------------------------------------------------
         ttk.Button(left, text="?  Help",
@@ -1041,8 +1061,9 @@ class OusterGuiApp:
         if not is_file:
             self._save_settings()
         url = source_url or self._host()
+        loop = is_file and self.loop_var.get()
         self.reader = ScanReader(url, self.frame_queue, self.log,
-                                 is_file=is_file)
+                                 is_file=is_file, loop=loop)
         self.reader.start()
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)

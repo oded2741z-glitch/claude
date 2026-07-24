@@ -24,8 +24,9 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
   Click any image (or use the **View** buttons) to enlarge a single field;
   click again to return to the 4-up grid
 - **3D viewer** — launches Ouster's official point-cloud viewer with one click
-- **Record & playback** — save the stream to a PCAP file and replay
-  PCAP / OSF recordings with no physical sensor attached
+- **Record & playback** — save the stream to a PCAP file and play back
+  PCAP / OSF recordings (**Play Recording** button) with no physical sensor
+  attached; tick **Loop playback** to repeat the recording continuously
 - **Remembers your settings** — the hostname/IP and all configuration fields
   are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
   you never have to retype the sensor address
@@ -103,8 +104,9 @@ python ouster_gui.py
    image to enlarge just that field; click again to go back to all four.
 4. Click **Open 3D Viewer** for the 3D point cloud (this stops the 2D stream
    first, then opens Ouster's viewer in a separate window).
-5. **Start Recording** captures to a PCAP file; **Open PCAP / OSF File**
-   replays a recording — works with no sensor connected.
+5. **Start Recording** captures to a PCAP file; **Play Recording (PCAP / OSF)**
+   plays a recording back — works with no sensor connected. Tick **Loop
+   playback** to have it repeat until you press **Stop Stream**.
 
 > Note: **Apply Configuration** with **Persist** off changes the sensor only
 > until its next power cycle; with **Persist** on, the settings are saved on

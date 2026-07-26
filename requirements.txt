@@ -1,0 +1,10 @@
+# ליבה — נדרש לסימולציה ולזיהוי
+opencv-contrib-python>=4.8    # contrib נחוץ ל-TrackerCSRT
+numpy>=1.24
+PyYAML>=6.0
+
+# רחפן MAVLink (מסלול ב') — התקן רק אם צריך
+# pymavlink>=2.4
+
+# רחפן Tello (מסלול א') — התקן רק אם צריך
+# djitellopy>=2.5

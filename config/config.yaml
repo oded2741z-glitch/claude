@@ -1,0 +1,49 @@
+# הגדרות מערכת PiFollow. כוונן בזהירות והתחל תמיד ממהירויות נמוכות.
+
+vision:
+  engine: hog              # hog | mobilenet
+  model_dir: models        # תיקיית קבצי MobileNet (רק אם engine=mobilenet)
+  conf_threshold: 0.5
+  redetect_interval: 15    # כל כמה פריימים להריץ זיהוי מלא (בין לבין: tracker)
+  frame_width: 320         # רזולוציית עבודה (קטן = מהיר יותר על ה-Pi)
+
+control:
+  target_bbox_height: 0.55 # גובה יעד של האדם בפריים (מרחק). גדול=קרוב יותר
+  target_cy: 0.5           # מיקום אנכי יעד של מרכז האדם
+  deadzone: 0.05           # אזור מת סביב האפס — מונע רעד על שגיאות קטנות
+
+  # בקרי PID. output_limit מגביל את המהירות המקסימלית (בטיחות!).
+  yaw_pid:
+    kp: 1.2
+    ki: 0.0
+    kd: 0.15
+    output_limit: [-0.6, 0.6]     # rad/s
+    integral_limit: [-0.5, 0.5]
+
+  forward_pid:
+    kp: 1.5
+    ki: 0.0
+    kd: 0.2
+    output_limit: [-0.8, 0.8]     # m/s  (מהירות נמוכה בכוונה)
+    integral_limit: [-0.5, 0.5]
+
+  vertical_pid:
+    kp: 1.0
+    ki: 0.0
+    kd: 0.1
+    output_limit: [-0.5, 0.5]     # m/s
+    integral_limit: [-0.5, 0.5]
+
+safety:
+  lost_timeout_s: 2.0      # אחרי כמה שניות בלי זיהוי → hover ואיפוס
+  max_runtime_s: 0         # 0 = ללא הגבלה; אחרת עצירה אוטומטית אחרי X שניות
+  takeoff_altitude_m: 2.0
+
+drone:
+  # mavlink בלבד:
+  connection_string: /dev/serial0
+  baud: 921600
+  # tello בלבד:
+  tello_speed_scale: 60.0
+  tello_yaw_scale: 60.0
+  tello_vertical_scale: 60.0

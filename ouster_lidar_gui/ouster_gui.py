@@ -34,6 +34,8 @@ import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
+__version__ = "1.0.0"
+
 import numpy as np
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="ouster")
@@ -407,7 +409,8 @@ def enable_dark_title_bar(root: tk.Tk):
 class OusterGuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("Ouster Digital Lidar Control  ·  Powered by Python")
+        root.title(f"Ouster Digital Lidar Control  v{__version__}  ·  "
+                   "Powered by Python")
         root.geometry("1280x860")
         apply_theme(root)
         enable_dark_title_bar(root)
@@ -423,6 +426,7 @@ class OusterGuiApp:
         self._build_ui()
         self._poll_queue()
 
+        self.log(f"Ouster Digital Lidar Control v{__version__} ready.")
         if not HAVE_OUSTER:
             self.log("WARNING: ouster-sdk is not installed "
                      f"({OUSTER_IMPORT_ERROR}).")

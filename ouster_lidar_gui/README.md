@@ -27,6 +27,9 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
 - **Record & playback** — save the stream to a PCAP file and play back
   PCAP / OSF recordings (**Play Recording** button) with no physical sensor
   attached; tick **Loop playback** to repeat the recording continuously
+- **Export to MCAP (Foxglove)** — convert a PCAP / OSF recording into an
+  `.mcap` file of `foxglove.PointCloud` messages that opens directly in
+  Foxglove's 3D panel (colored by signal intensity)
 - **Remembers your settings** — the hostname/IP and all configuration fields
   are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
   you never have to retype the sensor address
@@ -107,6 +110,10 @@ python ouster_gui.py
 5. **Start Recording** captures to a PCAP file; **Play Recording (PCAP / OSF)**
    plays a recording back — works with no sensor connected. Tick **Loop
    playback** to have it repeat until you press **Stop Stream**.
+6. **Export to MCAP (Foxglove)** converts a PCAP / OSF recording to an
+   `.mcap` file. Open that file in [Foxglove](https://foxglove.dev/), add a
+   **3D** panel, and the `/ouster/points` point cloud appears (color it by
+   the `intensity` field).
 
 > Note: **Apply Configuration** with **Persist** off changes the sensor only
 > until its next power cycle; with **Persist** on, the settings are saved on

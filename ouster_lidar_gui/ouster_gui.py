@@ -65,6 +65,16 @@ except Exception as _e:  # SDK missing entirely
     get_config = set_config = None
     SensorHttp = None
 
+# --- MCAP export (optional: only needed for "Export to MCAP") ----------------
+try:
+    from mcap_protobuf.writer import Writer as McapWriter
+    from foxglove_schemas_protobuf.PointCloud_pb2 import PointCloud
+    from foxglove_schemas_protobuf.PackedElementField_pb2 import (
+        PackedElementField)
+    HAVE_MCAP = True
+except Exception:
+    HAVE_MCAP = False
+
 # --- matplotlib embedded in Tk ------------------------------------------------
 import matplotlib
 matplotlib.use("TkAgg")
@@ -575,6 +585,8 @@ class OusterGuiApp:
         ttk.Checkbutton(rec, text="Loop playback (repeat)",
                         variable=self.loop_var,
                         style="TCheckbutton").pack(anchor=tk.W, pady=(2, 0))
+        ttk.Button(rec, text="Export to MCAP (Foxglove)...",
+                   command=self.on_export_mcap).pack(fill=tk.X, pady=(6, 0))
 
         # --- Help ---------------------------------------------------------------
         ttk.Button(left, text="?  Help",
@@ -1085,6 +1097,86 @@ class OusterGuiApp:
         if path:
             self.on_stop_stream()
             self.on_start_stream(source_url=path, is_file=True)
+
+    def on_export_mcap(self):
+        """Convert a PCAP/OSF recording to an MCAP file with foxglove
+        PointCloud messages, viewable directly in Foxglove."""
+        if not self._require_sdk():
+            return
+        if not HAVE_MCAP:
+            messagebox.showerror(
+                "Export to MCAP",
+                "MCAP export needs extra packages. Install them with:\n\n"
+                "    pip install mcap mcap-protobuf-support "
+                "foxglove-schemas-protobuf protobuf")
+            return
+        in_path = filedialog.askopenfilename(
+            title="Recording to convert (PCAP / OSF)",
+            filetypes=[("Lidar recordings", "*.pcap *.osf"),
+                       ("All files", "*")])
+        if not in_path:
+            return
+        out_path = filedialog.asksaveasfilename(
+            title="Save MCAP as",
+            defaultextension=".mcap",
+            initialfile=os.path.splitext(os.path.basename(in_path))[0]
+            + ".mcap",
+            filetypes=[("MCAP files", "*.mcap")])
+        if not out_path:
+            return
+        threading.Thread(target=self._export_mcap_worker,
+                         args=(in_path, out_path), daemon=True).start()
+
+    def _export_mcap_worker(self, in_path, out_path):
+        try:
+            self.log(f"Exporting {os.path.basename(in_path)} to MCAP ...")
+            src = open_source(in_path, sensor_idx=0)
+            info = source_metadata(src)
+            xyzlut = ouster_core.XYZLut(info, use_extrinsics=False)
+            F32 = PackedElementField.FLOAT32
+            fields = [PackedElementField(name="x", offset=0, type=F32),
+                      PackedElementField(name="y", offset=4, type=F32),
+                      PackedElementField(name="z", offset=8, type=F32),
+                      PackedElementField(name="intensity", offset=12,
+                                         type=F32)]
+            n = 0
+            with open(out_path, "wb") as fh, McapWriter(fh) as writer:
+                for item in src:
+                    for frame in frames_from_item(item):
+                        rng = frame.field(ouster_core.ChanField.RANGE)
+                        xyz = xyzlut(rng).astype(np.float32).reshape(-1, 3)
+                        try:
+                            inten = frame.field(
+                                ouster_core.ChanField.SIGNAL)
+                        except Exception:
+                            inten = rng
+                        inten = inten.astype(np.float32).reshape(-1, 1)
+                        mask = (rng.reshape(-1) > 0) & \
+                            np.isfinite(xyz).all(1)
+                        pts = np.hstack([xyz, inten])[mask]
+                        ts = int(n * 1e8)  # ~10 Hz fallback timeline
+                        msg = PointCloud(frame_id="ouster", point_stride=16,
+                                         fields=fields, data=pts.tobytes())
+                        msg.timestamp.FromNanoseconds(ts)
+                        writer.write_message(topic="/ouster/points",
+                                             message=msg, log_time=ts,
+                                             publish_time=ts)
+                        n += 1
+                        if n % 50 == 0:
+                            self.log(f"  ...{n} frames written")
+            try:
+                src.close()
+            except Exception:
+                pass
+            self.log(f"MCAP export complete: {n} frames -> {out_path}")
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Export to MCAP",
+                f"Done. Wrote {n} point-cloud frames to:\n{out_path}\n\n"
+                "Open it in Foxglove and add a 3D panel."))
+        except Exception as e:
+            self.log(f"ERROR exporting MCAP: {e}")
+            self.root.after(0, lambda: messagebox.showerror(
+                "Export to MCAP", f"Export failed:\n{e}"))
 
     def on_help(self):
         """Open README.md in a scrollable window inside the app."""

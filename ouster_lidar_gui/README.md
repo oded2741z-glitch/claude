@@ -28,8 +28,9 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
   PCAP / OSF recordings (**Play Recording** button) with no physical sensor
   attached; tick **Loop playback** to repeat the recording continuously
 - **Export to MCAP (Foxglove)** — convert a PCAP / OSF recording into an
-  `.mcap` file of `foxglove.PointCloud` messages that opens directly in
-  Foxglove's 3D panel (colored by signal intensity)
+  `.mcap` file that opens directly in Foxglove: point clouds on
+  `/ouster/points` (`foxglove.PointCloud`, colored by signal intensity) and,
+  for PCAP inputs, the sensor's IMU (accel + gyro) on `/ouster/imu`
 - **Remembers your settings** — the hostname/IP and all configuration fields
   are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
   you never have to retype the sensor address
@@ -111,9 +112,11 @@ python ouster_gui.py
    plays a recording back — works with no sensor connected. Tick **Loop
    playback** to have it repeat until you press **Stop Stream**.
 6. **Export to MCAP (Foxglove)** converts a PCAP / OSF recording to an
-   `.mcap` file. Open that file in [Foxglove](https://foxglove.dev/), add a
-   **3D** panel, and the `/ouster/points` point cloud appears (color it by
-   the `intensity` field).
+   `.mcap` file. Open that file in [Foxglove](https://foxglove.dev/): add a
+   **3D** panel for the `/ouster/points` point cloud (color it by the
+   `intensity` field), and — when the input is a PCAP — add a **Plot** panel
+   for `/ouster/imu` to graph the sensor's acceleration and angular velocity.
+   (IMU is only present in PCAP recordings, not OSF.)
 
 > Note: **Apply Configuration** with **Persist** off changes the sensor only
 > until its next power cycle; with **Persist** on, the settings are saved on

@@ -41,6 +41,10 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="ouster")
 # --- ouster-sdk imports (support SDK >= 1.0 and older releases) --------------
 try:
     from ouster.sdk import open_source
+    try:
+        from ouster.sdk import open_packet_source
+    except Exception:
+        open_packet_source = None
     try:  # ouster-sdk >= 1.0
         from ouster.sdk import core as ouster_core
         from ouster.sdk.sensor import get_config, set_config
@@ -62,12 +66,14 @@ except Exception as _e:  # SDK missing entirely
     OUSTER_IMPORT_ERROR = _e
     ouster_core = None
     open_source = None
+    open_packet_source = None
     get_config = set_config = None
     SensorHttp = None
 
 # --- MCAP export (optional: only needed for "Export to MCAP") ----------------
 try:
-    from mcap_protobuf.writer import Writer as McapWriter
+    from mcap.writer import Writer as McapWriter
+    from mcap_protobuf.schema import build_file_descriptor_set
     from foxglove_schemas_protobuf.PointCloud_pb2 import PointCloud
     from foxglove_schemas_protobuf.PackedElementField_pb2 import (
         PackedElementField)
@@ -1127,6 +1133,17 @@ class OusterGuiApp:
         threading.Thread(target=self._export_mcap_worker,
                          args=(in_path, out_path), daemon=True).start()
 
+    _IMU_JSON_SCHEMA = json.dumps({
+        "type": "object",
+        "properties": {
+            "timestamp": {"type": "number"},
+            "linear_acceleration": {"type": "object", "properties": {
+                "x": {"type": "number"}, "y": {"type": "number"},
+                "z": {"type": "number"}}},
+            "angular_velocity": {"type": "object", "properties": {
+                "x": {"type": "number"}, "y": {"type": "number"},
+                "z": {"type": "number"}}}}}).encode()
+
     def _export_mcap_worker(self, in_path, out_path):
         try:
             self.log(f"Exporting {os.path.basename(in_path)} to MCAP ...")
@@ -1140,7 +1157,19 @@ class OusterGuiApp:
                       PackedElementField(name="intensity", offset=12,
                                          type=F32)]
             n = 0
-            with open(out_path, "wb") as fh, McapWriter(fh) as writer:
+            with open(out_path, "wb") as fh:
+                writer = McapWriter(fh)
+                writer.start()
+                # point-cloud channel (protobuf foxglove.PointCloud)
+                fds = build_file_descriptor_set(
+                    PointCloud).SerializeToString()
+                pc_schema = writer.register_schema(
+                    name="foxglove.PointCloud", encoding="protobuf",
+                    data=fds)
+                pc_chan = writer.register_channel(
+                    topic="/ouster/points", message_encoding="protobuf",
+                    schema_id=pc_schema)
+
                 for item in src:
                     for frame in frames_from_item(item):
                         rng = frame.field(ouster_core.ChanField.RANGE)
@@ -1158,25 +1187,85 @@ class OusterGuiApp:
                         msg = PointCloud(frame_id="ouster", point_stride=16,
                                          fields=fields, data=pts.tobytes())
                         msg.timestamp.FromNanoseconds(ts)
-                        writer.write_message(topic="/ouster/points",
-                                             message=msg, log_time=ts,
-                                             publish_time=ts)
+                        writer.add_message(
+                            channel_id=pc_chan, log_time=ts,
+                            data=msg.SerializeToString(),
+                            publish_time=ts, sequence=n)
                         n += 1
                         if n % 50 == 0:
-                            self.log(f"  ...{n} frames written")
-            try:
-                src.close()
-            except Exception:
-                pass
-            self.log(f"MCAP export complete: {n} frames -> {out_path}")
+                            self.log(f"  ...{n} point-cloud frames written")
+                try:
+                    src.close()
+                except Exception:
+                    pass
+
+                n_imu = self._export_imu(writer, in_path)
+                writer.finish()
+
+            note = (f"{n} point-cloud frames"
+                    + (f" and {n_imu} IMU samples" if n_imu else ""))
+            self.log(f"MCAP export complete: {note} -> {out_path}")
             self.root.after(0, lambda: messagebox.showinfo(
                 "Export to MCAP",
-                f"Done. Wrote {n} point-cloud frames to:\n{out_path}\n\n"
-                "Open it in Foxglove and add a 3D panel."))
+                f"Done. Wrote {note} to:\n{out_path}\n\n"
+                "Open it in Foxglove: add a 3D panel for /ouster/points"
+                + (", and a Plot panel for /ouster/imu." if n_imu else ".")))
         except Exception as e:
             self.log(f"ERROR exporting MCAP: {e}")
             self.root.after(0, lambda: messagebox.showerror(
                 "Export to MCAP", f"Export failed:\n{e}"))
+
+    def _export_imu(self, writer, in_path):
+        """Append the sensor's IMU samples (accel + gyro) as JSON messages.
+
+        IMU packets are only available from PCAP sources; for OSF we simply
+        skip IMU and keep the point-cloud export.
+        """
+        if open_packet_source is None:
+            return 0
+        try:
+            packets = open_packet_source(in_path)
+        except Exception:
+            self.log("No IMU packets in this source (skipping IMU).")
+            return 0
+        imu_schema = writer.register_schema(
+            name="ouster.Imu", encoding="jsonschema",
+            data=self._IMU_JSON_SCHEMA)
+        imu_chan = writer.register_channel(
+            topic="/ouster/imu", message_encoding="json",
+            schema_id=imu_schema)
+        n = 0
+        try:
+            for item in packets:
+                pkt = item[1] if isinstance(item, (list, tuple)) else item
+                if not isinstance(pkt, ouster_core.ImuPacket):
+                    continue
+                try:
+                    acc = [float(v) for v in pkt.accel]
+                    gyr = [float(v) for v in pkt.gyro]
+                    ts = int(getattr(pkt, "sys_ts", 0)
+                             or getattr(pkt, "timestamp", 0) or n * 10**7)
+                except Exception:
+                    continue
+                m = {"timestamp": ts / 1e9,
+                     "linear_acceleration": {"x": acc[0], "y": acc[1],
+                                             "z": acc[2]},
+                     "angular_velocity": {"x": gyr[0], "y": gyr[1],
+                                          "z": gyr[2]}}
+                writer.add_message(channel_id=imu_chan, log_time=ts,
+                                   data=json.dumps(m).encode(),
+                                   publish_time=ts, sequence=n)
+                n += 1
+        except Exception as e:
+            self.log(f"IMU export stopped early: {e}")
+        finally:
+            try:
+                packets.close()
+            except Exception:
+                pass
+        if n:
+            self.log(f"  ...{n} IMU samples written")
+        return n
 
     def on_help(self):
         """Open README.md in a scrollable window inside the app."""

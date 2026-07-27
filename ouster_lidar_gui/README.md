@@ -35,6 +35,11 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
   `sensor_msgs/PointCloud2` on a configurable topic (default
   `/ouster/points`) while streaming from the sensor **or** while playing
   back a recording, so RViz2 / any ROS 2 node can consume it in real time
+- **Cameras** — open any number of USB / built-in cameras (by device
+  index) or IP cameras (RTSP / HTTP URL), each in its own floating window
+  with live view, resolution + FPS readout, **Snapshot** to PNG/JPEG, and
+  an optional per-camera **Publish to ROS 2** toggle
+  (`sensor_msgs/Image` on `/cameraN/image_raw`)
 - **Remembers your settings** — the hostname/IP and all configuration fields
   are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
   you never have to retype the sensor address
@@ -169,6 +174,31 @@ a Windows ROS 2 installation; the more common setup is Ubuntu.
 > full live ROS driver (IMU, TF, multiple topics) see Ouster's official
 > [ouster-ros](https://github.com/ouster-lidar/ouster-ros) package.
 
+### Cameras
+
+The **CAMERAS** panel opens video cameras alongside the lidar — useful for
+visually checking what the sensor is looking at, or for lidar + camera
+setups. Camera support needs OpenCV (`pip install opencv-python`, already
+in `requirements.txt`).
+
+1. Enter a camera source:
+   - `0`, `1`, ... — USB / built-in cameras (device index; `0` is usually
+     the first camera)
+   - `rtsp://user:pass@192.168.1.60:554/stream` — an IP camera's RTSP feed
+   - `http://...` — an HTTP/MJPEG stream
+2. Click **Open Camera**. Each camera opens in its own floating window
+   with the live view, current resolution and measured FPS. You can open
+   several cameras at once (click the button once per source).
+3. **Snapshot...** saves the current frame as PNG or JPEG.
+4. Tick **Publish to ROS 2** in a camera window to publish its frames as
+   `sensor_msgs/Image` (`bgr8`) on `/cameraN/image_raw` — the same ROS
+   publisher as the point cloud, so start publishing in the
+   **ROS 2 TOPICS** panel first (or tick the box and start it later).
+   View it in RViz2 with an **Image** display, or run
+   `ros2 run rqt_image_view rqt_image_view`.
+
+The last camera source is remembered between sessions.
+
 ### No sensor? Try a sample recording
 
 Ouster publishes sample recordings on its website
@@ -196,3 +226,5 @@ ouster_lidar_gui/
 | `.local` name does not resolve | `sudo apt-get install avahi-daemon` or use the IP address directly |
 | `rclpy (ROS 2) is not available` | Install ROS 2, `source /opt/ros/<distro>/setup.bash`, and recreate the venv with `--system-site-packages` (see "ROS 2 topics") |
 | ROS topic exists but RViz2 shows nothing | Set RViz2's **Fixed Frame** to the app's Frame ID (default `ouster`) and check both ends use the same `ROS_DOMAIN_ID` |
+| `Camera support needs OpenCV` | `pip install opencv-python` inside the venv |
+| Camera won't open | Wrong index (try `0`, `1`, ...), device in use by another app, or on Linux missing permissions (`sudo usermod -aG video $USER`, then log out/in). For IP cameras verify the RTSP URL in VLC first |

@@ -16,6 +16,8 @@ video) and lets you:
     (so the app is fully usable without a physical sensor)
   * Publish live ROS 2 topics (sensor_msgs/PointCloud2) while streaming
     or playing back, for RViz2 / any ROS 2 node (requires ROS 2 + rclpy)
+  * Open USB / IP cameras (OpenCV) in floating live-view windows, take
+    snapshots, and optionally publish frames as ROS 2 sensor_msgs/Image
 
 Tested with ouster-sdk 1.0.0; also compatible with the older
 `ouster.sdk.client` API (< 1.0).
@@ -36,7 +38,7 @@ import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import numpy as np
 
@@ -90,11 +92,22 @@ try:
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import PointCloud2, PointField
+    from sensor_msgs.msg import Image as RosImage
     HAVE_ROS = True
     ROS_IMPORT_ERROR = None
 except Exception as _e:
     HAVE_ROS = False
     ROS_IMPORT_ERROR = _e
+
+# --- OpenCV (optional: only needed for the CAMERAS panel) ---------------------
+try:
+    import cv2
+    HAVE_CV2 = True
+    CV2_IMPORT_ERROR = None
+except Exception as _e:
+    cv2 = None
+    HAVE_CV2 = False
+    CV2_IMPORT_ERROR = _e
 
 # --- matplotlib embedded in Tk ------------------------------------------------
 import matplotlib
@@ -270,7 +283,8 @@ def percentile_scale(img: np.ndarray, lo=1.0, hi=99.0) -> np.ndarray:
 
 
 class RosPublisher:
-    """Publishes lidar frames as ROS 2 sensor_msgs/PointCloud2 messages.
+    """Publishes lidar frames as ROS 2 sensor_msgs/PointCloud2 messages
+    (plus camera frames as sensor_msgs/Image, one publisher per topic).
 
     Runs on its own rclpy context so it can be started and stopped freely
     while the GUI lives on. Publishing needs no spinning, so no executor
@@ -281,6 +295,8 @@ class RosPublisher:
         self.topic = topic
         self.frame_id = frame_id
         self.n_published = 0
+        self.n_images = 0
+        self._img_pubs = {}
         self._lock = threading.Lock()
         self._closed = False
         self._context = rclpy.Context()
@@ -320,6 +336,36 @@ class RosPublisher:
                 msg.header.stamp = self._node.get_clock().now().to_msg()
             self._pub.publish(msg)
             self.n_published += 1
+
+    def publish_image(self, topic: str, frame_id: str, img: np.ndarray):
+        """Publish a camera frame (OpenCV BGR / BGRA / grayscale ndarray)."""
+        img = np.ascontiguousarray(img)
+        if img.dtype != np.uint8:
+            img = img.astype(np.uint8)
+        h, w = img.shape[:2]
+        ch = 1 if img.ndim == 2 else int(img.shape[2])
+        encoding = {1: "mono8", 3: "bgr8", 4: "bgra8"}.get(ch)
+        if encoding is None:
+            return
+        msg = RosImage()
+        msg.header.frame_id = frame_id
+        msg.height = int(h)
+        msg.width = int(w)
+        msg.encoding = encoding
+        msg.is_bigendian = 0
+        msg.step = int(w) * ch
+        msg.data = img.tobytes()
+        with self._lock:
+            if self._closed:
+                return
+            pub = self._img_pubs.get(topic)
+            if pub is None:
+                pub = self._node.create_publisher(
+                    RosImage, topic, qos_profile_sensor_data)
+                self._img_pubs[topic] = pub
+            msg.header.stamp = self._node.get_clock().now().to_msg()
+            pub.publish(msg)
+            self.n_images += 1
 
     def close(self) -> int:
         """Tear down the node/context; returns how many clouds were sent."""
@@ -488,6 +534,225 @@ class ScanReader(threading.Thread):
         return status
 
 
+class CameraReader(threading.Thread):
+    """Background thread that grabs frames from a local (USB) or IP camera
+    via OpenCV and hands the freshest one to the GUI - and to ROS 2, when
+    image publishing is enabled for this camera."""
+
+    def __init__(self, source, out_queue: queue.Queue, log_fn,
+                 ros_pub_fn=None, ros_topic="", frame_id="camera"):
+        super().__init__(daemon=True)
+        self.source = source            # int device index or URL string
+        self.out_queue = out_queue
+        self.log = log_fn
+        self.ros_pub_fn = ros_pub_fn    # callable -> RosPublisher or None
+        self.ros_topic = ros_topic
+        self.frame_id = frame_id
+        self.ros_enabled = False        # toggled from the GUI checkbox
+        self.n_frames = 0
+        self._ros_err_logged = False
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        cap = None
+        try:
+            self.log(f"Opening camera '{self.source}' ...")
+            cap = cv2.VideoCapture(self.source)
+            if not cap.isOpened():
+                raise RuntimeError(
+                    f"could not open camera '{self.source}' (device busy, "
+                    "wrong index, or unreachable URL)")
+            self.log(f"Camera '{self.source}' opened.")
+            misses = 0
+            while not self._stop_event.is_set():
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    misses += 1
+                    if misses > 25:
+                        raise RuntimeError("camera stopped delivering "
+                                           "frames")
+                    time.sleep(0.1)
+                    continue
+                misses = 0
+                self.n_frames += 1
+                self._publish_ros(frame)
+                # keep only the freshest frame for the GUI (frames are the
+                # only event this loop emits, so draining drops nothing else)
+                try:
+                    while True:
+                        self.out_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                self.out_queue.put(("frame", frame))
+        except Exception as e:
+            self.out_queue.put(("error", str(e)))
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            self.out_queue.put(("stopped", None))
+
+    def _publish_ros(self, frame):
+        pub = self.ros_pub_fn() if self.ros_pub_fn is not None else None
+        if pub is None or not self.ros_enabled:
+            return
+        try:
+            pub.publish_image(self.ros_topic, self.frame_id, frame)
+            self._ros_err_logged = False
+        except Exception as e:
+            if not self._ros_err_logged:
+                self._ros_err_logged = True
+                self.log(f"ROS image publish error: {e}")
+
+
+class CameraWindow:
+    """Floating window with one camera's live view, a snapshot button and
+    an optional ROS 2 image-publishing toggle."""
+
+    counter = 0     # numbers cameras across the whole session
+
+    def __init__(self, app, source_text: str):
+        CameraWindow.counter += 1
+        self.app = app
+        self.n = CameraWindow.counter
+        src = source_text.strip()
+        source = int(src) if src.isdigit() else src
+        self.ros_topic = f"/camera{self.n}/image_raw"
+        self.frame_q = queue.Queue(maxsize=2)
+        self.last_bgr = None
+        self._photo = None              # PhotoImage ref (else Tk drops it)
+        self._fps_t0 = time.time()
+        self._fps_n0 = 0
+        self._closed = False
+
+        self.win = tk.Toplevel(app.root)
+        self.win.title(f"Camera {self.n}  ·  {src}")
+        self.win.geometry("660x560")
+        self.win.configure(bg=Theme.BG)
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+        self.video = tk.Label(self.win, bg="black")
+        self.video.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+
+        bar = ttk.Frame(self.win, style="Panel.TFrame", padding=6)
+        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        self.status_var = tk.StringVar(value="Connecting ...")
+        ttk.Label(bar, textvariable=self.status_var,
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.ros_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text=f"Publish to ROS 2 ({self.ros_topic})",
+                        variable=self.ros_var, command=self.on_ros_toggle,
+                        style="TCheckbutton").pack(side=tk.LEFT, padx=10)
+        ttk.Button(bar, text="Close",
+                   command=self.close).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Snapshot...",
+                   command=self.on_snapshot).pack(side=tk.RIGHT, padx=6)
+
+        self.reader = CameraReader(
+            source, self.frame_q, app.log,
+            ros_pub_fn=lambda: app.ros_pub,
+            ros_topic=self.ros_topic, frame_id=f"camera{self.n}")
+        self.reader.start()
+        self._poll()
+
+    def on_ros_toggle(self):
+        on = self.ros_var.get()
+        self.reader.ros_enabled = on
+        if not on:
+            self.app.log(f"Camera {self.n}: ROS publishing off.")
+        elif self.app.ros_pub is None:
+            self.app.log(f"Camera {self.n}: will publish on "
+                         f"{self.ros_topic} once ROS publishing is started "
+                         "(ROS 2 TOPICS panel).")
+        else:
+            self.app.log(f"Camera {self.n}: publishing sensor_msgs/Image "
+                         f"on {self.ros_topic}.")
+
+    def on_snapshot(self):
+        if self.last_bgr is None:
+            messagebox.showinfo("Snapshot", "No frame received yet.",
+                                parent=self.win)
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save snapshot as", defaultextension=".png",
+            initialfile=(f"camera{self.n}_"
+                         f"{time.strftime('%Y%m%d_%H%M%S')}.png"),
+            filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg")],
+            parent=self.win)
+        if not path:
+            return
+        try:
+            cv2.imwrite(path, self.last_bgr)
+            self.app.log(f"Snapshot saved -> {path}")
+        except Exception as e:
+            messagebox.showerror("Snapshot",
+                                 f"Could not save the snapshot:\n{e}",
+                                 parent=self.win)
+
+    def _poll(self):
+        if self._closed:
+            return
+        frame = None
+        try:
+            while True:
+                kind, payload = self.frame_q.get_nowait()
+                if kind == "frame":
+                    frame = payload
+                elif kind == "error":
+                    self.app.log(f"CAMERA {self.n} ERROR: {payload}")
+                    self.status_var.set(f"Error: {payload}")
+                # "stopped": keep the window open so the error stays visible
+        except queue.Empty:
+            pass
+        if frame is not None:
+            self.last_bgr = frame
+            self._show(frame)
+        self.win.after(40, self._poll)      # ~25 fps display refresh
+
+    def _show(self, bgr):
+        h, w = bgr.shape[:2]
+        # fit the frame into the video label, keeping the aspect ratio
+        tw = max(self.video.winfo_width(), 64)
+        th = max(self.video.winfo_height(), 64)
+        scale = min(tw / w, th / h, 1.0)
+        if scale < 1.0:
+            bgr = cv2.resize(bgr, (max(int(w * scale), 1),
+                                   max(int(h * scale), 1)),
+                             interpolation=cv2.INTER_AREA)
+        if bgr.ndim == 2:
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
+        else:
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        ph, pw = rgb.shape[:2]
+        # raw PPM (P6) renders natively in tk.PhotoImage - no Pillow needed
+        ppm = b"P6\n%d %d\n255\n" % (pw, ph) + rgb.tobytes()
+        self._photo = tk.PhotoImage(data=ppm)
+        self.video.configure(image=self._photo)
+        now = time.time()
+        if now - self._fps_t0 >= 1.0:
+            n = self.reader.n_frames
+            fps = (n - self._fps_n0) / (now - self._fps_t0)
+            self._fps_t0, self._fps_n0 = now, n
+            self.status_var.set(f"{w}x{h}  ·  {fps:.1f} fps")
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self.reader.stop()
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        self.app.camera_windows = [c for c in self.app.camera_windows
+                                   if c is not self]
+
+
 def enable_dark_title_bar(root: tk.Tk):
     """Ask Windows to draw this window's title bar dark (no-op elsewhere;
     on Linux the title bar color follows the desktop theme).
@@ -537,6 +802,7 @@ class OusterGuiApp:
         self.reader = None
         self.frame_queue = queue.Queue(maxsize=4)
         self.ros_pub = None
+        self.camera_windows = []
         self.record_proc = None
         self.viz_proc = None
         self.image_artists = {}
@@ -739,6 +1005,23 @@ class OusterGuiApp:
                             "(requires ROS 2 / rclpy).",
                   style="Hint.TLabel").pack(anchor=tk.W, pady=(3, 0))
 
+        # --- Cameras ------------------------------------------------------------
+        cam = ttk.LabelFrame(left, text="  CAMERAS  ", padding=10)
+        cam.pack(fill=tk.X, pady=4)
+        ttk.Label(cam, text="Device index or URL:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cam_src_var = tk.StringVar(value="0")
+        ttk.Entry(cam, textvariable=self.cam_src_var).pack(fill=tk.X, pady=3)
+        ttk.Label(cam, text="0, 1, ... = USB / built-in camera   ·   "
+                            "rtsp:// or http:// = IP camera",
+                  style="Hint.TLabel").pack(anchor=tk.W)
+        ttk.Button(cam, text="🎥  Open Camera",
+                   command=self.on_open_camera).pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(cam, text="Each camera opens in its own window with live "
+                            "view,\nsnapshots and optional ROS 2 image "
+                            "publishing.",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(3, 0))
+
         # --- Help ---------------------------------------------------------------
         ttk.Button(left, text="?  Help",
                    command=self.on_help).pack(fill=tk.X, pady=4)
@@ -817,6 +1100,7 @@ class OusterGuiApp:
             "persist": self.persist_var,
             "ros_topic": self.ros_topic_var,
             "ros_frame": self.ros_frame_var,
+            "camera_src": self.cam_src_var,
         }
         for key, var in self._persist_vars.items():
             if key in self.settings:
@@ -1453,9 +1737,29 @@ class OusterGuiApp:
                          "publish frames.")
         else:
             pub, self.ros_pub = self.ros_pub, None
-            n = pub.close()
+            pub.close()
             self.ros_btn.configure(text="⇪  Start ROS Publishing")
-            self.log(f"ROS 2 publishing OFF ({n} point clouds published).")
+            self.log(f"ROS 2 publishing OFF ({pub.n_published} point "
+                     f"clouds, {pub.n_images} camera images published).")
+
+    def on_open_camera(self):
+        """Open a camera (USB index or IP-camera URL) in its own window."""
+        if not HAVE_CV2:
+            messagebox.showerror(
+                "Cameras",
+                "Camera support needs OpenCV. Install it with:\n\n"
+                "    pip install opencv-python\n\n"
+                f"Details: {CV2_IMPORT_ERROR}")
+            return
+        src = self.cam_src_var.get().strip()
+        if not src:
+            messagebox.showerror(
+                "Cameras",
+                "Please enter a camera device index (0, 1, ...) or an "
+                "IP-camera URL (rtsp:// or http://).")
+            return
+        self._save_settings()
+        self.camera_windows.append(CameraWindow(self, src))
 
     def on_help(self):
         """Open README.md in a scrollable window inside the app."""
@@ -1600,6 +1904,8 @@ class OusterGuiApp:
     def on_close(self):
         self._save_settings()
         self.on_stop_stream()
+        for cam in list(self.camera_windows):
+            cam.close()
         if self.ros_pub is not None:
             pub, self.ros_pub = self.ros_pub, None
             pub.close()

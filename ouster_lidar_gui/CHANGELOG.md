@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.2.0
+
+### Cameras (new)
+- New **CAMERAS** panel: open USB / built-in cameras (device index) or IP
+  cameras (RTSP / HTTP URL) via OpenCV — any number of cameras, each in
+  its own floating window.
+- Live view with resolution + measured FPS, aspect-ratio-preserving
+  scaling, and a **Snapshot...** button (PNG / JPEG).
+- Per-camera **Publish to ROS 2** toggle: frames go out as
+  `sensor_msgs/Image` (`bgr8` / `mono8`) on `/cameraN/image_raw`, sharing
+  the ROS node started from the ROS 2 TOPICS panel.
+- Camera support is optional (`pip install opencv-python`); the last used
+  camera source is remembered in `~/.ouster_lidar_gui.json`.
+- Rendering uses Tk's native PPM support — no extra imaging dependency.
+
 ## v1.1.0
 
 ### ROS 2 topics (new)

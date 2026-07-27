@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.4.0
+
+### Checkerboard intrinsics wizard (new)
+- New **Calibrate intrinsics (checkerboard)...** wizard in the fusion
+  window: live chessboard-corner detection drawn on the camera view,
+  one-click **Capture** per pose (sub-pixel refined at full resolution),
+  and **Calibrate & Apply** runs `cv2.calibrateCamera` in the background
+  and fills `fx, fy, cx, cy, k1, k2, p1, p2, k3` automatically.
+- Configurable pattern (inner-corner count + square size in mm); guards
+  against mixing pattern sizes or camera resolutions between captures.
+- Reports the RMS reprojection error with a quality verdict
+  (< 0.5 px excellent, < 1 px good), and logs the resulting values.
+- Works with any camera opened in the CAMERAS panel — no special
+  hardware; the checkerboard is just a printed sheet used during
+  calibration.
+
 ## v1.3.0
 
 ### Camera–Lidar Fusion (new)

@@ -21,6 +21,9 @@ video) and lets you:
   * Camera-Lidar Fusion: overlay the live point cloud on a camera image
     (colored by depth) to tune the extrinsic calibration, save/load the
     calibration as JSON, and publish a colored point cloud to ROS 2
+  * Built-in checkerboard intrinsics calibration wizard: capture views of
+    a printed chessboard and cv2.calibrateCamera fills fx/fy/cx/cy + the
+    distortion coefficients automatically
 
 Tested with ouster-sdk 1.0.0; also compatible with the older
 `ouster.sdk.client` API (< 1.0).
@@ -41,7 +44,7 @@ import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import numpy as np
 
@@ -253,6 +256,16 @@ def euler_deg_to_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
     ry = np.array([[cp, 0., sp], [0., 1., 0.], [-sp, 0., cp]])
     rx = np.array([[1., 0., 0.], [0., cr, -sr], [0., sr, cr]])
     return rz @ ry @ rx
+
+
+def checkerboard_object_points(cols: int, rows: int,
+                               square: float) -> np.ndarray:
+    """3D coordinates of a checkerboard's inner corners (z=0 plane),
+    spaced `square` meters apart - the reference cv2.calibrateCamera
+    compares detected image corners against."""
+    objp = np.zeros((cols * rows, 3), np.float32)
+    objp[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2) * square
+    return objp
 
 
 def project_cloud(xyz, K, dist, rot, trans, img_w, img_h):
@@ -888,6 +901,7 @@ class FusionWindow:
         self._lidar_frame = "ouster"
         self._rgb_err_logged = False
         self._photo = None
+        self._wizard = None
 
         self.win = tk.Toplevel(app.root)
         self.win.title("Camera-Lidar Fusion")
@@ -953,6 +967,9 @@ class FusionWindow:
                    command=self.on_init_intrinsics).pack(side=tk.LEFT,
                                                          expand=True,
                                                          fill=tk.X)
+        ttk.Button(cal, text="♟  Calibrate intrinsics (checkerboard)...",
+                   command=self.on_calibrate_wizard).grid(
+            row=8, column=0, columnspan=6, sticky=tk.EW, pady=(4, 0))
 
         # --- overlay view settings -------------------------------------------
         view = ttk.LabelFrame(left, text="  OVERLAY  ", padding=8)
@@ -1125,6 +1142,24 @@ class FusionWindow:
                      f"HFOV {hfov:g}° (fx=fy={f:.1f}). This is a starting "
                      "guess - calibrate with a checkerboard for accuracy.")
 
+    def on_calibrate_wizard(self):
+        """Open the checkerboard intrinsics-calibration wizard."""
+        frame = getattr(self._cam_ref, "last_bgr", None) \
+            if self._cam_ref else None
+        if frame is None:
+            messagebox.showinfo(
+                "Calibrate intrinsics",
+                "Open a camera (CAMERAS panel), select it above, and wait "
+                "for a live frame first.", parent=self.win)
+            return
+        if self._wizard is not None and not self._wizard._closed:
+            self._wizard.win.lift()
+            return
+        self._wizard = IntrinsicsWizard(self)
+        self.app.log("Intrinsics wizard opened: show a printed "
+                     "checkerboard to the camera, capture ~15 varied "
+                     "views, then Calibrate & Apply.")
+
     # -------------------------------------------------------------- data ----
     def on_cloud(self, xyz, sensor_ts_ns=0):
         """Called from the ScanReader thread with each frame's points."""
@@ -1245,6 +1280,289 @@ class FusionWindow:
             self.app._save_settings()
         if self.app.fusion_win is self:
             self.app.fusion_win = None
+        if self._wizard is not None:
+            self._wizard.close()
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+
+
+class IntrinsicsWizard:
+    """Checkerboard intrinsics calibration wizard.
+
+    Shows the selected camera live with detected chessboard corners drawn
+    on top; each Capture stores a sub-pixel-refined view, and
+    'Calibrate & Apply' runs cv2.calibrateCamera and fills the fusion
+    window's fx/fy/cx/cy + distortion fields with the result.
+    """
+
+    MIN_CAPTURES = 5
+    RECOMMENDED = 15
+
+    def __init__(self, fusion):
+        self.fusion = fusion
+        self.app = fusion.app
+        self._closed = False
+        self.captures = []            # list of (object_points, corners)
+        self.img_size = None          # (w, h) of the full-res captures
+        self._pattern_used = None
+        self._detected = False
+        self._corners_preview = None
+        self._tick = 0
+        self._busy = False            # calibrateCamera running
+        self._photo = None
+
+        self.win = tk.Toplevel(fusion.win)
+        self.win.title("Calibrate Intrinsics  ·  Checkerboard")
+        self.win.geometry("820x640")
+        self.win.configure(bg=Theme.BG)
+        self.win.transient(fusion.win)
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+        top = ttk.Frame(self.win, style="Panel.TFrame", padding=8)
+        top.pack(fill=tk.X, padx=8, pady=(8, 4))
+        ttk.Label(top, text="Inner corners:",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.cols_var = tk.StringVar(value="9")
+        ttk.Entry(top, textvariable=self.cols_var,
+                  width=4).pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(top, text="x", style="Muted.TLabel").pack(side=tk.LEFT)
+        self.rows_var = tk.StringVar(value="6")
+        ttk.Entry(top, textvariable=self.rows_var,
+                  width=4).pack(side=tk.LEFT, padx=(2, 12))
+        ttk.Label(top, text="Square [mm]:",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.square_var = tk.StringVar(value="25")
+        ttk.Entry(top, textvariable=self.square_var,
+                  width=5).pack(side=tk.LEFT, padx=4)
+        ttk.Label(top, text="(a 10x7-squares board has 9x6 inner corners)",
+                  style="Hint.TLabel").pack(side=tk.LEFT, padx=8)
+
+        self.video = tk.Label(self.win, bg="black")
+        self.video.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+        self.status_var = tk.StringVar(
+            value="Show the printed checkerboard to the camera.")
+        ttk.Label(self.win, textvariable=self.status_var,
+                  style="Muted.TLabel").pack(anchor=tk.W, padx=10)
+
+        bar = ttk.Frame(self.win, style="Panel.TFrame", padding=6)
+        bar.pack(fill=tk.X, padx=8, pady=(4, 8))
+        self.capture_btn = ttk.Button(bar, text="📸  Capture",
+                                      command=self.on_capture,
+                                      state=tk.DISABLED)
+        self.capture_btn.pack(side=tk.LEFT)
+        self.count_var = tk.StringVar(
+            value=f"0 captured (aim for {self.RECOMMENDED})")
+        ttk.Label(bar, textvariable=self.count_var,
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=10)
+        ttk.Button(bar, text="Close",
+                   command=self.close).pack(side=tk.RIGHT)
+        self.calib_btn = ttk.Button(bar, text="Calibrate && Apply",
+                                    command=self.on_calibrate,
+                                    state=tk.DISABLED)
+        self.calib_btn.pack(side=tk.RIGHT, padx=6)
+        ttk.Button(bar, text="Reset",
+                   command=self.on_reset).pack(side=tk.RIGHT, padx=6)
+
+        self._poll()
+
+    # ------------------------------------------------------------ helpers ----
+    def _pattern(self):
+        """(cols, rows) of inner corners, or None if the fields are bad."""
+        try:
+            cols = int(self.cols_var.get())
+            rows = int(self.rows_var.get())
+            if not (2 < cols < 30 and 2 < rows < 30):
+                return None
+            return (cols, rows)
+        except (ValueError, tk.TclError):
+            return None
+
+    def _square_m(self):
+        try:
+            return max(float(self.square_var.get()), 0.1) / 1000.0
+        except (ValueError, tk.TclError):
+            return 0.025
+
+    def _camera_frame(self):
+        cam = self.fusion._cam_ref
+        return getattr(cam, "last_bgr", None) if cam is not None else None
+
+    # --------------------------------------------------------------- loop ----
+    def _poll(self):
+        if self._closed:
+            return
+        frame = self._camera_frame()
+        if frame is None:
+            self.status_var.set("No camera frame - open/select a camera "
+                                "in the fusion window.")
+            self.capture_btn.configure(state=tk.DISABLED)
+        else:
+            self._tick += 1
+            preview = frame
+            h, w = frame.shape[:2]
+            if w > 640:                       # keep live detection fast
+                preview = cv2.resize(frame, (640, max(int(h * 640 / w), 1)))
+            if preview.ndim == 2:
+                preview = cv2.cvtColor(preview, cv2.COLOR_GRAY2BGR)
+            else:
+                preview = preview.copy()
+            pattern = self._pattern()
+            if pattern is None:
+                self.status_var.set("Invalid pattern size (2 < corners "
+                                    "< 30).")
+                self._detected = False
+            elif self._tick % 3 == 0 and not self._busy:  # ~every 300 ms
+                gray = cv2.cvtColor(preview, cv2.COLOR_BGR2GRAY)
+                found, corners = cv2.findChessboardCorners(
+                    gray, pattern,
+                    flags=cv2.CALIB_CB_ADAPTIVE_THRESH
+                    | cv2.CALIB_CB_NORMALIZE_IMAGE
+                    | cv2.CALIB_CB_FAST_CHECK)
+                self._detected = bool(found)
+                self._corners_preview = corners if found else None
+            if pattern is not None:
+                if self._detected and self._corners_preview is not None:
+                    cv2.drawChessboardCorners(preview, pattern,
+                                              self._corners_preview, True)
+                    if not self._busy:
+                        self.status_var.set("Board detected - press "
+                                            "Capture.")
+                elif not self._busy:
+                    self.status_var.set("No board detected - show the "
+                                        "printed checkerboard to the "
+                                        "camera.")
+            self.capture_btn.configure(
+                state=(tk.NORMAL if self._detected and not self._busy
+                       else tk.DISABLED))
+            self._photo = bgr_to_photo(preview,
+                                       max(self.video.winfo_width(), 64),
+                                       max(self.video.winfo_height(), 64))
+            self.video.configure(image=self._photo)
+        self.calib_btn.configure(
+            state=(tk.NORMAL if len(self.captures) >= self.MIN_CAPTURES
+                   and not self._busy else tk.DISABLED))
+        self.win.after(100, self._poll)
+
+    # ------------------------------------------------------------ actions ----
+    def on_capture(self):
+        frame = self._camera_frame()
+        pattern = self._pattern()
+        if frame is None or pattern is None:
+            return
+        if self._pattern_used is not None and pattern != self._pattern_used:
+            messagebox.showerror(
+                "Capture",
+                "The pattern size changed since the previous captures.\n"
+                "Press Reset to start over with the new size.",
+                parent=self.win)
+            return
+        gray = (cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if frame.ndim == 3 else frame)
+        size = (gray.shape[1], gray.shape[0])
+        if self.img_size is not None and size != self.img_size:
+            messagebox.showerror(
+                "Capture",
+                "The camera resolution changed since the previous "
+                "captures.\nPress Reset and start over.", parent=self.win)
+            return
+        # full-resolution detection (no FAST_CHECK) + sub-pixel refinement
+        found, corners = cv2.findChessboardCorners(
+            gray, pattern, flags=cv2.CALIB_CB_ADAPTIVE_THRESH
+            | cv2.CALIB_CB_NORMALIZE_IMAGE)
+        if not found:
+            self.status_var.set("Board not found in the full-resolution "
+                                "frame - hold it steady and try again.")
+            return
+        corners = cv2.cornerSubPix(
+            gray, corners, (11, 11), (-1, -1),
+            (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-3))
+        self.captures.append(
+            (checkerboard_object_points(*pattern, self._square_m()),
+             corners))
+        self.img_size = size
+        self._pattern_used = pattern
+        n = len(self.captures)
+        self.count_var.set(f"{n} captured (aim for {self.RECOMMENDED})")
+        self.status_var.set(
+            f"Captured view {n}. Move/tilt the board and capture again - "
+            "cover the image corners too.")
+
+    def on_reset(self):
+        self.captures = []
+        self.img_size = None
+        self._pattern_used = None
+        self.count_var.set(f"0 captured (aim for {self.RECOMMENDED})")
+        self.status_var.set("Captures cleared. Show the checkerboard to "
+                            "the camera.")
+
+    def on_calibrate(self):
+        if len(self.captures) < self.MIN_CAPTURES or self._busy:
+            return
+        self._busy = True
+        self.calib_btn.configure(state=tk.DISABLED)
+        self.capture_btn.configure(state=tk.DISABLED)
+        self.status_var.set(
+            f"Calibrating from {len(self.captures)} views ...")
+        obj = [o for o, _ in self.captures]
+        img = [c for _, c in self.captures]
+        size = self.img_size
+
+        def work():
+            try:
+                rms, K, dist, _rv, _tv = cv2.calibrateCamera(
+                    obj, img, size, None, None)
+                self.app.root.after(0, lambda: self._apply(rms, K, dist))
+            except Exception as e:
+                self.app.root.after(0, lambda: self._fail(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply(self, rms, K, dist):
+        self._busy = False
+        if self._closed:
+            return
+        K = np.asarray(K)
+        d = np.asarray(dist).ravel()
+        vals = {"fx": K[0, 0], "fy": K[1, 1], "cx": K[0, 2], "cy": K[1, 2]}
+        for i, key in enumerate(("k1", "k2", "p1", "p2", "k3")):
+            vals[key] = float(d[i]) if i < d.size else 0.0
+        for key, val in vals.items():
+            self.fusion.calib_vars[key].set(f"{float(val):.6g}")
+        quality = ("excellent" if rms < 0.5 else
+                   "good" if rms < 1.0 else
+                   "poor - capture more varied views and recalibrate")
+        self.status_var.set(f"Done. Reprojection error {rms:.3f} px "
+                            f"({quality}).")
+        self.app.log(
+            f"Intrinsics calibrated from {len(self.captures)} views: "
+            f"fx={vals['fx']:.1f} fy={vals['fy']:.1f} "
+            f"cx={vals['cx']:.1f} cy={vals['cy']:.1f}, "
+            f"RMS reprojection error {rms:.3f} px.")
+        messagebox.showinfo(
+            "Calibrate intrinsics",
+            "Calibration applied to the fusion window.\n\n"
+            f"Views used: {len(self.captures)}\n"
+            f"Reprojection error: {rms:.3f} px ({quality})\n\n"
+            "Store it with the fusion window's Save... button.",
+            parent=self.win)
+
+    def _fail(self, e):
+        self._busy = False
+        if self._closed:
+            return
+        self.status_var.set(f"Calibration failed: {e}")
+        messagebox.showerror("Calibrate intrinsics",
+                             f"Calibration failed:\n{e}", parent=self.win)
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        if self.fusion._wizard is self:
+            self.fusion._wizard = None
         try:
             self.win.destroy()
         except Exception:

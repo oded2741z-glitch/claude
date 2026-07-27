@@ -44,6 +44,9 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
   image (points colored by depth) to tune the camera↔lidar calibration by
   eye; edit intrinsics + extrinsics, save/load them as JSON, and publish a
   **colored point cloud** (`PointCloud2` with `x,y,z,rgb`) to ROS 2
+- **Checkerboard calibration wizard** — capture ~15 views of a printed
+  chessboard with live corner detection, and `cv2.calibrateCamera` fills
+  in the camera's true `fx, fy, cx, cy` + distortion automatically
 - **Remembers your settings** — the hostname/IP and all configuration fields
   are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
   you never have to retype the sensor address
@@ -216,9 +219,10 @@ Workflow:
    the fusion window picks the camera from a dropdown and receives the
    cloud automatically.
 2. **Intrinsics**: click **Init intrinsics from camera** for a starting
-   guess (frame size + your estimated horizontal FOV), or type calibrated
-   values (`fx, fy, cx, cy` + distortion `k1, k2, p1, p2, k3`, OpenCV
-   convention — e.g. from `cv2.calibrateCamera` with a checkerboard).
+   guess (frame size + your estimated horizontal FOV), or — better — run
+   the built-in **Calibrate intrinsics (checkerboard)...** wizard (see
+   below) for real calibrated values (`fx, fy, cx, cy` + distortion
+   `k1, k2, p1, p2, k3`, OpenCV convention).
 3. **Extrinsics**: enter the camera's position relative to the lidar
    (`tx, ty, tz` in meters, lidar frame: x forward, y left, z up) and its
    orientation (`yaw/pitch/roll` in degrees; `0/0/0` = facing the lidar's
@@ -235,6 +239,30 @@ Workflow:
 > The overlay uses **Max depth** for the color scale (near = red, far =
 > blue) and decimates very large clouds for display; the published colored
 > cloud is not decimated.
+
+#### Built-in intrinsics calibration (checkerboard wizard)
+
+No special camera is needed — the wizard calibrates whatever camera you
+selected, using a **printed chessboard pattern** as a temporary measuring
+target (it is not part of the scene afterwards):
+
+1. Print a checkerboard (e.g. a 10×7-squares board = **9×6 inner
+   corners**) on plain paper and tape it to something rigid. Measure a
+   square's size with a ruler.
+2. In the fusion window click **Calibrate intrinsics (checkerboard)...**,
+   and enter the inner-corner count and square size.
+3. Hold the board in front of the camera. When the corners are detected
+   they are drawn on the live view and **Capture** lights up. Capture
+   **~15 views**: near/far, tilted left/right/up/down, and especially with
+   the board near the image corners (that is where lens distortion is
+   measured).
+4. Click **Calibrate & Apply** — `cv2.calibrateCamera` runs and the
+   resulting `fx, fy, cx, cy, k1, k2, p1, p2, k3` are filled into the
+   fusion window automatically. A reprojection error under **0.5 px** is
+   excellent; under 1 px is fine. Use **Save...** to keep the result.
+
+The calibration stays valid for that camera at that resolution as long as
+zoom/focus do not change — for fixed-focus USB/IP cameras, once is enough.
 
 ### No sensor? Try a sample recording
 

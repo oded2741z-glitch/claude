@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.1.0
+
+### ROS 2 topics (new)
+- New **ROS 2 TOPICS** panel: publish the live point cloud as
+  `sensor_msgs/PointCloud2` on a configurable topic (default
+  `/ouster/points`) with a configurable TF frame ID (default `ouster`),
+  using the sensor-data QoS profile.
+- Works while streaming from a real sensor **and** while playing back a
+  PCAP / OSF recording (loop playback included) — usable as a simple
+  "replay to ROS" tool with no sensor attached.
+- Message stamps use the sensor's packet timestamps when available, with a
+  fallback to ROS clock time.
+- Publishing can be toggled at any time, even mid-stream; the topic and
+  frame ID are remembered in `~/.ouster_lidar_gui.json`.
+- ROS support is optional: without ROS 2 / `rclpy` installed the rest of
+  the app is unaffected, and the button explains how to set ROS up
+  (install ROS 2, source it, venv with `--system-site-packages`).
+
 ## v1.0.0
 
 First stable version of the Ouster Digital Lidar GUI (Python / Tkinter).

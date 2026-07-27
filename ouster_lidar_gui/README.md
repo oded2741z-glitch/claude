@@ -31,6 +31,10 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
   `.mcap` file that opens directly in Foxglove: point clouds on
   `/ouster/points` (`foxglove.PointCloud`, colored by signal intensity) and,
   for PCAP inputs, the sensor's IMU (accel + gyro) on `/ouster/imu`
+- **ROS 2 topics** — publish the live point cloud as
+  `sensor_msgs/PointCloud2` on a configurable topic (default
+  `/ouster/points`) while streaming from the sensor **or** while playing
+  back a recording, so RViz2 / any ROS 2 node can consume it in real time
 - **Remembers your settings** — the hostname/IP and all configuration fields
   are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
   you never have to retype the sensor address
@@ -122,6 +126,49 @@ python ouster_gui.py
 > until its next power cycle; with **Persist** on, the settings are saved on
 > the sensor and survive a reboot.
 
+### ROS 2 topics
+
+The **ROS 2 TOPICS** panel publishes the live point cloud as a standard
+`sensor_msgs/PointCloud2` (fields `x`, `y`, `z`, `intensity`, sensor-data
+QoS) so RViz2, `ros2 topic echo`, rosbag recording or any ROS 2 node can
+consume it. It works both while streaming from a real sensor and while
+playing back a PCAP / OSF recording — so you can "replay into ROS" with no
+sensor attached.
+
+Setup (Ubuntu — rclpy comes from the ROS 2 installation, not from pip):
+
+```bash
+# 1. install ROS 2 (e.g. Jazzy on Ubuntu 24.04), then in every terminal:
+source /opt/ros/jazzy/setup.bash
+
+# 2. create the app's venv WITH access to the ROS python packages:
+python3 -m venv venv --system-site-packages
+source venv/bin/activate
+pip install -r requirements.txt
+
+# 3. run the app from that ROS-sourced terminal:
+python ouster_gui.py
+```
+
+Usage:
+
+1. (Optional) change the **Point-cloud topic** (default `/ouster/points`)
+   and the **Frame ID** (default `ouster`).
+2. Click **Start ROS Publishing**, then start a live stream or play a
+   recording — every frame is published as one `PointCloud2` message.
+3. In RViz2: set **Fixed Frame** to the frame ID (e.g. `ouster`), add a
+   **PointCloud2** display on the topic, and color it by `intensity`.
+   Quick check from a terminal: `ros2 topic hz /ouster/points`.
+
+Message timestamps use the sensor's own packet timestamps when available
+(falling back to ROS clock time). On Windows, live ROS publishing requires
+a Windows ROS 2 installation; the more common setup is Ubuntu.
+
+> Note: only the point cloud is published live. The sensor's IMU stream is
+> available offline via **Export to MCAP** (from PCAP recordings); for a
+> full live ROS driver (IMU, TF, multiple topics) see Ouster's official
+> [ouster-ros](https://github.com/ouster-lidar/ouster-ros) package.
+
 ### No sensor? Try a sample recording
 
 Ouster publishes sample recordings on its website
@@ -147,3 +194,5 @@ ouster_lidar_gui/
 | No data while streaming | Make sure the configuration was applied with `udp_dest_auto` (done automatically by Apply) and that the firewall is not blocking ports 7502/7503 (`sudo ufw allow 7502/udp && sudo ufw allow 7503/udp`) |
 | `no module named tkinter` | `sudo apt-get install python3-tk` |
 | `.local` name does not resolve | `sudo apt-get install avahi-daemon` or use the IP address directly |
+| `rclpy (ROS 2) is not available` | Install ROS 2, `source /opt/ros/<distro>/setup.bash`, and recreate the venv with `--system-site-packages` (see "ROS 2 topics") |
+| ROS topic exists but RViz2 shows nothing | Set RViz2's **Fixed Frame** to the app's Frame ID (default `ouster`) and check both ends use the same `ROS_DOMAIN_ID` |

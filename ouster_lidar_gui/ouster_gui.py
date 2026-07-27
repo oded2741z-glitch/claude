@@ -14,6 +14,8 @@ video) and lets you:
   * Launch Ouster's official 3D point-cloud viewer (ouster-cli ... viz)
   * Record the stream to a PCAP file and replay PCAP/OSF files offline
     (so the app is fully usable without a physical sensor)
+  * Publish live ROS 2 topics (sensor_msgs/PointCloud2) while streaming
+    or playing back, for RViz2 / any ROS 2 node (requires ROS 2 + rclpy)
 
 Tested with ouster-sdk 1.0.0; also compatible with the older
 `ouster.sdk.client` API (< 1.0).
@@ -34,7 +36,7 @@ import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import numpy as np
 
@@ -82,6 +84,17 @@ try:
     HAVE_MCAP = True
 except Exception:
     HAVE_MCAP = False
+
+# --- ROS 2 (optional: only needed for live topic publishing) -----------------
+try:
+    import rclpy
+    from rclpy.qos import qos_profile_sensor_data
+    from sensor_msgs.msg import PointCloud2, PointField
+    HAVE_ROS = True
+    ROS_IMPORT_ERROR = None
+except Exception as _e:
+    HAVE_ROS = False
+    ROS_IMPORT_ERROR = _e
 
 # --- matplotlib embedded in Tk ------------------------------------------------
 import matplotlib
@@ -256,18 +269,90 @@ def percentile_scale(img: np.ndarray, lo=1.0, hi=99.0) -> np.ndarray:
     return np.clip((img - vmin) / (vmax - vmin), 0.0, 1.0)
 
 
+class RosPublisher:
+    """Publishes lidar frames as ROS 2 sensor_msgs/PointCloud2 messages.
+
+    Runs on its own rclpy context so it can be started and stopped freely
+    while the GUI lives on. Publishing needs no spinning, so no executor
+    thread is required.
+    """
+
+    def __init__(self, topic: str, frame_id: str):
+        self.topic = topic
+        self.frame_id = frame_id
+        self.n_published = 0
+        self._lock = threading.Lock()
+        self._closed = False
+        self._context = rclpy.Context()
+        rclpy.init(args=None, context=self._context)
+        self._node = rclpy.create_node("ouster_lidar_gui",
+                                       context=self._context)
+        self._pub = self._node.create_publisher(
+            PointCloud2, topic, qos_profile_sensor_data)
+
+    def publish_points(self, pts: np.ndarray, sensor_ts_ns: int = 0):
+        """pts: float32 array of shape (N, 4) -> x, y, z, intensity."""
+        pts = np.ascontiguousarray(pts, dtype=np.float32)
+        f32 = PointField.FLOAT32
+        msg = PointCloud2()
+        msg.header.frame_id = self.frame_id
+        msg.fields = [
+            PointField(name=n, offset=o, datatype=f32, count=1)
+            for n, o in (("x", 0), ("y", 4), ("z", 8), ("intensity", 12))]
+        msg.height = 1
+        msg.width = int(pts.shape[0])
+        msg.is_bigendian = False
+        msg.point_step = 16
+        msg.row_step = 16 * int(pts.shape[0])
+        msg.is_dense = True
+        msg.data = pts.tobytes()
+        with self._lock:
+            if self._closed:
+                return
+            if 0 < sensor_ts_ns < 2**63:
+                sec, nsec = divmod(int(sensor_ts_ns), 1_000_000_000)
+                if sec < 2**31:
+                    msg.header.stamp.sec = sec
+                    msg.header.stamp.nanosec = nsec
+                else:
+                    msg.header.stamp = self._node.get_clock().now().to_msg()
+            else:
+                msg.header.stamp = self._node.get_clock().now().to_msg()
+            self._pub.publish(msg)
+            self.n_published += 1
+
+    def close(self) -> int:
+        """Tear down the node/context; returns how many clouds were sent."""
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                try:
+                    self._node.destroy_node()
+                except Exception:
+                    pass
+                try:
+                    rclpy.shutdown(context=self._context)
+                except Exception:
+                    pass
+            return self.n_published
+
+
 class ScanReader(threading.Thread):
     """Background thread that reads frames from a sensor or a recorded file
     and pushes the latest destaggered field images into a queue."""
 
     def __init__(self, source_url: str, out_queue: queue.Queue, log_fn,
-                 is_file: bool = False, loop: bool = False):
+                 is_file: bool = False, loop: bool = False,
+                 ros_pub_fn=None):
         super().__init__(daemon=True)
         self.source_url = source_url
         self.out_queue = out_queue
         self.log = log_fn
         self.is_file = is_file
         self.loop = loop
+        self.ros_pub_fn = ros_pub_fn   # callable -> RosPublisher or None
+        self._xyzlut = None
+        self._ros_err_logged = False
         self._stop_event = threading.Event()
         self.metadata = None
 
@@ -308,6 +393,7 @@ class ScanReader(threading.Thread):
                 if self._stop_event.is_set():
                     break
                 for frame in frames_from_item(item):
+                    self._publish_ros(frame)
                     images = self._extract_images(frame)
                     if not images:
                         continue
@@ -352,6 +438,39 @@ class ScanReader(threading.Thread):
             except Exception:
                 continue
         return images
+
+    def _publish_ros(self, frame):
+        """Send the frame's point cloud to ROS 2, if publishing is on."""
+        pub = self.ros_pub_fn() if self.ros_pub_fn is not None else None
+        if pub is None:
+            return
+        try:
+            if self._xyzlut is None:
+                info = getattr(frame, "sensor_info", None) or self.metadata
+                if info is None:
+                    return
+                self._xyzlut = ouster_core.XYZLut(info, use_extrinsics=False)
+            rng = frame.field(ouster_core.ChanField.RANGE)
+            xyz = self._xyzlut(rng).astype(np.float32).reshape(-1, 3)
+            try:
+                inten = frame.field(ouster_core.ChanField.SIGNAL)
+            except Exception:
+                inten = rng
+            inten = inten.astype(np.float32).reshape(-1, 1)
+            mask = (rng.reshape(-1) > 0) & np.isfinite(xyz).all(1)
+            ts = 0
+            try:
+                ts_arr = np.asarray(frame.timestamp)
+                if ts_arr.size:
+                    ts = int(ts_arr.max())
+            except Exception:
+                pass
+            pub.publish_points(np.hstack([xyz, inten])[mask], ts)
+            self._ros_err_logged = False
+        except Exception as e:
+            if not self._ros_err_logged:
+                self._ros_err_logged = True
+                self.log(f"ROS publish error: {e}")
 
     @staticmethod
     def _frame_status(frame):
@@ -417,6 +536,7 @@ class OusterGuiApp:
 
         self.reader = None
         self.frame_queue = queue.Queue(maxsize=4)
+        self.ros_pub = None
         self.record_proc = None
         self.viz_proc = None
         self.image_artists = {}
@@ -598,6 +718,27 @@ class OusterGuiApp:
         ttk.Button(rec, text="Export to MCAP (Foxglove)...",
                    command=self.on_export_mcap).pack(fill=tk.X, pady=(6, 0))
 
+        # --- ROS 2 topics -------------------------------------------------------
+        ros = ttk.LabelFrame(left, text="  ROS 2 TOPICS  ", padding=10)
+        ros.pack(fill=tk.X, pady=4)
+        ttk.Label(ros, text="Point-cloud topic:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.ros_topic_var = tk.StringVar(value="/ouster/points")
+        ttk.Entry(ros, textvariable=self.ros_topic_var).pack(fill=tk.X,
+                                                             pady=3)
+        ttk.Label(ros, text="Frame ID (TF):",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.ros_frame_var = tk.StringVar(value="ouster")
+        ttk.Entry(ros, textvariable=self.ros_frame_var).pack(fill=tk.X,
+                                                             pady=3)
+        self.ros_btn = ttk.Button(ros, text="⇪  Start ROS Publishing",
+                                  command=self.on_toggle_ros)
+        self.ros_btn.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(ros, text="Publishes sensor_msgs/PointCloud2 while a "
+                            "live stream\nor a playback is running "
+                            "(requires ROS 2 / rclpy).",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(3, 0))
+
         # --- Help ---------------------------------------------------------------
         ttk.Button(left, text="?  Help",
                    command=self.on_help).pack(fill=tk.X, pady=4)
@@ -674,6 +815,8 @@ class OusterGuiApp:
             "lidar_port": self.lidar_port_var,
             "imu_port": self.imu_port_var,
             "persist": self.persist_var,
+            "ros_topic": self.ros_topic_var,
+            "ros_frame": self.ros_frame_var,
         }
         for key, var in self._persist_vars.items():
             if key in self.settings:
@@ -1085,7 +1228,8 @@ class OusterGuiApp:
         url = source_url or self._host()
         loop = is_file and self.loop_var.get()
         self.reader = ScanReader(url, self.frame_queue, self.log,
-                                 is_file=is_file, loop=loop)
+                                 is_file=is_file, loop=loop,
+                                 ros_pub_fn=lambda: self.ros_pub)
         self.reader.start()
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
@@ -1271,6 +1415,48 @@ class OusterGuiApp:
             self.log(f"  ...{n} IMU samples written")
         return n
 
+    def on_toggle_ros(self):
+        """Start / stop publishing live point clouds as ROS 2 topics."""
+        if self.ros_pub is None:
+            if not HAVE_ROS:
+                messagebox.showerror(
+                    "ROS 2 publishing",
+                    "rclpy (ROS 2) is not available in this Python "
+                    "environment.\n\n"
+                    "Install ROS 2 (e.g. Jazzy on Ubuntu 24.04) and start "
+                    "the app from a terminal where ROS is sourced:\n"
+                    "    source /opt/ros/jazzy/setup.bash\n"
+                    "    python3 ouster_gui.py\n\n"
+                    "If you use a virtualenv, create it with\n"
+                    "    python3 -m venv venv --system-site-packages\n"
+                    "so it can see the ROS packages.\n\n"
+                    f"Details: {ROS_IMPORT_ERROR}")
+                return
+            topic = self.ros_topic_var.get().strip() or "/ouster/points"
+            frame_id = self.ros_frame_var.get().strip() or "ouster"
+            try:
+                self.ros_pub = RosPublisher(topic, frame_id)
+            except Exception as e:
+                self.log(f"ERROR starting ROS publisher: {e}")
+                messagebox.showerror(
+                    "ROS 2 publishing",
+                    f"Could not start the ROS 2 publisher:\n{e}")
+                return
+            self._save_settings()
+            self.ros_btn.configure(text="■  Stop ROS Publishing")
+            self.log(f"ROS 2 publishing ON -> {topic} "
+                     f"(sensor_msgs/PointCloud2, frame_id '{frame_id}').")
+            self.log(f"RViz2: set Fixed Frame to '{frame_id}' and add a "
+                     "PointCloud2 display on that topic.")
+            if self.reader is None:
+                self.log("Start a live stream or play a recording to "
+                         "publish frames.")
+        else:
+            pub, self.ros_pub = self.ros_pub, None
+            n = pub.close()
+            self.ros_btn.configure(text="⇪  Start ROS Publishing")
+            self.log(f"ROS 2 publishing OFF ({n} point clouds published).")
+
     def on_help(self):
         """Open README.md in a scrollable window inside the app."""
         readme = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1414,6 +1600,9 @@ class OusterGuiApp:
     def on_close(self):
         self._save_settings()
         self.on_stop_stream()
+        if self.ros_pub is not None:
+            pub, self.ros_pub = self.ros_pub, None
+            pub.close()
         for proc in (self.record_proc, self.viz_proc):
             if proc is not None:
                 try:

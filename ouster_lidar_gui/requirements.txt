@@ -7,3 +7,9 @@ mcap
 mcap-protobuf-support
 foxglove-schemas-protobuf
 protobuf
+
+# optional - "ROS 2 TOPICS" live publishing does NOT come from pip:
+# rclpy + sensor_msgs are provided by a ROS 2 installation (e.g. Jazzy).
+# Source ROS before launching, and create the venv with
+#   python3 -m venv venv --system-site-packages
+# so the app can import them. See README, section "ROS 2 topics".

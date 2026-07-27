@@ -40,6 +40,10 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
   with live view, resolution + FPS readout, **Snapshot** to PNG/JPEG, and
   an optional per-camera **Publish to ROS 2** toggle
   (`sensor_msgs/Image` on `/cameraN/image_raw`)
+- **Camera–Lidar Fusion** — project the live point cloud onto a camera
+  image (points colored by depth) to tune the camera↔lidar calibration by
+  eye; edit intrinsics + extrinsics, save/load them as JSON, and publish a
+  **colored point cloud** (`PointCloud2` with `x,y,z,rgb`) to ROS 2
 - **Remembers your settings** — the hostname/IP and all configuration fields
   are saved to `~/.ouster_lidar_gui.json` and restored on the next launch, so
   you never have to retype the sensor address
@@ -199,6 +203,39 @@ in `requirements.txt`).
 
 The last camera source is remembered between sessions.
 
+### Camera–Lidar Fusion
+
+The **Camera–Lidar Fusion...** button (CAMERAS panel) opens a window that
+projects the live point cloud onto a camera image, which is the standard
+way to check and tune a camera↔lidar calibration: when the calibration is
+right, the depth-colored points hug the objects' outlines in the image.
+
+Workflow:
+
+1. Open a camera (CAMERAS panel) and start a lidar stream or playback —
+   the fusion window picks the camera from a dropdown and receives the
+   cloud automatically.
+2. **Intrinsics**: click **Init intrinsics from camera** for a starting
+   guess (frame size + your estimated horizontal FOV), or type calibrated
+   values (`fx, fy, cx, cy` + distortion `k1, k2, p1, p2, k3`, OpenCV
+   convention — e.g. from `cv2.calibrateCamera` with a checkerboard).
+3. **Extrinsics**: enter the camera's position relative to the lidar
+   (`tx, ty, tz` in meters, lidar frame: x forward, y left, z up) and its
+   orientation (`yaw/pitch/roll` in degrees; `0/0/0` = facing the lidar's
+   +X axis, upright). Nudge the numbers until the overlay lines up —
+   edges of walls, poles and door frames are the best references.
+4. **Save.../Load...** stores the calibration as a JSON file; the current
+   values are also remembered in `~/.ouster_lidar_gui.json` automatically.
+5. Tick **Publish colored cloud** to publish the fused result to ROS 2 as
+   a `PointCloud2` with `x, y, z, rgb` (default `/ouster/points_rgb`,
+   in the lidar frame). Only points that fall inside the camera image are
+   published — with one camera that is a colored slice of the 360° cloud,
+   which is expected. View it in RViz2 with **Color Transformer = RGB8**.
+
+> The overlay uses **Max depth** for the color scale (near = red, far =
+> blue) and decimates very large clouds for display; the published colored
+> cloud is not decimated.
+
 ### No sensor? Try a sample recording
 
 Ouster publishes sample recordings on its website
@@ -228,3 +265,5 @@ ouster_lidar_gui/
 | ROS topic exists but RViz2 shows nothing | Set RViz2's **Fixed Frame** to the app's Frame ID (default `ouster`) and check both ends use the same `ROS_DOMAIN_ID` |
 | `Camera support needs OpenCV` | `pip install opencv-python` inside the venv |
 | Camera won't open | Wrong index (try `0`, `1`, ...), device in use by another app, or on Linux missing permissions (`sudo usermod -aG video $USER`, then log out/in). For IP cameras verify the RTSP URL in VLC first |
+| Fusion overlay far off the image | Start with **Init intrinsics from camera**, verify `tx,ty,tz` with a tape measure, then tune yaw/pitch/roll one at a time. A 1° error moves points ~35 px at fx≈2000 |
+| Colored cloud not visible in RViz2 | Add a **PointCloud2** display on `/ouster/points_rgb`, set **Color Transformer** to `RGB8`, and make sure both ROS publishing and a lidar stream are running |

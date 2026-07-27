@@ -18,6 +18,9 @@ video) and lets you:
     or playing back, for RViz2 / any ROS 2 node (requires ROS 2 + rclpy)
   * Open USB / IP cameras (OpenCV) in floating live-view windows, take
     snapshots, and optionally publish frames as ROS 2 sensor_msgs/Image
+  * Camera-Lidar Fusion: overlay the live point cloud on a camera image
+    (colored by depth) to tune the extrinsic calibration, save/load the
+    calibration as JSON, and publish a colored point cloud to ROS 2
 
 Tested with ouster-sdk 1.0.0; also compatible with the older
 `ouster.sdk.client` API (< 1.0).
@@ -38,7 +41,7 @@ import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import numpy as np
 
@@ -228,6 +231,56 @@ UDP_PROFILES = [
     "LEGACY",
 ]
 
+# --- camera-lidar fusion geometry --------------------------------------------
+# lidar frame (x forward, y left, z up) -> camera optical frame
+# (x right, y down, z forward)
+LIDAR_TO_OPTICAL = np.array([[0., -1., 0.],
+                             [0., 0., -1.],
+                             [1., 0., 0.]])
+
+# calibration parameters, in UI / JSON order
+CALIB_KEYS = ("fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2", "k3",
+              "tx", "ty", "tz", "yaw", "pitch", "roll")
+
+
+def euler_deg_to_matrix(yaw: float, pitch: float, roll: float) -> np.ndarray:
+    """ZYX rotation matrix from angles in degrees (in the lidar frame)."""
+    y, p, r = np.radians([yaw, pitch, roll])
+    cy, sy = np.cos(y), np.sin(y)
+    cp, sp = np.cos(p), np.sin(p)
+    cr, sr = np.cos(r), np.sin(r)
+    rz = np.array([[cy, -sy, 0.], [sy, cy, 0.], [0., 0., 1.]])
+    ry = np.array([[cp, 0., sp], [0., 1., 0.], [-sp, 0., cp]])
+    rx = np.array([[1., 0., 0.], [0., cr, -sr], [0., sr, cr]])
+    return rz @ ry @ rx
+
+
+def project_cloud(xyz, K, dist, rot, trans, img_w, img_h):
+    """Project lidar-frame points into a camera image.
+
+    rot / trans: the camera's orientation (rotation matrix, lidar frame;
+    identity = facing the lidar's +X axis, upright) and position (meters,
+    lidar frame). Returns (indices into xyz, u, v, depth) for the points
+    that land inside a img_w x img_h image.
+    """
+    pts = np.asarray(xyz, dtype=np.float64).reshape(-1, 3)
+    cam = ((pts - trans) @ rot) @ LIDAR_TO_OPTICAL.T
+    idx = np.nonzero(cam[:, 2] > 0.05)[0]     # points in front of the camera
+    if idx.size == 0:
+        empty = np.empty(0, int)
+        return empty, empty, empty, np.empty(0)
+    cam = cam[idx]
+    uv, _ = cv2.projectPoints(cam.reshape(-1, 1, 3), np.zeros(3),
+                              np.zeros(3), K, dist)
+    uv = uv.reshape(-1, 2)
+    finite = np.isfinite(uv).all(axis=1)
+    uv = np.where(finite[:, None], uv, -1.0)
+    u = np.round(uv[:, 0]).astype(int)
+    v = np.round(uv[:, 1]).astype(int)
+    ok = finite & (u >= 0) & (u < img_w) & (v >= 0) & (v < img_h)
+    return idx[ok], u[ok], v[ok], cam[ok, 2]
+
+
 # (field name, plot title, colormap)
 FIELD_SPECS = [
     ("RANGE", "Range [mm]", "viridis"),
@@ -296,7 +349,9 @@ class RosPublisher:
         self.frame_id = frame_id
         self.n_published = 0
         self.n_images = 0
+        self.n_rgb = 0
         self._img_pubs = {}
+        self._cloud_pubs = {}
         self._lock = threading.Lock()
         self._closed = False
         self._context = rclpy.Context()
@@ -325,17 +380,56 @@ class RosPublisher:
         with self._lock:
             if self._closed:
                 return
-            if 0 < sensor_ts_ns < 2**63:
-                sec, nsec = divmod(int(sensor_ts_ns), 1_000_000_000)
-                if sec < 2**31:
-                    msg.header.stamp.sec = sec
-                    msg.header.stamp.nanosec = nsec
-                else:
-                    msg.header.stamp = self._node.get_clock().now().to_msg()
-            else:
-                msg.header.stamp = self._node.get_clock().now().to_msg()
+            self._set_stamp(msg, sensor_ts_ns)
             self._pub.publish(msg)
             self.n_published += 1
+
+    def _set_stamp(self, msg, sensor_ts_ns):
+        """Sensor timestamp when usable, else ROS clock. Call under lock."""
+        if 0 < sensor_ts_ns < 2**63:
+            sec, nsec = divmod(int(sensor_ts_ns), 1_000_000_000)
+            if sec < 2**31:
+                msg.header.stamp.sec = sec
+                msg.header.stamp.nanosec = nsec
+                return
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+
+    def publish_points_rgb(self, topic: str, frame_id: str, xyz: np.ndarray,
+                           bgr_colors: np.ndarray, sensor_ts_ns: int = 0):
+        """Publish a colored cloud: xyz (N, 3) + per-point BGR uint8 colors.
+
+        Colors are packed in the PCL convention: uint32 0x00RRGGBB stored
+        in a FLOAT32 field named 'rgb' (what RViz2 / Foxglove expect).
+        """
+        xyz = np.ascontiguousarray(xyz, dtype=np.float32).reshape(-1, 3)
+        c = np.asarray(bgr_colors, dtype=np.uint32).reshape(-1, 3)
+        rgb_f = ((c[:, 2] << 16) | (c[:, 1] << 8) | c[:, 0]).astype(
+            np.uint32).view(np.float32).reshape(-1, 1)
+        pts = np.hstack([xyz, rgb_f])
+        f32 = PointField.FLOAT32
+        msg = PointCloud2()
+        msg.header.frame_id = frame_id
+        msg.fields = [
+            PointField(name=n, offset=o, datatype=f32, count=1)
+            for n, o in (("x", 0), ("y", 4), ("z", 8), ("rgb", 12))]
+        msg.height = 1
+        msg.width = int(pts.shape[0])
+        msg.is_bigendian = False
+        msg.point_step = 16
+        msg.row_step = 16 * int(pts.shape[0])
+        msg.is_dense = True
+        msg.data = pts.tobytes()
+        with self._lock:
+            if self._closed:
+                return
+            pub = self._cloud_pubs.get(topic)
+            if pub is None:
+                pub = self._node.create_publisher(
+                    PointCloud2, topic, qos_profile_sensor_data)
+                self._cloud_pubs[topic] = pub
+            self._set_stamp(msg, sensor_ts_ns)
+            pub.publish(msg)
+            self.n_rgb += 1
 
     def publish_image(self, topic: str, frame_id: str, img: np.ndarray):
         """Publish a camera frame (OpenCV BGR / BGRA / grayscale ndarray)."""
@@ -389,7 +483,7 @@ class ScanReader(threading.Thread):
 
     def __init__(self, source_url: str, out_queue: queue.Queue, log_fn,
                  is_file: bool = False, loop: bool = False,
-                 ros_pub_fn=None):
+                 ros_pub_fn=None, fusion_fn=None):
         super().__init__(daemon=True)
         self.source_url = source_url
         self.out_queue = out_queue
@@ -397,6 +491,7 @@ class ScanReader(threading.Thread):
         self.is_file = is_file
         self.loop = loop
         self.ros_pub_fn = ros_pub_fn   # callable -> RosPublisher or None
+        self.fusion_fn = fusion_fn     # callable -> FusionWindow or None
         self._xyzlut = None
         self._ros_err_logged = False
         self._stop_event = threading.Event()
@@ -439,7 +534,7 @@ class ScanReader(threading.Thread):
                 if self._stop_event.is_set():
                     break
                 for frame in frames_from_item(item):
-                    self._publish_ros(frame)
+                    self._handle_cloud(frame)
                     images = self._extract_images(frame)
                     if not images:
                         continue
@@ -485,10 +580,12 @@ class ScanReader(threading.Thread):
                 continue
         return images
 
-    def _publish_ros(self, frame):
-        """Send the frame's point cloud to ROS 2, if publishing is on."""
-        pub = self.ros_pub_fn() if self.ros_pub_fn is not None else None
-        if pub is None:
+    def _handle_cloud(self, frame):
+        """Compute the frame's XYZ once and feed the active consumers:
+        the ROS point-cloud publisher and/or the fusion window."""
+        ros = self.ros_pub_fn() if self.ros_pub_fn is not None else None
+        fus = self.fusion_fn() if self.fusion_fn is not None else None
+        if ros is None and fus is None:
             return
         try:
             if self._xyzlut is None:
@@ -511,12 +608,16 @@ class ScanReader(threading.Thread):
                     ts = int(ts_arr.max())
             except Exception:
                 pass
-            pub.publish_points(np.hstack([xyz, inten])[mask], ts)
+            pts_xyz = xyz[mask]
+            if ros is not None:
+                ros.publish_points(np.hstack([pts_xyz, inten[mask]]), ts)
+            if fus is not None:
+                fus.on_cloud(pts_xyz, ts)
             self._ros_err_logged = False
         except Exception as e:
             if not self._ros_err_logged:
                 self._ros_err_logged = True
-                self.log(f"ROS publish error: {e}")
+                self.log(f"Cloud processing error: {e}")
 
     @staticmethod
     def _frame_status(frame):
@@ -532,6 +633,24 @@ class ScanReader(threading.Thread):
             except Exception:
                 pass
         return status
+
+
+def bgr_to_photo(bgr: np.ndarray, max_w: int, max_h: int):
+    """OpenCV image -> tk.PhotoImage scaled to fit (aspect ratio kept).
+    Rendered through Tk's native PPM support - no Pillow needed."""
+    h, w = bgr.shape[:2]
+    scale = min(max_w / w, max_h / h, 1.0)
+    if scale < 1.0:
+        bgr = cv2.resize(bgr, (max(int(w * scale), 1),
+                               max(int(h * scale), 1)),
+                         interpolation=cv2.INTER_AREA)
+    if bgr.ndim == 2:
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
+    else:
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    ph, pw = rgb.shape[:2]
+    ppm = b"P6\n%d %d\n255\n" % (pw, ph) + np.ascontiguousarray(rgb).tobytes()
+    return tk.PhotoImage(data=ppm)
 
 
 class CameraReader(threading.Thread):
@@ -716,22 +835,9 @@ class CameraWindow:
 
     def _show(self, bgr):
         h, w = bgr.shape[:2]
-        # fit the frame into the video label, keeping the aspect ratio
-        tw = max(self.video.winfo_width(), 64)
-        th = max(self.video.winfo_height(), 64)
-        scale = min(tw / w, th / h, 1.0)
-        if scale < 1.0:
-            bgr = cv2.resize(bgr, (max(int(w * scale), 1),
-                                   max(int(h * scale), 1)),
-                             interpolation=cv2.INTER_AREA)
-        if bgr.ndim == 2:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_GRAY2RGB)
-        else:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        ph, pw = rgb.shape[:2]
-        # raw PPM (P6) renders natively in tk.PhotoImage - no Pillow needed
-        ppm = b"P6\n%d %d\n255\n" % (pw, ph) + rgb.tobytes()
-        self._photo = tk.PhotoImage(data=ppm)
+        self._photo = bgr_to_photo(bgr,
+                                   max(self.video.winfo_width(), 64),
+                                   max(self.video.winfo_height(), 64))
         self.video.configure(image=self._photo)
         now = time.time()
         if now - self._fps_t0 >= 1.0:
@@ -751,6 +857,398 @@ class CameraWindow:
             pass
         self.app.camera_windows = [c for c in self.app.camera_windows
                                    if c is not self]
+
+
+class FusionWindow:
+    """Camera-Lidar Fusion: overlays the live point cloud (colored by
+    depth) on a camera image so the extrinsic calibration can be tuned by
+    eye, and optionally publishes the resulting colored point cloud to
+    ROS 2.
+
+    Calibration model: intrinsics fx/fy/cx/cy + distortion k1,k2,p1,p2,k3
+    (OpenCV convention); extrinsics are the camera's position (tx,ty,tz,
+    meters, lidar frame) and orientation (yaw/pitch/roll, degrees), where
+    0/0/0 means the camera faces the lidar's +X axis, upright.
+    """
+
+    _CALIB_DEFAULTS = {"fx": 600.0, "fy": 600.0, "cx": 320.0, "cy": 240.0}
+    _CALIB_LABELS = {"tx": "tx [m]", "ty": "ty [m]", "tz": "tz [m]",
+                     "yaw": "yaw [°]", "pitch": "pitch [°]",
+                     "roll": "roll [°]"}
+
+    def __init__(self, app):
+        self.app = app
+        self._closed = False
+        self.latest_cloud = None      # (xyz float32 (N,3), sensor ts ns)
+        self._calib_cache = None      # (K, dist, rot, trans) numpy arrays
+        self._cam_ref = None          # currently selected CameraWindow
+        self._cam_list = []
+        self._pub_rgb = False         # mirrored for the reader thread
+        self._rgb_topic = "/ouster/points_rgb"
+        self._lidar_frame = "ouster"
+        self._rgb_err_logged = False
+        self._photo = None
+
+        self.win = tk.Toplevel(app.root)
+        self.win.title("Camera-Lidar Fusion")
+        self.win.geometry("1150x720")
+        self.win.configure(bg=Theme.BG)
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+        body = ttk.Frame(self.win, padding=8)
+        body.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(body, width=330)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
+        left.pack_propagate(False)
+        right = ttk.Frame(body, style="Panel.TFrame")
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # --- camera picker ---------------------------------------------------
+        camf = ttk.LabelFrame(left, text="  CAMERA  ", padding=8)
+        camf.pack(fill=tk.X, pady=3)
+        self.cam_var = tk.StringVar()
+        self.cam_combo = ttk.Combobox(camf, textvariable=self.cam_var,
+                                      state="readonly", values=[])
+        self.cam_combo.pack(fill=tk.X)
+        ttk.Label(camf, text="Cameras opened in the CAMERAS panel appear "
+                            "here.",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(3, 0))
+
+        # --- calibration -----------------------------------------------------
+        cal = ttk.LabelFrame(left, text="  CALIBRATION  ", padding=8)
+        cal.pack(fill=tk.X, pady=3)
+        stored = dict(self._CALIB_DEFAULTS)
+        stored.update(app.settings.get("fusion_calib", {}) or {})
+        self.calib_vars = {}
+        for i, key in enumerate(CALIB_KEYS):
+            r, c = divmod(i, 3)
+            ttk.Label(cal, text=self._CALIB_LABELS.get(key, key),
+                      style="Muted.TLabel").grid(row=r, column=2 * c,
+                                                 sticky=tk.W, pady=1)
+            var = tk.StringVar(value=str(stored.get(key, 0.0)))
+            self.calib_vars[key] = var
+            ttk.Entry(cal, textvariable=var, width=8).grid(
+                row=r, column=2 * c + 1, padx=(2, 8), pady=1)
+        ttk.Label(cal, text="yaw/pitch/roll 0/0/0 = camera facing the "
+                            "lidar's +X axis,\nupright. Tune until the "
+                            "overlay hugs the image edges.",
+                  style="Hint.TLabel").grid(row=5, column=0, columnspan=6,
+                                            sticky=tk.W, pady=(4, 2))
+        btns = ttk.Frame(cal, style="Panel.TFrame")
+        btns.grid(row=6, column=0, columnspan=6, sticky=tk.EW, pady=(2, 0))
+        ttk.Button(btns, text="Load...",
+                   command=self.on_load).pack(side=tk.LEFT, expand=True,
+                                              fill=tk.X, padx=(0, 3))
+        ttk.Button(btns, text="Save...",
+                   command=self.on_save).pack(side=tk.LEFT, expand=True,
+                                              fill=tk.X, padx=(3, 0))
+        init = ttk.Frame(cal, style="Panel.TFrame")
+        init.grid(row=7, column=0, columnspan=6, sticky=tk.EW, pady=(4, 0))
+        ttk.Label(init, text="HFOV [°]:",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.hfov_var = tk.StringVar(value="70")
+        ttk.Entry(init, textvariable=self.hfov_var,
+                  width=5).pack(side=tk.LEFT, padx=4)
+        ttk.Button(init, text="Init intrinsics from camera",
+                   command=self.on_init_intrinsics).pack(side=tk.LEFT,
+                                                         expand=True,
+                                                         fill=tk.X)
+
+        # --- overlay view settings -------------------------------------------
+        view = ttk.LabelFrame(left, text="  OVERLAY  ", padding=8)
+        view.pack(fill=tk.X, pady=3)
+        row = ttk.Frame(view, style="Panel.TFrame")
+        row.pack(fill=tk.X)
+        ttk.Label(row, text="Max depth [m]:",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.depth_var = tk.StringVar(value="30")
+        ttk.Entry(row, textvariable=self.depth_var,
+                  width=5).pack(side=tk.LEFT, padx=(4, 12))
+        ttk.Label(row, text="Point size:",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.psize_var = tk.StringVar(value="2")
+        ttk.Combobox(row, textvariable=self.psize_var,
+                     values=["1", "2", "3"], state="readonly",
+                     width=3).pack(side=tk.LEFT, padx=4)
+        ttk.Label(view, text="Points are colored by distance "
+                            "(near = red, far = blue).",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(3, 0))
+
+        # --- ROS colored cloud -----------------------------------------------
+        rosf = ttk.LabelFrame(left, text="  ROS 2 COLORED CLOUD  ",
+                              padding=8)
+        rosf.pack(fill=tk.X, pady=3)
+        self.rgb_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(rosf, text="Publish colored cloud",
+                        variable=self.rgb_var,
+                        style="TCheckbutton").pack(anchor=tk.W)
+        self.rgb_topic_var = tk.StringVar(value="/ouster/points_rgb")
+        ttk.Entry(rosf, textvariable=self.rgb_topic_var).pack(fill=tk.X,
+                                                              pady=3)
+        ttk.Label(rosf, text="PointCloud2 with x,y,z,rgb - only points "
+                             "inside the\ncamera image. Needs ROS "
+                             "publishing ON and a stream.",
+                  style="Hint.TLabel").pack(anchor=tk.W)
+
+        # --- overlay display -------------------------------------------------
+        self.view = tk.Label(right, bg="black")
+        self.view.pack(fill=tk.BOTH, expand=True, padx=6, pady=(6, 2))
+        self.status_var = tk.StringVar(
+            value="Open a camera and start a lidar stream to see the "
+                  "overlay.")
+        ttk.Label(right, textvariable=self.status_var,
+                  style="Muted.TLabel").pack(anchor=tk.W, padx=8,
+                                             pady=(0, 6))
+
+        self._poll()
+
+    # ------------------------------------------------------------- calib ----
+    def _calib_values(self):
+        """Current calibration as {key: float}, or None if a field is not
+        a valid number."""
+        vals = {}
+        for key, var in self.calib_vars.items():
+            try:
+                vals[key] = float(var.get())
+            except (ValueError, tk.TclError):
+                return None
+        return vals
+
+    def _rebuild_calib(self):
+        vals = self._calib_values()
+        if vals is None:
+            self.status_var.set("Invalid number in a calibration field.")
+            return
+        K = np.array([[vals["fx"], 0., vals["cx"]],
+                      [0., vals["fy"], vals["cy"]],
+                      [0., 0., 1.]])
+        dist = np.array([vals["k1"], vals["k2"], vals["p1"], vals["p2"],
+                         vals["k3"]])
+        rot = euler_deg_to_matrix(vals["yaw"], vals["pitch"], vals["roll"])
+        trans = np.array([vals["tx"], vals["ty"], vals["tz"]])
+        self._calib_cache = (K, dist, rot, trans)
+
+    def on_save(self):
+        vals = self._calib_values()
+        if vals is None:
+            messagebox.showerror("Save calibration",
+                                 "Fix the invalid calibration fields "
+                                 "first.", parent=self.win)
+            return
+        path = filedialog.asksaveasfilename(
+            title="Save calibration as", defaultextension=".json",
+            initialfile="camera_lidar_calib.json",
+            filetypes=[("JSON files", "*.json")], parent=self.win)
+        if not path:
+            return
+        data = {
+            "intrinsics": {k: vals[k] for k in ("fx", "fy", "cx", "cy")},
+            "distortion": [vals[k] for k in ("k1", "k2", "p1", "p2", "k3")],
+            "extrinsics": {
+                "translation_m": [vals[k] for k in ("tx", "ty", "tz")],
+                "rotation_deg": [vals[k] for k in ("yaw", "pitch", "roll")],
+            },
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self.app.log(f"Calibration saved -> {path}")
+        except OSError as e:
+            messagebox.showerror("Save calibration",
+                                 f"Could not save:\n{e}", parent=self.win)
+
+    def on_load(self):
+        path = filedialog.askopenfilename(
+            title="Load calibration", filetypes=[("JSON files", "*.json"),
+                                                 ("All files", "*")],
+            parent=self.win)
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            vals = {}
+            if "intrinsics" in data:            # nested format (ours)
+                vals.update(data.get("intrinsics", {}))
+                dist = data.get("distortion", [])
+                for i, k in enumerate(("k1", "k2", "p1", "p2", "k3")):
+                    if i < len(dist):
+                        vals[k] = dist[i]
+                ext = data.get("extrinsics", {})
+                for i, k in enumerate(("tx", "ty", "tz")):
+                    t = ext.get("translation_m", [])
+                    if i < len(t):
+                        vals[k] = t[i]
+                for i, k in enumerate(("yaw", "pitch", "roll")):
+                    r = ext.get("rotation_deg", [])
+                    if i < len(r):
+                        vals[k] = r[i]
+            else:                               # flat {key: value}
+                vals.update(data)
+            applied = 0
+            for key in CALIB_KEYS:
+                if key in vals:
+                    self.calib_vars[key].set(str(float(vals[key])))
+                    applied += 1
+            self.app.log(f"Calibration loaded ({applied} fields) <- {path}")
+        except Exception as e:
+            messagebox.showerror("Load calibration",
+                                 f"Could not load:\n{e}", parent=self.win)
+
+    def on_init_intrinsics(self):
+        """Rough intrinsics from the camera's frame size + a guessed HFOV."""
+        frame = getattr(self._cam_ref, "last_bgr", None) \
+            if self._cam_ref else None
+        if frame is None:
+            messagebox.showinfo(
+                "Init intrinsics",
+                "Select an open camera (with a live frame) first.",
+                parent=self.win)
+            return
+        try:
+            hfov = float(self.hfov_var.get())
+            if not (10 <= hfov <= 170):
+                raise ValueError
+        except (ValueError, tk.TclError):
+            messagebox.showerror("Init intrinsics",
+                                 "HFOV must be a number between 10 and "
+                                 "170 degrees.", parent=self.win)
+            return
+        h, w = frame.shape[:2]
+        f = (w / 2.0) / np.tan(np.radians(hfov) / 2.0)
+        for key, val in (("fx", f), ("fy", f), ("cx", w / 2.0),
+                         ("cy", h / 2.0), ("k1", 0.0), ("k2", 0.0),
+                         ("p1", 0.0), ("p2", 0.0), ("k3", 0.0)):
+            self.calib_vars[key].set(f"{val:.1f}" if key in
+                                     ("fx", "fy", "cx", "cy") else "0.0")
+        self.app.log(f"Intrinsics initialized from {w}x{h} frame, "
+                     f"HFOV {hfov:g}° (fx=fy={f:.1f}). This is a starting "
+                     "guess - calibrate with a checkerboard for accuracy.")
+
+    # -------------------------------------------------------------- data ----
+    def on_cloud(self, xyz, sensor_ts_ns=0):
+        """Called from the ScanReader thread with each frame's points."""
+        if self._closed:
+            return
+        self.latest_cloud = (xyz, sensor_ts_ns)
+        if not self._pub_rgb:
+            return
+        pub = self.app.ros_pub
+        calib = self._calib_cache
+        cam = self._cam_ref
+        frame = getattr(cam, "last_bgr", None) if cam is not None else None
+        if pub is None or calib is None or frame is None:
+            return
+        try:
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            idx, u, v, _d = project_cloud(xyz, *calib,
+                                          frame.shape[1], frame.shape[0])
+            if idx.size == 0:
+                return
+            pub.publish_points_rgb(self._rgb_topic, self._lidar_frame,
+                                   xyz[idx], frame[v, u, :3], sensor_ts_ns)
+            self._rgb_err_logged = False
+        except Exception as e:
+            if not self._rgb_err_logged:
+                self._rgb_err_logged = True
+                self.app.log(f"Colored-cloud publish error: {e}")
+
+    # ---------------------------------------------------------- rendering ----
+    def _refresh_cameras(self):
+        cams = list(self.app.camera_windows)
+        values = [f"Camera {c.n}  ({c.reader.source})" for c in cams]
+        if list(self.cam_combo.cget("values")) != values:
+            self.cam_combo.configure(values=values)
+        if self.cam_var.get() not in values:
+            self.cam_var.set(values[0] if values else "")
+        self._cam_list = cams
+        sel = self.cam_var.get()
+        self._cam_ref = (cams[values.index(sel)]
+                         if sel in values else None)
+
+    def _poll(self):
+        if self._closed:
+            return
+        self._refresh_cameras()
+        self._rebuild_calib()
+        self._pub_rgb = bool(self.rgb_var.get())
+        self._rgb_topic = (self.rgb_topic_var.get().strip()
+                           or "/ouster/points_rgb")
+        self._lidar_frame = (self.app.ros_frame_var.get().strip()
+                             or "ouster")
+        self._render()
+        self.win.after(100, self._poll)     # ~10 fps overlay refresh
+
+    def _render(self):
+        frame = getattr(self._cam_ref, "last_bgr", None) \
+            if self._cam_ref else None
+        if frame is None:
+            self.status_var.set("Open a camera (CAMERAS panel) and select "
+                                "it above to see the overlay.")
+            return
+        img = frame.copy()
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        n_in = n_total = 0
+        cloud = self.latest_cloud
+        if cloud is not None and self._calib_cache is not None:
+            xyz, _ts = cloud
+            n_total = xyz.shape[0]
+            if n_total > 60000:                 # keep the overlay snappy
+                xyz = xyz[::n_total // 60000 + 1]
+            idx, u, v, depth = project_cloud(xyz, *self._calib_cache,
+                                             img.shape[1], img.shape[0])
+            n_in = idx.size
+            if n_in:
+                self._draw_points(img, u, v, depth)
+        self._photo = bgr_to_photo(img,
+                                   max(self.view.winfo_width(), 64),
+                                   max(self.view.winfo_height(), 64))
+        self.view.configure(image=self._photo)
+        if cloud is None:
+            self.status_var.set("Camera OK - start a lidar stream (or "
+                                "playback) to overlay points.")
+        else:
+            self.status_var.set(f"{n_in} of {xyz.shape[0]} sampled points "
+                                "land inside the image"
+                                + (f"  ·  cloud size {n_total}"
+                                   if n_total else ""))
+
+    def _draw_points(self, img, u, v, depth):
+        try:
+            max_d = max(float(self.depth_var.get()), 0.1)
+        except (ValueError, tk.TclError):
+            max_d = 30.0
+        try:
+            psize = max(int(self.psize_var.get()), 1)
+        except (ValueError, tk.TclError):
+            psize = 2
+        d = np.clip(depth / max_d, 0.0, 1.0)
+        cmap = cv2.applyColorMap(((1.0 - d) * 255).astype(np.uint8)
+                                 .reshape(-1, 1), cv2.COLORMAP_TURBO)
+        colors = cmap.reshape(-1, 3)
+        h, w = img.shape[:2]
+        for dy in range(psize):
+            for dx in range(psize):
+                img[np.clip(v + dy, 0, h - 1),
+                    np.clip(u + dx, 0, w - 1)] = colors
+
+    # ------------------------------------------------------------- close ----
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        vals = self._calib_values()
+        if vals is not None:
+            self.app.settings["fusion_calib"] = vals
+            self.app._save_settings()
+        if self.app.fusion_win is self:
+            self.app.fusion_win = None
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
 
 
 def enable_dark_title_bar(root: tk.Tk):
@@ -803,6 +1301,7 @@ class OusterGuiApp:
         self.frame_queue = queue.Queue(maxsize=4)
         self.ros_pub = None
         self.camera_windows = []
+        self.fusion_win = None
         self.record_proc = None
         self.viz_proc = None
         self.image_artists = {}
@@ -1021,6 +1520,8 @@ class OusterGuiApp:
                             "view,\nsnapshots and optional ROS 2 image "
                             "publishing.",
                   style="Hint.TLabel").pack(anchor=tk.W, pady=(3, 0))
+        ttk.Button(cam, text="⧉  Camera-Lidar Fusion...",
+                   command=self.on_open_fusion).pack(fill=tk.X, pady=(6, 0))
 
         # --- Help ---------------------------------------------------------------
         ttk.Button(left, text="?  Help",
@@ -1118,7 +1619,9 @@ class OusterGuiApp:
             return {}
 
     def _save_settings(self):
-        data = {}
+        # start from the stored settings so extra sections written by other
+        # windows (e.g. "fusion_calib") survive a form-fields save
+        data = dict(self.settings)
         for key, var in getattr(self, "_persist_vars", {}).items():
             try:
                 data[key] = var.get()
@@ -1127,6 +1630,7 @@ class OusterGuiApp:
         try:
             with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            self.settings = data
         except Exception as e:
             self.log(f"Could not save settings: {e}")
 
@@ -1513,7 +2017,8 @@ class OusterGuiApp:
         loop = is_file and self.loop_var.get()
         self.reader = ScanReader(url, self.frame_queue, self.log,
                                  is_file=is_file, loop=loop,
-                                 ros_pub_fn=lambda: self.ros_pub)
+                                 ros_pub_fn=lambda: self.ros_pub,
+                                 fusion_fn=self._active_fusion)
         self.reader.start()
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
@@ -1740,7 +2245,8 @@ class OusterGuiApp:
             pub.close()
             self.ros_btn.configure(text="⇪  Start ROS Publishing")
             self.log(f"ROS 2 publishing OFF ({pub.n_published} point "
-                     f"clouds, {pub.n_images} camera images published).")
+                     f"clouds, {pub.n_images} camera images, "
+                     f"{pub.n_rgb} colored clouds published).")
 
     def on_open_camera(self):
         """Open a camera (USB index or IP-camera URL) in its own window."""
@@ -1760,6 +2266,27 @@ class OusterGuiApp:
             return
         self._save_settings()
         self.camera_windows.append(CameraWindow(self, src))
+
+    def _active_fusion(self):
+        fw = self.fusion_win
+        return fw if (fw is not None and not fw._closed) else None
+
+    def on_open_fusion(self):
+        """Open the Camera-Lidar Fusion / calibration window."""
+        if not HAVE_CV2:
+            messagebox.showerror(
+                "Camera-Lidar Fusion",
+                "Fusion needs OpenCV. Install it with:\n\n"
+                "    pip install opencv-python\n\n"
+                f"Details: {CV2_IMPORT_ERROR}")
+            return
+        if self._active_fusion() is not None:
+            self.fusion_win.win.lift()
+            return
+        self.fusion_win = FusionWindow(self)
+        self.log("Fusion window opened: select a camera, start a lidar "
+                 "stream, then tune the calibration until the overlay "
+                 "lines up with the image.")
 
     def on_help(self):
         """Open README.md in a scrollable window inside the app."""
@@ -1904,6 +2431,8 @@ class OusterGuiApp:
     def on_close(self):
         self._save_settings()
         self.on_stop_stream()
+        if self.fusion_win is not None:
+            self.fusion_win.close()
         for cam in list(self.camera_windows):
             cam.close()
         if self.ros_pub is not None:

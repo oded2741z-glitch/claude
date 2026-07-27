@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.3.0
+
+### Camera–Lidar Fusion (new)
+- New **Camera–Lidar Fusion** window (button in the CAMERAS panel):
+  projects the live point cloud onto a camera image, with points colored
+  by depth, for tuning the camera↔lidar calibration by eye.
+- Full calibration editor: intrinsics (`fx, fy, cx, cy` + OpenCV
+  distortion `k1, k2, p1, p2, k3`) and extrinsics (`tx, ty, tz` meters +
+  `yaw/pitch/roll` degrees, lidar frame; 0/0/0 = facing the lidar's +X).
+- **Init intrinsics from camera** produces a starting guess from the
+  frame size and an estimated horizontal FOV.
+- **Save... / Load...** stores the calibration as a JSON file; current
+  values are also auto-remembered in `~/.ouster_lidar_gui.json`.
+- **Publish colored cloud**: the fused result goes to ROS 2 as a
+  `PointCloud2` with `x, y, z, rgb` (PCL packing, default topic
+  `/ouster/points_rgb`, lidar frame) — only points inside the camera
+  image, full resolution.
+- Overlay controls: max-depth color scale and point size; large clouds
+  are decimated for display only.
+- Works with a live sensor or PCAP/OSF playback, and follows whichever
+  camera is selected; XYZ is computed once per frame and shared between
+  the ROS publisher and the fusion window.
+
 ## v1.2.0
 
 ### Cameras (new)

@@ -61,6 +61,14 @@ try:
             from ouster.sdk.client import SensorHttp
         except Exception:
             SensorHttp = None
+    # Quiet the native SDK console logger. It otherwise prints harmless
+    # "Duplicate metadata type / Already registered" errors at startup on
+    # some platforms; real problems are still surfaced in the app's Log
+    # panel via caught exceptions.
+    try:
+        ouster_core.init_logger("critical")
+    except Exception:
+        pass
     HAVE_OUSTER = True
     OUSTER_IMPORT_ERROR = None
 except Exception as _e:  # SDK missing entirely

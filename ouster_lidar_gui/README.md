@@ -64,10 +64,18 @@ pip install -r requirements.txt
 
 ### Windows
 
+The quick way — double-click **`install.bat`** (or run it from CMD /
+PowerShell). It creates the virtual environment and installs everything.
+Then launch with **`run.bat`**.
+
+Or manually:
+
 ```bat
 py -m venv venv
 venv\Scripts\activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
+python ouster_gui.py
 ```
 
 ## Connecting the sensor

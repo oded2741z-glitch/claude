@@ -8,6 +8,9 @@ video. Designed for Ubuntu 24.04; also runs on Windows.
 
 ## Features
 
+- **Sensor profiles** — save a named profile (address + full configuration)
+  per sensor and switch between multiple Ousters from a dropdown
+  (Save / Load / Delete; the last-used profile is restored on launch)
 - **Sensor connection** by hostname or IP address (e.g. `os-122xxxxxxxxxx.local`)
 - **Get Sensor Info** — opens the sensor's built-in web dashboard in your browser
 - **Get Status** — temperature/voltage telemetry, alerts, run status and live

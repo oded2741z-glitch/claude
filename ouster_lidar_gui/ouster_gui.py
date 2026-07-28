@@ -34,7 +34,7 @@ import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import numpy as np
 
@@ -430,6 +430,9 @@ class OusterGuiApp:
         self.image_artists = {}
         self.last_frame_status = {}
         self.settings = self._load_settings()
+        self.profiles = self.settings.get("profiles", {})
+        if not isinstance(self.profiles, dict):
+            self.profiles = {}
 
         self._build_ui()
         self._poll_queue()
@@ -485,6 +488,36 @@ class OusterGuiApp:
 
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # --- Profiles -----------------------------------------------------------
+        prof = ttk.LabelFrame(left, text="  SENSOR PROFILES  ", padding=10)
+        prof.pack(fill=tk.X, pady=4)
+        ttk.Label(prof, text="Profile name:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.profile_var = tk.StringVar()
+        self.profile_box = ttk.Combobox(prof, textvariable=self.profile_var,
+                                        values=[])
+        self.profile_box.pack(fill=tk.X, pady=3)
+        self.profile_box.bind("<<ComboboxSelected>>",
+                              lambda e: self.on_profile_load())
+        ttk.Label(prof, text="pick a profile to load it, or type a new "
+                             "name and Save", style="Hint.TLabel").pack(
+            anchor=tk.W, pady=(0, 3))
+        prow = ttk.Frame(prof, style="Panel.TFrame")
+        prow.pack(fill=tk.X, pady=2)
+        ttk.Button(prow, text="Save",
+                   command=self.on_profile_save).pack(side=tk.LEFT,
+                                                      expand=True, fill=tk.X,
+                                                      padx=(0, 2))
+        ttk.Button(prow, text="Load",
+                   command=self.on_profile_load).pack(side=tk.LEFT,
+                                                      expand=True, fill=tk.X,
+                                                      padx=2)
+        ttk.Button(prow, text="Delete",
+                   command=self.on_profile_delete).pack(side=tk.LEFT,
+                                                        expand=True,
+                                                        fill=tk.X,
+                                                        padx=(2, 0))
 
         # --- Connection -------------------------------------------------------
         conn = ttk.LabelFrame(left, text="  SENSOR CONNECTION  ", padding=10)
@@ -689,6 +722,10 @@ class OusterGuiApp:
                     var.set(self.settings[key])
                 except Exception:
                     pass
+        self._refresh_profile_list()
+        last = self.settings.get("last_profile", "")
+        if last in self.profiles:
+            self.profile_var.set(last)
 
     # ------------------------------------------------------------ settings --
     def _load_settings(self):
@@ -705,11 +742,69 @@ class OusterGuiApp:
                 data[key] = var.get()
             except Exception:
                 pass
+        data["profiles"] = self.profiles
+        data["last_profile"] = self.profile_var.get().strip()
         try:
             with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             self.log(f"Could not save settings: {e}")
+
+    # ------------------------------------------------------------ profiles --
+    def _refresh_profile_list(self):
+        names = sorted(self.profiles.keys())
+        self.profile_box.configure(values=names)
+
+    def on_profile_save(self):
+        name = self.profile_var.get().strip()
+        if not name:
+            messagebox.showerror(
+                "Save Profile",
+                "Type a profile name in the box first "
+                "(e.g. 'roof-os1' or 'lab-192.168.1.50').")
+            return
+        if name in self.profiles and not messagebox.askyesno(
+                "Save Profile",
+                f"Profile '{name}' already exists. Overwrite it?"):
+            return
+        self.profiles[name] = {key: var.get() for key, var
+                               in self._persist_vars.items()}
+        self._refresh_profile_list()
+        self._save_settings()
+        self.log(f"Profile '{name}' saved "
+                 f"({self.profiles[name].get('host', '?')}).")
+
+    def on_profile_load(self):
+        name = self.profile_var.get().strip()
+        data = self.profiles.get(name)
+        if data is None:
+            messagebox.showerror("Load Profile",
+                                 f"No profile named '{name}'.")
+            return
+        for key, var in self._persist_vars.items():
+            if key in data:
+                try:
+                    var.set(data[key])
+                except Exception:
+                    pass
+        self._save_settings()
+        self.log(f"Profile '{name}' loaded "
+                 f"({data.get('host', '?')}).")
+
+    def on_profile_delete(self):
+        name = self.profile_var.get().strip()
+        if name not in self.profiles:
+            messagebox.showerror("Delete Profile",
+                                 f"No profile named '{name}'.")
+            return
+        if not messagebox.askyesno("Delete Profile",
+                                   f"Delete profile '{name}'?"):
+            return
+        del self.profiles[name]
+        self.profile_var.set("")
+        self._refresh_profile_list()
+        self._save_settings()
+        self.log(f"Profile '{name}' deleted.")
 
     def _style_axis(self, ax, title):
         ax.set_facecolor(Theme.BG)

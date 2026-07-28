@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.0
+
+- **Sensor profiles** — save named profiles (address + full configuration)
+  for each Ouster sensor, then switch between sensors by picking a profile
+  from the dropdown. Save / Load / Delete buttons; profiles are stored in
+  `~/.ouster_lidar_gui.json` and the last-used profile is remembered.
+- Windows: one-click `install.bat` installer and `run.bat` launcher.
+- Quieter startup: harmless native-SDK "Duplicate metadata type" console
+  errors are suppressed.
+
 ## v1.0.0
 
 First stable version of the Ouster Digital Lidar GUI (Python / Tkinter).

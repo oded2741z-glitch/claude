@@ -49,6 +49,7 @@ class LiteIntercomApp:
 
         self.active_peer_ip = None
         self.active_peer_name = None
+        self.audio_peer_ip = None
         self.is_calling = False
         self.peers = {} 
         self.contact_buttons = {}
@@ -172,6 +173,7 @@ class LiteIntercomApp:
 
         if not self.is_calling:
             self._refresh_audio_devices()
+            self.audio_peer_ip = None
             self.is_calling = True
             self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"], text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
 
@@ -213,6 +215,7 @@ class LiteIntercomApp:
         if not self.is_calling:
             self.select_peer(ip, caller_name)
             self._refresh_audio_devices()
+            self.audio_peer_ip = None
             self.is_calling = True
             self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"], text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
             threading.Thread(target=self._transmit_audio, daemon=True).start()
@@ -247,7 +250,16 @@ class LiteIntercomApp:
         def audio_callback(outdata, frames, time, status):
             try:
                 data, addr = s.recvfrom(4096)
-                if addr[0] == self.active_peer_ip:
+                if not self.is_calling:
+                    outdata.fill(0)
+                    return
+                # Learn the peer's real source address from the first audio
+                # packet of the call, then accept audio only from that same
+                # source. This works even through NAT, where the source
+                # address differs from the one listed in ip_list.txt.
+                if self.audio_peer_ip is None:
+                    self.audio_peer_ip = addr[0]
+                if addr[0] == self.audio_peer_ip:
                     audio_chunk = np.frombuffer(data, dtype='float32')
                     outdata[:] = audio_chunk.reshape(-1, 1)
                 else:

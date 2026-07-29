@@ -44,8 +44,8 @@ class LiteIntercomApp:
 
         self.root.geometry(f"{self.win_width}x{self.win_height}+0+0")
         self.root.configure(fg_color=COLORS["BG_MAIN"])
-        self.root.overrideredirect(True)
-        self.root.configure(highlightbackground=COLORS["ACCENT"], highlightthickness=1)
+        self.root.title("LITE INTERCOM")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.my_name = socket.gethostname()
         self.server_host = DEFAULT_SERVER_HOST
@@ -88,11 +88,6 @@ class LiteIntercomApp:
                       text_color=COLORS["TEXT_WHITE"], font=("Consolas", 11, "bold"),
                       command=self.show_help).pack(side="right", padx=5, pady=5)
 
-        self.title_bar.bind("<ButtonPress-1>", self.start_move)
-        self.title_bar.bind("<B1-Motion>", self.do_move)
-        self.title_label.bind("<ButtonPress-1>", self.start_move)
-        self.title_label.bind("<B1-Motion>", self.do_move)
-
         self.settings_frame = ctk.CTkFrame(self.root, fg_color="transparent", corner_radius=0)
         self.settings_frame.pack(side="top", fill="x", padx=10, pady=(5, 5))
 
@@ -112,12 +107,6 @@ class LiteIntercomApp:
         self.call_btn.pack(side="bottom", fill="x", padx=10, pady=(5, 20))
 
         ctk.CTkLabel(self.root, text="oT", font=("Consolas", 10, "bold"), text_color=COLORS["ACCENT"]).place(relx=0.98, rely=0.99, anchor="se")
-
-    def start_move(self, e):
-        self.x, self.y = e.x, e.y
-
-    def do_move(self, e):
-        self.root.geometry(f"+{self.root.winfo_x() + e.x - self.x}+{self.root.winfo_y() + e.y - self.y}")
 
     def toggle_topmost(self):
         self.root.attributes("-topmost", self.always_on_top_var.get())
@@ -372,8 +361,8 @@ class LiteIntercomApp:
     def show_help(self):
         help_win = ctk.CTkToplevel(self.root)
         help_win.geometry("300x270")
-        help_win.overrideredirect(True)
-        help_win.configure(fg_color=COLORS["BG_MAIN"], highlightthickness=1, highlightbackground=COLORS["ACCENT"])
+        help_win.title("SYSTEM HELP")
+        help_win.configure(fg_color=COLORS["BG_MAIN"])
 
         bar = ctk.CTkFrame(help_win, height=35, fg_color=COLORS["BG_MAIN"], corner_radius=0)
         bar.pack(fill="x")

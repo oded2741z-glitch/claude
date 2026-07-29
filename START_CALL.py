@@ -50,13 +50,23 @@ class LiteIntercomApp:
         self.active_peer_ip = None
         self.active_peer_name = None
         self.audio_peer_ip = None
+        self.audio_send_target = None
         self.is_calling = False
-        self.peers = {} 
+        self.peers = {}
         self.contact_buttons = {}
+
+        # One shared UDP socket for both sending and receiving audio, bound to
+        # AUDIO_PORT. Sending from the same port we listen on lets return audio
+        # traverse NAT and stateful firewalls (they only open a return path for
+        # the port that originated the traffic).
+        self.audio_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.audio_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.audio_sock.bind(("0.0.0.0", AUDIO_PORT))
+        self.audio_sock.settimeout(0.1)
 
         self._setup_ui()
         self._load_contacts()
-        
+
         threading.Thread(target=self._control_listener, daemon=True).start()
         threading.Thread(target=self._audio_listener, daemon=True).start()
 
@@ -174,6 +184,7 @@ class LiteIntercomApp:
         if not self.is_calling:
             self._refresh_audio_devices()
             self.audio_peer_ip = None
+            self.audio_send_target = (self.active_peer_ip, AUDIO_PORT)
             self.is_calling = True
             self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"], text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
 
@@ -192,6 +203,7 @@ class LiteIntercomApp:
             s.close()
             
         self.is_calling = False
+        self.audio_send_target = None
         btn_text = f"START CALL WITH {self.active_peer_name.upper()}" if self.active_peer_name else "START CALL"
         self.call_btn.configure(text=btn_text, fg_color=COLORS["BTN_BASE"], text_color=COLORS["TEXT_WHITE"], hover_color=COLORS["ACCENT"])
 
@@ -216,6 +228,7 @@ class LiteIntercomApp:
             self.select_peer(ip, caller_name)
             self._refresh_audio_devices()
             self.audio_peer_ip = None
+            self.audio_send_target = (self.active_peer_ip, AUDIO_PORT)
             self.is_calling = True
             self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"], text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
             threading.Thread(target=self._transmit_audio, daemon=True).start()
@@ -231,25 +244,26 @@ class LiteIntercomApp:
             pass
 
     def _transmit_audio(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Send from the shared audio socket (bound to AUDIO_PORT) so the return
+        # path is opened on that port. self.audio_send_target is updated to the
+        # peer's real source address once their audio arrives (NAT-safe).
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32') as stream:
-                while self.is_calling and self.running_event.is_set() and self.active_peer_ip:
+                while self.is_calling and self.running_event.is_set():
                     data, _ = stream.read(CHUNK)
-                    s.sendto(data.tobytes(), (self.active_peer_ip, AUDIO_PORT))
+                    target = self.audio_send_target
+                    if target:
+                        try:
+                            self.audio_sock.sendto(data.tobytes(), target)
+                        except Exception:
+                            pass
         except Exception:
             pass
-        finally:
-            s.close()
 
     def _audio_listener(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.bind(("0.0.0.0", AUDIO_PORT))
-        s.settimeout(0.1)
-
         def audio_callback(outdata, frames, time, status):
             try:
-                data, addr = s.recvfrom(4096)
+                data, addr = self.audio_sock.recvfrom(4096)
                 if not self.is_calling:
                     outdata.fill(0)
                     return
@@ -260,6 +274,9 @@ class LiteIntercomApp:
                 if self.audio_peer_ip is None:
                     self.audio_peer_ip = addr[0]
                 if addr[0] == self.audio_peer_ip:
+                    # Reply to the exact address+port the audio came from so
+                    # return audio traverses the peer's NAT / firewall.
+                    self.audio_send_target = addr
                     audio_chunk = np.frombuffer(data, dtype='float32')
                     outdata[:] = audio_chunk.reshape(-1, 1)
                 else:

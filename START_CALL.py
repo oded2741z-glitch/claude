@@ -8,7 +8,6 @@ import time
 import sounddevice as sd
 import numpy as np
 import os
-import keyboard
 
 ctk.set_appearance_mode("Dark")
 
@@ -48,11 +47,6 @@ class LiteIntercomApp:
         self.root.overrideredirect(True)
         self.root.configure(highlightbackground=COLORS["ACCENT"], highlightthickness=1)
 
-        try:
-            keyboard.add_hotkey("f4", lambda: self.root.after(0, self.toggle_window_visibility))
-        except Exception:
-            pass
-
         self.my_name = socket.gethostname()
         self.server_host = DEFAULT_SERVER_HOST
         self.server_port = DEFAULT_SERVER_PORT
@@ -61,7 +55,6 @@ class LiteIntercomApp:
         self.running_event.set()
 
         self.always_on_top_var = ctk.BooleanVar(value=False)
-        self.ghost_mode_var = ctk.BooleanVar(value=False)
 
         self.active_peer_name = None
         self.is_calling = False
@@ -109,12 +102,6 @@ class LiteIntercomApp:
                                           corner_radius=0, checkbox_width=14, checkbox_height=14, border_width=1)
         self.topmost_cb.pack(side="left", padx=(0, 10))
 
-        self.ghost_cb = ctk.CTkCheckBox(self.settings_frame, text="GHOST MODE", variable=self.ghost_mode_var,
-                                        fg_color=COLORS["ACCENT"], text_color=COLORS["TEXT_WHITE"],
-                                        font=("Consolas", 10), command=self.toggle_ghost,
-                                        corner_radius=0, checkbox_width=14, checkbox_height=14, border_width=1)
-        self.ghost_cb.pack(side="left")
-
         self.sidebar = ctk.CTkScrollableFrame(self.root, fg_color="transparent", corner_radius=0)
         self.sidebar.pack(side="top", fill="both", expand=True, padx=5, pady=5)
 
@@ -134,10 +121,6 @@ class LiteIntercomApp:
 
     def toggle_topmost(self):
         self.root.attributes("-topmost", self.always_on_top_var.get())
-
-    def toggle_ghost(self):
-        alpha_value = 0.6 if self.ghost_mode_var.get() else 1.0
-        self.root.attributes("-alpha", alpha_value)
 
     def _load_contacts(self):
         if not os.path.exists(IP_LIST_FILE):
@@ -386,16 +369,6 @@ class LiteIntercomApp:
                 continue
             self._send_frame(MSG_AUDIO, data)
 
-    def toggle_window_visibility(self):
-        if self.root.winfo_viewable():
-            self.root.withdraw()
-        else:
-            self.root.deiconify()
-            self.root.attributes("-topmost", True)
-            self.root.focus_force()
-            if not self.always_on_top_var.get():
-                self.root.after(100, lambda: self.root.attributes("-topmost", False))
-
     def show_help(self):
         help_win = ctk.CTkToplevel(self.root)
         help_win.geometry("300x270")
@@ -417,8 +390,6 @@ class LiteIntercomApp:
             "* Select a target from the list.\n"
             "* Click START CALL to open the audio stream.\n"
             "* Toggle ALWAYS ON TOP to keep window above.\n"
-            "* Toggle GHOST MODE for transparency.\n"
-            "* Press F4 anywhere to hide/show window.\n"
             "* Edit 'ip_list.txt' to set the server and contacts.\n"
         )
         txt.insert("1.0", help_content)

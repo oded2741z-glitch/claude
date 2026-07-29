@@ -1,10 +1,6 @@
 import customtkinter as ctk
 import socket
-import struct
 import threading
-import queue
-import collections
-import time
 import sounddevice as sd
 import numpy as np
 import os
@@ -21,18 +17,9 @@ COLORS = {
 }
 
 IP_LIST_FILE = "ip_list.txt"
-DEFAULT_SERVER_HOST = "127.0.0.1"
-DEFAULT_SERVER_PORT = 5000
+AUDIO_PORT = 6000
+CTRL_PORT = 5001
 SAMPLE_RATE, CHUNK, CHANNELS = 44100, 1024, 1
-
-# Wire protocol (must match server.py): 4-byte big-endian length + payload.
-# Payload byte 0 is the message type, the rest is the data.
-MSG_REGISTER = 1
-MSG_CALL = 2
-MSG_END = 3
-MSG_AUDIO = 4
-MSG_INCOMING_CALL = 5
-MSG_CALL_ENDED = 6
 
 
 class LiteIntercomApp:
@@ -47,35 +34,41 @@ class LiteIntercomApp:
         self.root.title("LITE INTERCOM")
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        self.my_name = socket.gethostname()
-        self.server_host = DEFAULT_SERVER_HOST
-        self.server_port = DEFAULT_SERVER_PORT
-
+        self.my_ip = socket.gethostbyname(socket.gethostname())
+        self.my_name = "Me"
         self.running_event = threading.Event()
         self.running_event.set()
 
         self.always_on_top_var = ctk.BooleanVar(value=False)
 
+        self.active_peer_ip = None
         self.active_peer_name = None
+        self.audio_peer_ip = None
+        self.audio_send_target = None
         self.is_calling = False
+        self.peers = {}
         self.contact_buttons = {}
 
-        # Networking / audio buffers.
-        self.sock = None
-        self.send_lock = threading.Lock()
-        self.play_buffer = collections.deque(maxlen=15)   # incoming audio chunks
-        self.mic_queue = queue.Queue(maxsize=15)           # outgoing audio chunks
+        # One shared UDP socket for both sending and receiving audio, bound to
+        # AUDIO_PORT. Sending from the same port we listen on lets return audio
+        # traverse NAT and stateful firewalls (they only open a return path for
+        # the port that originated the traffic).
+        self.audio_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.audio_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.audio_sock.bind(("0.0.0.0", AUDIO_PORT))
+        self.audio_sock.settimeout(0.1)
 
         self._setup_ui()
         self._load_contacts()
 
-        threading.Thread(target=self._network_thread, daemon=True).start()
+        threading.Thread(target=self._control_listener, daemon=True).start()
+        threading.Thread(target=self._audio_listener, daemon=True).start()
 
     def _setup_ui(self):
         self.title_bar = ctk.CTkFrame(self.root, height=35, fg_color=COLORS["BG_MAIN"], corner_radius=0)
         self.title_bar.pack(side="top", fill="x")
 
-        self.title_label = ctk.CTkLabel(self.title_bar, text="LITE INTERCOM", font=("Consolas", 14, "bold"), text_color=COLORS["BTN_QUIT_HOVER"])
+        self.title_label = ctk.CTkLabel(self.title_bar, text="LITE INTERCOM", font=("Consolas", 14, "bold"), text_color=COLORS["ACCENT"])
         self.title_label.pack(side="left", padx=10)
 
         ctk.CTkButton(self.title_bar, text="QUIT", width=45, height=25, corner_radius=0,
@@ -113,186 +106,108 @@ class LiteIntercomApp:
 
     def _load_contacts(self):
         if not os.path.exists(IP_LIST_FILE):
-            with open(IP_LIST_FILE, "w", encoding="utf-8") as f:
-                f.write("CONFIG: SERVER, 127.0.0.1, 5000\n")
-                f.write("CONFIG: NAME, Me\n")
-                f.write("CONFIG: TITLE, LITE INTERCOM\n")
-                f.write("# Add one contact name per line (the name each side registers with):\n")
-                f.write("Alice\n")
-                f.write("Bob\n")
+            with open(IP_LIST_FILE, "w") as f:
+                f.write("Local_Test, 127.0.0.1\n")
 
-        contacts = []
         with open(IP_LIST_FILE, "r", encoding="utf-8") as f:
             for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
+                if line.startswith("CONFIG: TITLE"):
+                    try:
+                        new_title = line.split(",")[1].strip()
+                        self.title_label.configure(text=new_title)
+                    except IndexError:
+                        pass
 
-                if line.upper().startswith("CONFIG:"):
-                    parts = [p.strip() for p in line[len("CONFIG:"):].split(",")]
-                    key = parts[0].upper() if parts else ""
-                    if key == "TITLE" and len(parts) >= 2:
-                        self.title_label.configure(text=parts[1])
-                    elif key == "NAME" and len(parts) >= 2:
-                        self.my_name = parts[1]
-                    elif key == "SERVER" and len(parts) >= 2:
-                        self.server_host = parts[1]
-                        if len(parts) >= 3 and parts[2].isdigit():
-                            self.server_port = int(parts[2])
-                    continue
+                elif line.strip() and not line.startswith(("#", "CONFIG")):
+                    parts = [x.strip() for x in line.split(",")]
+                    name, ip = parts[0], parts[1]
+                    self.peers[ip] = name
+                    if ip == self.my_ip:
+                        self.my_name = name
 
-                # A contact line: the first comma-separated field is the name.
-                name = line.split(",")[0].strip()
-                if name:
-                    contacts.append(name)
+        for ip, name in self.peers.items():
+            if ip == self.my_ip:
+                btn = ctk.CTkButton(self.sidebar, text=f"{name} (Me)\n{ip}", corner_radius=0, height=45,
+                                    fg_color=COLORS["ME_BTN"], text_color="#777777", font=("Consolas", 11),
+                                    state="disabled")
+            else:
+                btn = ctk.CTkButton(self.sidebar, text=f"{name}\n{ip}", corner_radius=0, height=45,
+                                    fg_color=COLORS["BTN_BASE"], hover_color=COLORS["ACCENT"],
+                                    text_color=COLORS["TEXT_WHITE"], font=("Consolas", 11),
+                                    command=lambda i=ip, n=name: self.select_peer(i, n))
 
-        for name in contacts:
-            if name == self.my_name:
-                continue
-            btn = ctk.CTkButton(self.sidebar, text=name, corner_radius=0, height=45,
-                                fg_color=COLORS["BTN_BASE"], hover_color=COLORS["ACCENT"],
-                                text_color=COLORS["TEXT_WHITE"], font=("Consolas", 12),
-                                command=lambda n=name: self.select_peer(n))
             btn.pack(fill="x", pady=2, padx=2)
-            self.contact_buttons[name] = btn
+            self.contact_buttons[ip] = btn
 
-    def select_peer(self, name):
+    def select_peer(self, ip, name):
         if self.is_calling:
             return
 
-        for btn in self.contact_buttons.values():
-            btn.configure(fg_color=COLORS["BTN_BASE"], text_color=COLORS["TEXT_WHITE"])
+        for btn_ip, btn in self.contact_buttons.items():
+            if btn_ip != self.my_ip:
+                btn.configure(fg_color=COLORS["BTN_BASE"], text_color=COLORS["TEXT_WHITE"])
 
+        self.active_peer_ip = ip
         self.active_peer_name = name
-        if name in self.contact_buttons:
-            self.contact_buttons[name].configure(fg_color=COLORS["ACCENT"], text_color=COLORS["BG_MAIN"])
+        self.contact_buttons[ip].configure(fg_color=COLORS["ACCENT"], text_color=COLORS["BG_MAIN"])
         self.call_btn.configure(text=f"START CALL WITH {name.upper()}")
 
     def toggle_call(self):
-        if not self.active_peer_name:
+        if not self.active_peer_ip or self.active_peer_ip == self.my_ip:
             return
 
         if not self.is_calling:
-            if not self.sock:
-                self.call_btn.configure(text="NOT CONNECTED")
-                self.root.after(1500, self._reset_call_button)
-                return
-            self._start_call_ui()
-            self._send_frame(MSG_CALL, self.active_peer_name)
-            self._begin_audio()
+            self._refresh_audio_devices()
+            self.audio_peer_ip = None
+            self.audio_send_target = (self.active_peer_ip, AUDIO_PORT)
+            self.is_calling = True
+            self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"], text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
+
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.sendto(f"CALL:{self.my_name}".encode(), (self.active_peer_ip, CTRL_PORT))
+            s.close()
+
+            threading.Thread(target=self._transmit_audio, daemon=True).start()
         else:
             self.end_call()
 
-    def handle_incoming_call(self, caller_name):
-        if not self.is_calling:
-            self.select_peer(caller_name)
-            self._start_call_ui()
-            self._begin_audio()
-
-    def _start_call_ui(self):
-        self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"],
-                                text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
-
-    def _reset_call_button(self):
-        btn_text = f"START CALL WITH {self.active_peer_name.upper()}" if self.active_peer_name else "START CALL"
-        self.call_btn.configure(text=btn_text, fg_color=COLORS["BTN_BASE"],
-                                text_color=COLORS["TEXT_WHITE"], hover_color=COLORS["ACCENT"])
-
     def end_call(self):
-        was_calling = self.is_calling
+        if self.is_calling and self.active_peer_ip:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.sendto(b"END", (self.active_peer_ip, CTRL_PORT))
+            s.close()
+
         self.is_calling = False
-        if was_calling:
-            self._send_frame(MSG_END)
-        self.play_buffer.clear()
-        self._drain_queue(self.mic_queue)
-        self._reset_call_button()
+        self.audio_send_target = None
+        btn_text = f"START CALL WITH {self.active_peer_name.upper()}" if self.active_peer_name else "START CALL"
+        self.call_btn.configure(text=btn_text, fg_color=COLORS["BTN_BASE"], text_color=COLORS["TEXT_WHITE"], hover_color=COLORS["ACCENT"])
 
-    def _begin_audio(self):
-        self._refresh_audio_devices()
-        self.play_buffer.clear()
-        self._drain_queue(self.mic_queue)
-        self.is_calling = True
-        threading.Thread(target=self._audio_engine, daemon=True).start()
-        threading.Thread(target=self._mic_sender, daemon=True).start()
-
-    # ---- networking ----------------------------------------------------
-
-    def _send_frame(self, mtype, data=b""):
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        payload = bytes([mtype]) + data
-        frame = struct.pack(">I", len(payload)) + payload
-        with self.send_lock:
-            if self.sock:
-                try:
-                    self.sock.sendall(frame)
-                except Exception:
-                    pass
-
-    def _recv_exact(self, n):
-        data = b""
-        while len(data) < n:
-            if not self.sock:
-                return None
-            chunk = self.sock.recv(n - len(data))
-            if not chunk:
-                return None
-            data += chunk
-        return data
-
-    def _recv_frame(self):
-        header = self._recv_exact(4)
-        if not header:
-            return None, None
-        (length,) = struct.unpack(">I", header)
-        if length <= 0 or length > 10_000_000:
-            return None, None
-        payload = self._recv_exact(length)
-        if payload is None:
-            return None, None
-        return payload[0], payload[1:]
-
-    def _set_connected(self, ok):
-        self.title_label.configure(text_color=COLORS["ACCENT"] if ok else COLORS["BTN_QUIT_HOVER"])
-
-    def _network_thread(self):
+    def _control_listener(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("0.0.0.0", CTRL_PORT))
         while self.running_event.is_set():
             try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(10)
-                s.connect((self.server_host, self.server_port))
-                try:
-                    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                except Exception:
-                    pass
-                s.settimeout(None)
-                self.sock = s
-                self._send_frame(MSG_REGISTER, self.my_name)
-                self.root.after(0, lambda: self._set_connected(True))
+                data, addr = s.recvfrom(1024)
+                msg = data.decode()
+                ip = addr[0]
 
-                while self.running_event.is_set():
-                    mtype, data = self._recv_frame()
-                    if mtype is None:
-                        break
-                    if mtype == MSG_INCOMING_CALL:
-                        caller = data.decode("utf-8", "ignore")
-                        self.root.after(0, lambda c=caller: self.handle_incoming_call(c))
-                    elif mtype == MSG_CALL_ENDED:
-                        self.root.after(0, self.end_call)
-                    elif mtype == MSG_AUDIO:
-                        self.play_buffer.append(data)
-            except Exception:
-                pass
-            finally:
-                self.sock = None
-                self.root.after(0, lambda: self._set_connected(False))
-                if self.is_calling:
+                if msg.startswith("CALL:"):
+                    caller_name = msg.split(":")[1]
+                    self.root.after(0, lambda: self.handle_incoming_call(ip, caller_name))
+                elif msg == "END":
                     self.root.after(0, self.end_call)
+            except:
+                pass
 
-            if self.running_event.is_set():
-                time.sleep(3)
-
-    # ---- audio ---------------------------------------------------------
+    def handle_incoming_call(self, ip, caller_name):
+        if not self.is_calling:
+            self.select_peer(ip, caller_name)
+            self._refresh_audio_devices()
+            self.audio_peer_ip = None
+            self.audio_send_target = (self.active_peer_ip, AUDIO_PORT)
+            self.is_calling = True
+            self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"], text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
+            threading.Thread(target=self._transmit_audio, daemon=True).start()
 
     def _refresh_audio_devices(self):
         # PortAudio only scans audio devices once, so devices plugged in after
@@ -304,63 +219,64 @@ class LiteIntercomApp:
         except Exception:
             pass
 
-    def _drain_queue(self, q):
+    def _transmit_audio(self):
+        # Send from the shared audio socket (bound to AUDIO_PORT) so the return
+        # path is opened on that port. self.audio_send_target is updated to the
+        # peer's real source address once their audio arrives (NAT-safe).
         try:
-            while True:
-                q.get_nowait()
-        except queue.Empty:
-            pass
-
-    def _audio_engine(self):
-        # A single full-duplex stream handles both the microphone and the
-        # speaker, so there is no race between two separate streams and the
-        # current default device (e.g. freshly plugged headphones) is used.
-        def callback(indata, outdata, frames, time_info, status):
-            # Capture microphone -> outgoing queue (converted to int16 to
-            # roughly halve the bandwidth over the network).
-            try:
-                if self.is_calling:
-                    samples = np.clip(indata[:, 0], -1.0, 1.0)
-                    payload = (samples * 32767.0).astype(np.int16).tobytes()
-                    try:
-                        self.mic_queue.put_nowait(payload)
-                    except queue.Full:
-                        pass
-            except Exception:
-                pass
-
-            # Play the next received chunk, or silence if none is buffered.
-            try:
-                if self.play_buffer:
-                    data = self.play_buffer.popleft()
-                    chunk = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-                    outdata.fill(0)
-                    n = min(len(chunk), frames)
-                    outdata[:n, 0] = chunk[:n]
-                else:
-                    outdata.fill(0)
-            except Exception:
-                outdata.fill(0)
-
-        try:
-            with sd.Stream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32',
-                           blocksize=CHUNK, callback=callback):
+            with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32') as stream:
                 while self.is_calling and self.running_event.is_set():
-                    sd.sleep(100)
+                    data, _ = stream.read(CHUNK)
+                    target = self.audio_send_target
+                    if target:
+                        try:
+                            self.audio_sock.sendto(data.tobytes(), target)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
-    def _mic_sender(self):
-        while self.is_calling and self.running_event.is_set():
+    def _audio_listener(self):
+        def audio_callback(outdata, frames, time, status):
             try:
-                data = self.mic_queue.get(timeout=0.2)
-            except queue.Empty:
+                data, addr = self.audio_sock.recvfrom(4096)
+                if not self.is_calling:
+                    outdata.fill(0)
+                    return
+                # Learn the peer's real source address from the first audio
+                # packet of the call, then accept audio only from that same
+                # source. This works even through NAT, where the source
+                # address differs from the one listed in ip_list.txt.
+                if self.audio_peer_ip is None:
+                    self.audio_peer_ip = addr[0]
+                if addr[0] == self.audio_peer_ip:
+                    # Reply to the exact address+port the audio came from so
+                    # return audio traverses the peer's NAT / firewall.
+                    self.audio_send_target = addr
+                    audio_chunk = np.frombuffer(data, dtype='float32')
+                    outdata[:] = audio_chunk.reshape(-1, 1)
+                else:
+                    outdata.fill(0)
+            except:
+                outdata.fill(0)
+
+        # The output stream is opened per call (not once at startup), so each
+        # call picks up the current default output device after the refresh.
+        while self.running_event.is_set():
+            if not self.is_calling:
+                sd.sleep(100)
                 continue
-            self._send_frame(MSG_AUDIO, data)
+            try:
+                with sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32', blocksize=CHUNK, callback=audio_callback):
+                    while self.is_calling and self.running_event.is_set():
+                        sd.sleep(100)
+            except Exception:
+                while self.is_calling and self.running_event.is_set():
+                    sd.sleep(100)
 
     def show_help(self):
         help_win = ctk.CTkToplevel(self.root)
-        help_win.geometry("300x270")
+        help_win.geometry("300x250")
         help_win.title("SYSTEM HELP")
         help_win.configure(fg_color=COLORS["BG_MAIN"])
 
@@ -375,11 +291,10 @@ class LiteIntercomApp:
 
         help_content = (
             "--- LITE INTERCOM HELP ---\n\n"
-            "* The title turns GREEN when connected to the server.\n"
             "* Select a target from the list.\n"
-            "* Click START CALL to open the audio stream.\n"
+            "* Click START CALL to open audio stream.\n"
             "* Toggle ALWAYS ON TOP to keep window above.\n"
-            "* Edit 'ip_list.txt' to set the server and contacts.\n"
+            "* Edit 'ip_list.txt' to change contacts.\n"
         )
         txt.insert("1.0", help_content)
         txt.configure(state="disabled")
@@ -388,8 +303,7 @@ class LiteIntercomApp:
         self.running_event.clear()
         self.is_calling = False
         try:
-            if self.sock:
-                self.sock.close()
+            self.audio_sock.close()
         except Exception:
             pass
         self.root.destroy()

@@ -42,6 +42,41 @@ pip install numpy sounddevice
 python -m lanphone
 ```
 
+## קימפול לקובץ הרצה יחיד (EXE)
+
+הקוד רץ ישירות ב-Python ואין צורך לקמפל אותו, אבל אפשר לארוז אותו ל-**קובץ
+`.exe` אחד** שרץ גם על מחשב שאין בו Python בכלל — נוח כשלא רוצים להתקין Python
+על המחשב השני.
+
+1. במחשב אחד (זה שיש בו Python) לחצו לחיצה כפולה על **`build.bat`**.
+   הוא מתקין `pyinstaller` ובונה. לוקח דקה-שתיים.
+2. התוצאה: **`dist\LANPhone.exe`** — קובץ אחד בגודל כ-30 מגה.
+3. העתיקו את הקובץ הזה לשני המחשבים (דיסק און קי, רשת, מה שנוח) והפעילו אותו
+   בלחיצה כפולה. לא צריך שם Python, לא צריך את שאר התיקייה.
+
+הפעלה ידנית, אם מעדיפים שורת פקודה:
+
+```bat
+pip install pyinstaller numpy sounddevice
+pyinstaller --noconfirm --clean LANPhone.spec
+```
+
+ההגדרות של הבנייה נמצאות ב-`LANPhone.spec`. מה שחשוב שם: `console=False` (לא
+נפתח חלון שחור לצד התוכנה), ואיסוף מפורש של `sounddevice` — הספרייה מביאה איתה
+את ספריית ה-PortAudio כקובץ נלווה, ובלי לאסוף אותה התוכנה עולה אבל לא מוצאת
+אף התקן שמע.
+
+**דברים שכדאי לדעת:**
+
+* ההפעלה הראשונה של ה-EXE איטית (2–4 שניות) — הקובץ פורק את עצמו לתיקייה
+  זמנית. זה נורמלי.
+* Windows SmartScreen או האנטי-וירוס עלולים להתלונן על קובץ לא חתום שנוצר
+  ב-PyInstaller. זו התראה גנרית; `More info ➜ Run anyway` פותר.
+* ה-EXE נבנה עבור מערכת ההפעלה שבנתה אותו: בנייה ב-Windows ל-Windows בלבד,
+  ו-64 ביט אם ה-Python שבנה הוא 64 ביט.
+* גם ב-EXE עובדות אפשרויות שורת הפקודה (`LANPhone.exe --list-devices`), ומכיוון
+  שאין חלון קונסולה הפלט מוצג בחלון הודעה.
+
 ## איך מבצעים שיחה
 
 1. חברו את אוזניות ה-USB (אפשר גם לפני וגם אחרי הפעלת התוכנה).
@@ -162,6 +197,7 @@ python -m lanphone
 
 ```bat
 python -m lanphone                  ::  הממשק הגרפי
+python main.py                      ::  אותו דבר בדיוק
 python -m lanphone --list-devices   ::  רשימת התקני השמע שהמערכת מזהה
 python -m lanphone --network        ::  הכתובת המקומית והפורטים
 ```
@@ -181,7 +217,7 @@ Windows לא רואה אותן והבעיה אינה בתוכנה.
 python -m unittest discover -s tests -t .
 ```
 
-112 בדיקות שמכסות המרת קצב דגימה, חוצץ ההשהיה, פורמט החבילות, סידור טקסט מימין
+119 בדיקות שמכסות המרת קצב דגימה, חוצץ ההשהיה, פורמט החבילות, סידור טקסט מימין
 לשמאל, מנוע ההקלטה וההשמעה (מול כרטיס קול מדומה), הממשק הגרפי, הכתובות השמורות, ושיחה
 מלאה מקצה לקצה — התקשרות, מענה, דחייה, "תפוס", ניתוק, פסק זמן ובחירת איכות — הכול
 על ממשק ה-loopback, בלי צורך בכרטיס קול אמיתי. בדיקות הממשק מדלגות על עצמן
@@ -201,6 +237,8 @@ python -m unittest discover -s tests -t .
 | `lanphone/rtl.py` | סידור טקסט עברי לתצוגה ב-Tk |
 | `lanphone/i18n.py` | מחרוזות הממשק (עברית ואנגלית) |
 | `lanphone/config.py` | קבועים, הגדרות והכתובות השמורות |
+| `main.py` | נקודת הכניסה (וגם נקודת הכניסה לבנייה) |
+| `LANPhone.spec` + `build.bat` | בנייה של קובץ EXE יחיד |
 
 ---
 
@@ -226,3 +264,7 @@ support; that fix can be turned off in Settings.
 
 Run `python -m lanphone --list-devices` to check what the sound system sees, and
 `python -m unittest discover -s tests -t .` for the test suite.
+
+`build.bat` (or `pyinstaller --noconfirm --clean LANPhone.spec`) packages
+everything into a single `dist\LANPhone.exe` that runs on a machine without
+Python installed.

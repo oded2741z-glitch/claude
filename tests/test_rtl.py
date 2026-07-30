@@ -1,7 +1,7 @@
 import unittest
 
 from lanphone.config import DEFAULT_LANGUAGE
-from lanphone.i18n import EN, HE, Strings
+from lanphone.i18n import ALERT_KEYS, EN, EVENT_KEYS, HE, Strings, severity
 from lanphone.rtl import contains_rtl, to_visual
 
 
@@ -55,6 +55,14 @@ class StringsTest(unittest.TestCase):
         english = Strings("en")
         self.assertEqual(english("call"), EN["call"])
 
+    def test_hebrew_text_is_fixed_even_in_the_english_interface(self):
+        """Tk mangles Hebrew whatever the interface language is."""
+        english = Strings("en")
+        self.assertEqual(english.visual("עברית"), to_visual("עברית"))
+        self.assertEqual(english.visual("PC-של-עודד"), to_visual("PC-של-עודד"))
+        self.assertEqual(english.visual("Realtek Microphone"), "Realtek Microphone")
+        self.assertEqual(Strings("en", rtl_fix=False).visual("עברית"), "עברית")
+
     def test_formatting_happens_before_reordering(self):
         fixed = Strings("he")
         text = fixed("log_calling", ip="192.168.1.7")
@@ -70,6 +78,17 @@ class StringsTest(unittest.TestCase):
         self.assertEqual(Strings("fr").language, DEFAULT_LANGUAGE)
         self.assertEqual(Strings().language, DEFAULT_LANGUAGE)
         self.assertFalse(Strings().is_rtl)
+
+    def test_log_severity(self):
+        self.assertEqual(severity("log_audio_error"), "alert")
+        self.assertEqual(severity("log_incoming"), "event")
+        self.assertEqual(severity("log_call_ended"), "")
+        self.assertEqual(severity(""), "")
+
+    def test_every_coloured_key_actually_exists(self):
+        """A renamed key would silently lose its colour."""
+        for key in ALERT_KEYS | EVENT_KEYS:
+            self.assertIn(key, HE, f"{key} is coloured but not a real string")
 
     def test_every_placeholder_matches_between_languages(self):
         import string

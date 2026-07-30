@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import math
 import queue
-import sys
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any
 
 from . import audio as audiolib
-from . import net
+from . import net, theme
 from .config import APP_NAME, SIGNALING_PORT, SUPPORTED_RATES, Settings
-from .i18n import Strings
+from .i18n import Strings, severity
 from .phone import CALLING, IDLE, IN_CALL, RINGING, Phone
 
 VERSION = "1.0"
@@ -27,7 +26,7 @@ class PhoneApp:
         self.S = Strings(self.settings.language, self.settings.rtl_fix)
         self.events: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
         self.phone = Phone(self.settings, self._emit)
-        self._log_lines: list[str] = []
+        self._log_lines: list[tuple[str, str, str]] = []  # (time, text, tag)
         self._peers: list[dict[str, Any]] = []
         self._input_devices: list[audiolib.DeviceInfo] = []
         self._output_devices: list[audiolib.DeviceInfo] = []
@@ -39,10 +38,10 @@ class PhoneApp:
 
         self.root = tk.Tk()
         self.root.title(self._window_title())
-        self.root.minsize(760, 560)
+        self.root.minsize(780, 580)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._init_fonts()
-        self.container = ttk.Frame(self.root)
+        self.style = theme.apply(self.root)
+        self.container = ttk.Frame(self.root, padding=(2, 0, 2, 2))
         self.container.pack(fill="both", expand=True)
         self._build_ui()
         self.root.after(TICK_MS, self._tick)
@@ -51,15 +50,6 @@ class PhoneApp:
     # ------------------------------------------------------------------
     # construction
     # ------------------------------------------------------------------
-    def _init_fonts(self) -> None:
-        family = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
-        try:
-            import tkinter.font as tkfont
-
-            for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
-                tkfont.nametofont(name).configure(family=family, size=10)
-        except Exception:  # noqa: BLE001 - fonts are cosmetic
-            pass
 
     def _window_title(self) -> str:
         translated = self.S.raw("app_title")
@@ -81,36 +71,38 @@ class PhoneApp:
     def _build_ui(self) -> None:
         for child in self.container.winfo_children():
             child.destroy()
-        self._build_menu()
 
         pad = {"padx": 8, "pady": 4}
         self.container.columnconfigure(0, weight=1)
-        self.container.rowconfigure(2, weight=1)
+        self.container.rowconfigure(3, weight=1)
+        self._build_toolbar()
 
         # -- header --------------------------------------------------
         header = ttk.Frame(self.container)
-        header.grid(row=0, column=0, sticky="ew", **pad)
+        header.grid(row=1, column=0, sticky="ew", **pad)
         header.columnconfigure(1, weight=1)
         name_col, ip_col = (2, 0) if self.S.is_rtl else (0, 2)
 
-        ttk.Label(header, text=self.S("my_name")).grid(row=0, column=name_col, sticky=self._anchor)
+        ttk.Label(header, text=self.S("my_name"), style=theme.DIM).grid(
+            row=0, column=name_col, sticky=self._anchor
+        )
         self.name_var = tk.StringVar(value=self.settings.display_name)
         name_entry = ttk.Entry(header, textvariable=self.name_var, width=24)
         name_entry.grid(row=0, column=1, sticky=self._anchor, padx=6)
         name_entry.bind("<FocusOut>", self._on_name_changed)
         name_entry.bind("<Return>", self._on_name_changed)
 
-        self.ip_label = ttk.Label(header, text=f"{self.S('my_ip')} ...")
+        self.ip_label = ttk.Label(header, text=f"{self.S('my_ip')} ...", style=theme.DIM)
         self.ip_label.grid(row=0, column=ip_col, sticky="w" if self.S.is_rtl else "e", padx=6)
 
         self.status_label = ttk.Label(
-            header, text=f"{self.S('status')} {self.S('state_idle')}", font=("", 11, "bold")
+            header, text=f"{self.S('status')} {self.S('state_idle')}", style=theme.STATUS
         )
-        self.status_label.grid(row=1, column=0, columnspan=3, sticky=self._anchor, pady=(6, 0))
+        self.status_label.grid(row=2, column=0, columnspan=3, sticky=self._anchor, pady=(6, 0))
 
         # -- middle: peers + audio -----------------------------------
         middle = ttk.Frame(self.container)
-        middle.grid(row=1, column=0, sticky="ew", **pad)
+        middle.grid(row=2, column=0, sticky="ew", **pad)
         middle.columnconfigure(0, weight=1, uniform="cols")
         middle.columnconfigure(1, weight=1, uniform="cols")
         left_col, right_col = (1, 0) if self.S.is_rtl else (0, 1)
@@ -122,7 +114,8 @@ class PhoneApp:
         list_row = ttk.Frame(peers_box)
         list_row.grid(row=0, column=0, sticky="ew", padx=6, pady=4)
         list_row.columnconfigure(0, weight=1)
-        self.peer_list = tk.Listbox(list_row, height=5, exportselection=False, activestyle="none")
+        self.peer_list = tk.Listbox(list_row, height=6, exportselection=False)
+        theme.style_listbox(self.peer_list)
         self.peer_list.grid(row=0, column=0, sticky="ew")
         self.peer_list.bind("<Double-Button-1>", lambda _e: self._on_call())
         self.peer_list.bind("<<ListboxSelect>>", self._on_peer_selected)
@@ -136,7 +129,7 @@ class PhoneApp:
         # label | address box | forget, mirrored for right-to-left
         addr_cols = (2, 1, 0) if self.S.is_rtl else (0, 1, 2)
         ip_row.columnconfigure(addr_cols[1], weight=1)
-        ttk.Label(ip_row, text=self.S("address")).grid(row=0, column=addr_cols[0], sticky=self._anchor)
+        ttk.Label(ip_row, text=self.S("address"), style=theme.DIM).grid(row=0, column=addr_cols[0], sticky=self._anchor)
         self.ip_var = tk.StringVar(value=self.settings.last_peer_ip)
         # Editable on purpose: type a new address, or pick a saved one.
         self.ip_combo = ttk.Combobox(ip_row, textvariable=self.ip_var, width=18)
@@ -152,9 +145,15 @@ class PhoneApp:
         buttons.grid(row=2, column=0, sticky="ew", padx=6, pady=(4, 8))
         for col in range(4):
             buttons.columnconfigure(col, weight=1)
-        self.call_btn = ttk.Button(buttons, text=self.S("call"), command=self._on_call)
-        self.hangup_btn = ttk.Button(buttons, text=self.S("hangup"), command=self._on_hangup)
-        self.answer_btn = ttk.Button(buttons, text=self.S("answer"), command=self._on_answer)
+        self.call_btn = ttk.Button(
+            buttons, text=self.S("call"), style=theme.ACCENT_BUTTON, command=self._on_call
+        )
+        self.hangup_btn = ttk.Button(
+            buttons, text=self.S("hangup"), style=theme.DANGER_BUTTON, command=self._on_hangup
+        )
+        self.answer_btn = ttk.Button(
+            buttons, text=self.S("answer"), style=theme.ACCENT_BUTTON, command=self._on_answer
+        )
         self.reject_btn = ttk.Button(buttons, text=self.S("reject"), command=self._on_reject)
         order = [self.call_btn, self.hangup_btn, self.answer_btn, self.reject_btn]
         if self.S.is_rtl:
@@ -166,7 +165,7 @@ class PhoneApp:
         audio_box.grid(row=0, column=right_col, sticky="nsew", padx=4)
         audio_box.columnconfigure(field_col, weight=1)
 
-        ttk.Label(audio_box, text=self.S("mic")).grid(
+        ttk.Label(audio_box, text=self.S("mic"), style=theme.DIM).grid(
             row=0, column=label_col, sticky=self._anchor, padx=6, pady=3
         )
         self.mic_var = tk.StringVar()
@@ -174,7 +173,7 @@ class PhoneApp:
         self.mic_combo.grid(row=0, column=field_col, sticky="ew", padx=6, pady=3)
         self.mic_combo.bind("<<ComboboxSelected>>", self._on_mic_selected)
 
-        ttk.Label(audio_box, text=self.S("speaker")).grid(
+        ttk.Label(audio_box, text=self.S("speaker"), style=theme.DIM).grid(
             row=1, column=label_col, sticky=self._anchor, padx=6, pady=3
         )
         self.out_var = tk.StringVar()
@@ -202,13 +201,13 @@ class PhoneApp:
             command=self._on_auto_answer,
         ).grid(row=4, column=0, columnspan=2, sticky=self._anchor, padx=6)
 
-        ttk.Label(audio_box, text=self.S("mic_level")).grid(
+        ttk.Label(audio_box, text=self.S("mic_level"), style=theme.DIM).grid(
             row=5, column=label_col, sticky=self._anchor, padx=6, pady=3
         )
-        self.mic_meter = ttk.Progressbar(audio_box, maximum=100)
+        self.mic_meter = ttk.Progressbar(audio_box, maximum=100, style=theme.METER)
         self.mic_meter.grid(row=5, column=field_col, sticky="ew", padx=6, pady=3)
 
-        ttk.Label(audio_box, text=self.S("volume")).grid(
+        ttk.Label(audio_box, text=self.S("volume"), style=theme.DIM).grid(
             row=6, column=label_col, sticky=self._anchor, padx=6, pady=3
         )
         self.volume_var = tk.DoubleVar(value=self.settings.volume)
@@ -216,7 +215,7 @@ class PhoneApp:
             audio_box, from_=0.0, to=2.0, variable=self.volume_var, command=self._on_volume
         ).grid(row=6, column=field_col, sticky="ew", padx=6, pady=3)
 
-        ttk.Label(audio_box, text=self.S("mic_gain")).grid(
+        ttk.Label(audio_box, text=self.S("mic_gain"), style=theme.DIM).grid(
             row=7, column=label_col, sticky=self._anchor, padx=6, pady=3
         )
         self.gain_var = tk.DoubleVar(value=self.settings.mic_gain)
@@ -242,18 +241,22 @@ class PhoneApp:
 
         # -- log -----------------------------------------------------
         log_box = ttk.LabelFrame(self.container, text=self.S("log_group"))
-        log_box.grid(row=2, column=0, sticky="nsew", **pad)
+        log_box.grid(row=3, column=0, sticky="nsew", **pad)
         log_box.columnconfigure(0, weight=1)
         log_box.rowconfigure(0, weight=1)
         self.log_text = tk.Text(log_box, height=10, wrap="word", state="disabled")
+        theme.style_text(self.log_text)
         self.log_text.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
         log_scroll = ttk.Scrollbar(log_box, orient="vertical", command=self.log_text.yview)
         log_scroll.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scroll.set)
         self.log_text.tag_configure("line", justify=self._justify)
+        self.log_text.tag_configure("stamp", foreground=theme.TEXT_DIM)
+        self.log_text.tag_configure("alert", foreground=theme.WARN)
+        self.log_text.tag_configure("event", foreground=theme.ACCENT)
 
-        self.stats_label = ttk.Label(self.container, text="", anchor=self._anchor)
-        self.stats_label.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self.stats_label = ttk.Label(self.container, text="", anchor=self._anchor, style=theme.DIM)
+        self.stats_label.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
 
         self._render_log()
         self._render_devices()
@@ -261,20 +264,44 @@ class PhoneApp:
         self._render_saved()
         self._update_state(self.phone.state)
 
-    def _build_menu(self) -> None:
-        menubar = tk.Menu(self.root)
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label=self.S("settings"), command=self._open_settings)
-        lang_menu = tk.Menu(settings_menu, tearoff=0)
-        lang_menu.add_command(label=self.S.visual("עברית"), command=lambda: self._set_language("he"))
-        lang_menu.add_command(label="English", command=lambda: self._set_language("en"))
-        settings_menu.add_cascade(label=self.S("language"), menu=lang_menu)
-        menubar.add_cascade(label=self.S("settings"), menu=settings_menu)
+    def _build_toolbar(self) -> None:
+        """A strip of flat buttons with the app name across the middle.
 
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label=self.S("about"), command=self._show_about)
-        menubar.add_cascade(label=self.S("help"), menu=help_menu)
-        self.root.configure(menu=menubar)
+        Deliberately not a native menu bar: Windows draws that one itself and
+        ignores the colours, which would leave a pale band above a dark window.
+        """
+        bar = ttk.Frame(self.container, padding=(6, 6, 6, 2))
+        bar.grid(row=0, column=0, sticky="ew")
+        bar.columnconfigure(1, weight=1)
+
+        left = ttk.Frame(bar)
+        right = ttk.Frame(bar)
+        left_col, right_col = (2, 0) if self.S.is_rtl else (0, 2)
+        left.grid(row=0, column=left_col, sticky="w")
+        right.grid(row=0, column=right_col, sticky="e")
+
+        for text, command in (
+            (self.S("settings"), self._open_settings),
+            (self._other_language_name(), self._toggle_language),
+            (self.S("help"), self._show_about),
+        ):
+            ttk.Button(left, text=text, style=theme.TOOL_BUTTON, command=command).pack(
+                side="left", padx=(0, 4)
+            )
+
+        ttk.Label(bar, text=APP_NAME.upper(), style=theme.TITLE, anchor="center").grid(
+            row=0, column=1, sticky="ew"
+        )
+        ttk.Button(
+            right, text=self.S("quit"), style=theme.DANGER_BUTTON, command=self._on_close
+        ).pack(side="right")
+
+    def _other_language_name(self) -> str:
+        """The button offers the language you are not using."""
+        return "English" if self.S.is_rtl else self.S.visual("עברית")
+
+    def _toggle_language(self) -> None:
+        self._set_language("en" if self.S.is_rtl else "he")
 
     # ------------------------------------------------------------------
     # phone events
@@ -299,7 +326,8 @@ class PhoneApp:
             except queue.Empty:
                 return
             if kind == "log":
-                self._append_log(self.S(data.pop("key", ""), **data))
+                key = data.pop("key", "")
+                self._append_log(self.S(key, **data), tag=severity(key))
             elif kind == "state":
                 self._update_state(data.get("state", IDLE))
             elif kind == "peers":
@@ -316,20 +344,24 @@ class PhoneApp:
     # ------------------------------------------------------------------
     # rendering
     # ------------------------------------------------------------------
-    def _append_log(self, text: str) -> None:
+    def _append_log(self, text: str, tag: str = "") -> None:
         stamp = time.strftime("%H:%M:%S")
-        self._log_lines.append(f"{stamp}  {text}")
+        self._log_lines.append((stamp, text, tag))
         del self._log_lines[:-MAX_LOG_LINES]
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", self._log_lines[-1] + "\n", "line")
+        self._insert_log_line(*self._log_lines[-1])
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _insert_log_line(self, stamp: str, text: str, tag: str) -> None:
+        self.log_text.insert("end", f"{stamp}  ", ("line", "stamp"))
+        self.log_text.insert("end", text + "\n", ("line", tag) if tag else "line")
 
     def _render_log(self) -> None:
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         for line in self._log_lines:
-            self.log_text.insert("end", line + "\n", "line")
+            self._insert_log_line(*line)
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
@@ -340,6 +372,7 @@ class PhoneApp:
         self.peer_list.delete(0, "end")
         if not self._peers:
             self.peer_list.insert("end", self.S("no_peers"))
+            self.peer_list.itemconfigure(0, foreground=theme.ACCENT_SOFT)
             self.peer_list.configure(state="disabled")
             return
         for index, peer in enumerate(self._peers):
@@ -395,7 +428,10 @@ class PhoneApp:
         peer = self.phone.peer_name or self.phone.peer_ip
         if state != IDLE and peer:
             text = self.S.visual(f"{self.S.raw(labels.get(state, 'state_idle'))} - {peer}")
-        self.status_label.configure(text=f"{self.S('status')} {text}")
+        self.status_label.configure(
+            text=f"{self.S('status')} {text}",
+            foreground=theme.TEXT if state == IDLE else theme.ACCENT,
+        )
 
         def enable(widget: ttk.Button, on: bool) -> None:
             widget.configure(state="normal" if on else "disabled")
@@ -569,6 +605,7 @@ class PhoneApp:
         win.title(self.S.raw("settings"))
         win.transient(self.root)
         win.resizable(False, False)
+        win.configure(background=theme.BG)
         frame = ttk.Frame(win, padding=12)
         frame.pack(fill="both", expand=True)
         label_col, field_col = self._columns
@@ -579,7 +616,7 @@ class PhoneApp:
         jitter_var = tk.StringVar(value=str(self.settings.jitter_ms))
         rtl_var = tk.BooleanVar(value=self.settings.rtl_fix)
 
-        ttk.Label(frame, text=self.S("wire_rate")).grid(
+        ttk.Label(frame, text=self.S("wire_rate"), style=theme.DIM).grid(
             row=0, column=label_col, sticky=self._anchor, pady=4
         )
         ttk.Combobox(
@@ -590,14 +627,14 @@ class PhoneApp:
             width=10,
         ).grid(row=0, column=field_col, sticky="ew", padx=8)
 
-        ttk.Label(frame, text=self.S("frame_ms")).grid(
+        ttk.Label(frame, text=self.S("frame_ms"), style=theme.DIM).grid(
             row=1, column=label_col, sticky=self._anchor, pady=4
         )
         ttk.Spinbox(frame, from_=10, to=40, increment=10, textvariable=frame_var, width=8).grid(
             row=1, column=field_col, sticky="ew", padx=8
         )
 
-        ttk.Label(frame, text=self.S("jitter_ms")).grid(
+        ttk.Label(frame, text=self.S("jitter_ms"), style=theme.DIM).grid(
             row=2, column=label_col, sticky=self._anchor, pady=4
         )
         ttk.Spinbox(frame, from_=20, to=400, increment=20, textvariable=jitter_var, width=8).grid(
@@ -631,7 +668,7 @@ class PhoneApp:
 
         row = ttk.Frame(frame)
         row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        ttk.Button(row, text=self.S("save"), command=save).pack(
+        ttk.Button(row, text=self.S("save"), style=theme.ACCENT_BUTTON, command=save).pack(
             side="right" if self.S.is_rtl else "left"
         )
         ttk.Button(row, text=self.S("cancel"), command=win.destroy).pack(

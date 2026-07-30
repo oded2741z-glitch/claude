@@ -37,6 +37,7 @@ HE = {
     "settings": "הגדרות",
     "language": "שפה",
     "help": "עזרה",
+    "quit": "יציאה",
     "about": "אודות",
     "close": "סגור",
     "save": "שמור",
@@ -117,6 +118,7 @@ EN = {
     "settings": "Settings",
     "language": "Language",
     "help": "Help",
+    "quit": "Quit",
     "about": "About",
     "close": "Close",
     "save": "Save",
@@ -166,6 +168,34 @@ EN = {
 
 TABLES = {"he": HE, "en": EN}
 
+# Log lines are coloured by what they say: trouble in amber, call progress in
+# the accent colour, everything else plain.
+ALERT_KEYS = frozenset(
+    {
+        "log_audio_error",
+        "log_no_input",
+        "log_no_output",
+        "log_call_failed",
+        "log_link_lost",
+        "log_device_gone",
+        "log_discovery_error",
+        "log_busy",
+        "log_missed",
+    }
+)
+EVENT_KEYS = frozenset(
+    {"log_incoming", "log_call_started", "log_ringing_out", "log_new_device", "log_audio_ready"}
+)
+
+
+def severity(key: str) -> str:
+    """Text tag for a log key: 'alert', 'event' or '' for plain."""
+    if key in ALERT_KEYS:
+        return "alert"
+    if key in EVENT_KEYS:
+        return "event"
+    return ""
+
 
 class Strings:
     """Look up interface strings, ready for display."""
@@ -191,13 +221,14 @@ class Strings:
 
     def __call__(self, key: str, **kwargs: object) -> str:
         """The string in the order Tk needs to draw it."""
-        text = self.raw(key, **kwargs)
-        if self.is_rtl and self.rtl_fix:
-            return to_visual(text)
-        return text
+        return self.visual(self.raw(key, **kwargs))
 
     def visual(self, text: str) -> str:
-        """Reorder arbitrary text (peer names, device names) for display."""
-        if self.is_rtl and self.rtl_fix:
-            return to_visual(text)
-        return text
+        """Reorder text for display: labels, peer names, device names.
+
+        Not gated on the interface language.  Tk's missing bidi support mangles
+        Hebrew wherever it appears - a Hebrew computer name, or the "עברית"
+        button - even when every label around it is English.  ``to_visual``
+        leaves text without right-to-left characters alone.
+        """
+        return to_visual(text) if self.rtl_fix else text

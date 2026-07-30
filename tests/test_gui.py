@@ -215,6 +215,69 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(error.called)
         self.assertFalse(place.called)
 
+    def test_dark_theme_is_applied(self):
+        from lanphone import theme
+
+        # clam is the only built-in theme that honours colours on Windows.
+        self.assertEqual(self.app.style.theme_use(), "clam")
+        self.assertEqual(str(self.app.root["background"]), theme.BG)
+        self.assertEqual(str(self.app.peer_list["background"]), theme.DEEP)
+        self.assertEqual(str(self.app.peer_list["selectbackground"]), theme.ACCENT)
+        self.assertEqual(str(self.app.log_text["background"]), theme.DEEP)
+        self.assertEqual(str(self.app.log_text["insertbackground"]), theme.ACCENT)
+
+    def test_action_buttons_carry_the_accent_and_danger_styles(self):
+        from lanphone import theme
+
+        self.assertEqual(str(self.app.call_btn["style"]), theme.ACCENT_BUTTON)
+        self.assertEqual(str(self.app.answer_btn["style"]), theme.ACCENT_BUTTON)
+        self.assertEqual(str(self.app.hangup_btn["style"]), theme.DANGER_BUTTON)
+        self.assertEqual(str(self.app.mic_meter["style"]), theme.METER)
+
+    def test_toolbar_offers_the_other_language_and_toggles(self):
+        # Styled buttons instead of a native menu bar, which Windows would
+        # draw in system colours.
+        self.assertIsNone(self.app.root["menu"] or None)
+        self.assertEqual(self.app._other_language_name(), self.app.S.visual("עברית"))
+        self.app._toggle_language()
+        self.assertTrue(self.app.S.is_rtl)
+        self.assertEqual(self.app._other_language_name(), "English")
+        self.app._toggle_language()
+        self.assertFalse(self.app.S.is_rtl)
+
+    def test_hebrew_button_label_is_reordered_in_the_english_interface(self):
+        from lanphone.rtl import to_visual
+
+        # Tk draws Hebrew left to right whatever the interface language is.
+        self.assertEqual(self.app._other_language_name(), to_visual("עברית"))
+        self.assertNotEqual(self.app._other_language_name(), "עברית")
+
+    def test_log_lines_are_coloured_by_severity(self):
+        self.app._emit("log", key="log_audio_error", err="boom")
+        self.app._emit("log", key="log_incoming", name="PC", ip="10.0.0.1")
+        self.app._emit("log", key="log_call_ended")
+        self.app._drain_events()
+        tags = [entry[2] for entry in self.app._log_lines]
+        self.assertEqual(tags, ["alert", "event", ""])
+        # The timestamp is a separate, dimmed run of text.
+        self.assertIn("stamp", self.app.log_text.tag_names())
+        self.assertTrue(self.app.log_text.tag_ranges("alert"))
+
+    def test_status_turns_to_the_accent_colour_during_a_call(self):
+        from lanphone import theme
+
+        self.app._update_state(IDLE)
+        self.assertEqual(str(self.app.status_label["foreground"]), theme.TEXT)
+        self.app._update_state(IN_CALL)
+        self.assertEqual(str(self.app.status_label["foreground"]), theme.ACCENT)
+
+    def test_empty_peer_list_placeholder_is_tinted(self):
+        from lanphone import theme
+
+        self.app._peers = []
+        self.app._render_peers()
+        self.assertEqual(str(self.app.peer_list.itemcget(0, "foreground")), theme.ACCENT_SOFT)
+
     def test_closing_is_idempotent(self):
         self.app._on_close()
         self.assertFalse(self.app._alive)

@@ -9,7 +9,7 @@
 
 ![המסך הראשי](docs/screenshot-en.png)
 
-הממשק באנגלית. אפשר לעבור לעברית בתפריט **Settings ➜ Language ➜ עברית**
+הממשק באנגלית. מעבר לעברית בלחיצה על כפתור **`עברית`** בסרגל העליון
 (צילום מסך של הממשק בעברית נמצא ב-[docs/screenshot-he.png](docs/screenshot-he.png)).
 המדריך כאן מציין את שמות הכפתורים כפי שהם מופיעים על המסך.
 
@@ -135,6 +135,24 @@ pyinstaller --onefile --windowed --icon=icon.ico --collect-all sounddevice --nam
 * אם האוזניות נשלפות **באמצע שיחה**, התוכנה מזהה שהזרם נפל, כותבת זאת ביומן
   ומנסה לחזור לעבוד עם ההתקן הזמין הבא.
 
+## העיצוב
+
+הממשק כולו כהה: רקע כמעט שחור, פאנלים אפורים־כהים, כתום כצבע ההדגשה (כותרת,
+מצב השיחה, מחוונים, סימוני צ'קבוקס), אדום לכל מה שמסיים או סוגר (`Hang up`,
+`Quit`), מסגרות של פיקסל אחד וגופן monospace. כל הצבעים מרוכזים
+ב-`lanphone/theme.py` — לשינוי הגוון מספיק לערוך את הקבועים בראש הקובץ.
+
+שני דברים בעיצוב הם החלטות ולא קוסמטיקה:
+
+* **סרגל כפתורים במקום תפריט.** Windows מצייר את שורת התפריטים בעצמו ומתעלם
+  מהצבעים שמוגדרים לה, מה שהיה משאיר פס בהיר מעל חלון כהה. לכן `Settings`,
+  `עברית`, `Help` ו-`Quit` הם כפתורים רגילים בסרגל העליון.
+* **ערכת `clam` של ttk.** זו ערכת הבסיס היחידה שמכבדת הגדרות צבע ב-Windows;
+  ברירת המחדל (`vista`) מציירת כפתורים ושדות בצבעי המערכת ומתעלמת כמעט מהכול.
+
+ביומן יש גם צבע לפי סוג ההודעה: תקלות בענבר, התקדמות שיחה בכתום, והשעה
+באפור עמום.
+
 ## מה עושים כשמשהו לא עובד
 
 | תסמין | מה לבדוק |
@@ -144,9 +162,9 @@ pyinstaller --onefile --windowed --icon=icon.ico --collect-all sounddevice --nam
 | אין קול בכלל | ביומן מופיעה "שגיאת שמע"? בדקו שההתקן הנכון נבחר ולחצו `Refresh devices`. הפעילו `Self test` כדי לבדוק כל צד בנפרד. |
 | שומעים רק בכיוון אחד | בצד השקט בדקו את בחירת ה-`Microphone`, שאין סימון `Mute microphone`, ושה-`Mic gain` אינו על אפס. |
 | הד (הצד השני שומע את עצמו) | קורה כשמשתמשים ברמקולים במקום אוזניות. עם אוזניות זה נעלם. אין בתוכנה מבטל הד. |
-| הקול קטוע | הגדילו את `Jitter buffer` ל-100–150 מ"ש (`Settings ➜ Settings`). ב-Wi-Fi חלש כדאי גם להוריד את `Audio quality` ל-16000. |
+| הקול קטוע | הגדילו את `Jitter buffer` ל-100–150 מ"ש (כפתור `Settings`). ב-Wi-Fi חלש כדאי גם להוריד את `Audio quality` ל-16000. |
 | הקול מעוות / רועש מדי | הורידו את `Mic gain` ואת `Volume` מתחת ל-1. |
-| עברתם לעברית והכתב נראה הפוך | `Settings ➜ Settings` ➜ בטלו את `Right-to-left text fix`, או חזרו ל-English בתפריט `Language`. |
+| עברתם לעברית והכתב נראה הפוך | `Settings` ➜ בטלו את `Right-to-left text fix`, או חזרו ל-`English` בסרגל העליון. |
 
 ## חומת אש
 
@@ -157,7 +175,7 @@ pyinstaller --onefile --windowed --icon=icon.ico --collect-all sounddevice --nam
 
 ## הגדרות מתקדמות
 
-תפריט **`Settings ➜ Settings`**:
+כפתור **`Settings`** בסרגל העליון:
 
 * `Audio quality` — קצב הדגימה שנשלח ברשת: 16000 (ברירת מחדל, איכות טובה לדיבור,
   כ-260 קילוביט לשנייה), ועד 48000 (איכות מלאה, כ-790 קילוביט לשנייה).
@@ -232,7 +250,7 @@ Windows לא רואה אותן והבעיה אינה בתוכנה.
 python -m unittest discover -s tests -t .
 ```
 
-119 בדיקות שמכסות המרת קצב דגימה, חוצץ ההשהיה, פורמט החבילות, סידור טקסט מימין
+129 בדיקות שמכסות המרת קצב דגימה, חוצץ ההשהיה, פורמט החבילות, סידור טקסט מימין
 לשמאל, מנוע ההקלטה וההשמעה (מול כרטיס קול מדומה), הממשק הגרפי, הכתובות השמורות, ושיחה
 מלאה מקצה לקצה — התקשרות, מענה, דחייה, "תפוס", ניתוק, פסק זמן ובחירת איכות — הכול
 על ממשק ה-loopback, בלי צורך בכרטיס קול אמיתי. בדיקות הממשק מדלגות על עצמן
@@ -249,6 +267,7 @@ python -m unittest discover -s tests -t .
 | `lanphone/protocol.py` | פורמט החבילות וההודעות |
 | `lanphone/jitter.py` | חוצץ ההשהיה |
 | `lanphone/resample.py` | המרת קצב דגימה |
+| `lanphone/theme.py` | ערכת הצבעים והגופנים של הממשק |
 | `lanphone/rtl.py` | סידור טקסט עברי לתצוגה ב-Tk |
 | `lanphone/i18n.py` | מחרוזות הממשק (עברית ואנגלית) |
 | `lanphone/config.py` | קבועים, הגדרות והכתובות השמורות |
@@ -273,9 +292,16 @@ Every address you call — and every address that calls you — is saved with th
 peer's name and port, and offered in the **Address** dropdown next time, so a
 call back is one click. **Forget** drops the shown address from the list.
 
-The interface is in English, and Hebrew is available under Settings ➜ Language.
-Hebrew labels are reordered for display because Tk has no bidirectional text
-support; that fix can be turned off in Settings.
+The interface is in English; the toolbar has a button that switches to Hebrew.
+Hebrew text is reordered for display because Tk has no bidirectional text
+support - that applies to any Hebrew, including a Hebrew computer name in the
+English interface, and can be turned off in Settings.
+
+The look is a dark theme with orange accents, red for anything that ends a call,
+one-pixel borders and a monospace font; all of it lives in `lanphone/theme.py`.
+It uses ttk's `clam` base theme, the only built-in one that honours colours on
+Windows, and a button strip instead of a native menu bar, which Windows would
+paint in system colours.
 
 Run `python -m lanphone --list-devices` to check what the sound system sees, and
 `python -m unittest discover -s tests -t .` for the test suite.

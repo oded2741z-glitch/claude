@@ -16,6 +16,13 @@ echo Installing build requirements...
 %PY% -m pip install --upgrade pyinstaller -r requirements.txt
 if errorlevel 1 goto nodeps
 
+if exist icon.ico (
+    echo Using icon.ico for the executable.
+) else (
+    echo No icon.ico here - the executable gets the default icon.
+    echo Put an icon.ico next to this file to use your own.
+)
+
 echo.
 echo Building. This takes a minute or two...
 %PY% -m PyInstaller --noconfirm --clean LANPhone.spec

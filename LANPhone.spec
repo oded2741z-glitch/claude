@@ -1,7 +1,17 @@
 # PyInstaller build recipe: one self-contained executable, no console window.
 #   pyinstaller --noconfirm --clean LANPhone.spec
 # or just run build.bat on Windows.
+import os
+
 from PyInstaller.utils.hooks import collect_all
+
+# PyInstaller defines SPECPATH when it runs this file.
+HERE = globals().get("SPECPATH") or os.getcwd()
+
+# Drop an icon.ico next to this file and the build picks it up; without one the
+# executable just gets the default PyInstaller icon.
+icon_path = os.path.join(HERE, "icon.ico")
+icon = icon_path if os.path.exists(icon_path) else None
 
 datas = []
 binaries = []
@@ -16,7 +26,7 @@ for package in ("sounddevice",):
     hiddenimports += package_hiddenimports
 
 a = Analysis(
-    ["main.py"],
+    [os.path.join(HERE, "main.py")],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -50,4 +60,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=icon,
 )

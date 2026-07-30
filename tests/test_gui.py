@@ -24,7 +24,7 @@ class GuiTest(unittest.TestCase):
         from lanphone import gui
 
         self.gui = gui
-        fresh = Settings(display_name="test-pc", language="he")
+        fresh = Settings(display_name="test-pc")  # English by default
         patches = [
             mock.patch.object(Settings, "load", classmethod(lambda cls: fresh)),
             mock.patch.object(Settings, "save", lambda self: None),
@@ -46,9 +46,10 @@ class GuiTest(unittest.TestCase):
     def peer(self, name="PC-2", ip="192.168.1.42", key="a"):
         return {"id": key, "name": name, "ip": ip, "sig_port": 50505, "last_seen": 0}
 
-    def test_window_builds_in_hebrew(self):
-        self.assertTrue(self.app.S.is_rtl)
-        self.assertIn("שיחה", self.app.root.title())
+    def test_window_builds_in_english(self):
+        self.assertFalse(self.app.S.is_rtl)
+        self.assertEqual(self.app.root.title(), "LAN Phone")  # not doubled up
+        self.assertEqual(str(self.app.call_btn["text"]), "Call")
 
     def test_peer_list_replaces_the_placeholder(self):
         self.assertEqual(self.app.peer_list.size(), 1)  # "(searching...)"
@@ -79,6 +80,55 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(self.app._call_target(), ("10.1.2.3", 50505))
         self.app.ip_var.set("")
         self.assertIsNone(self.app._call_target())
+
+    def test_saved_addresses_fill_the_dropdown(self):
+        self.assertEqual(self.app.ip_combo["values"], "")
+        self.assertEqual(str(self.app.forget_btn["state"]), "disabled")
+        self.app.settings.remember_peer("192.168.1.5", 50505, "PC-A")
+        self.app.settings.remember_peer("192.168.1.9", 50511)
+        self.app._render_saved()
+        values = list(self.app.ip_combo["values"])
+        self.assertEqual(len(values), 2)
+        self.assertIn("192.168.1.9", values[0])  # newest first, no name known
+        self.assertIn("PC-A", values[1])
+        self.assertEqual(str(self.app.forget_btn["state"]), "normal")
+
+    def test_picking_a_saved_address_puts_the_bare_ip_in_the_box(self):
+        self.app.settings.remember_peer("192.168.1.5", 50505, "PC-A")
+        self.app._render_saved()
+        self.app.ip_combo.current(0)
+        self.app._on_saved_selected()
+        self.assertEqual(self.app.ip_var.get(), "192.168.1.5")
+
+    def test_a_saved_address_keeps_its_port(self):
+        self.app.settings.remember_peer("192.168.1.5", 50512, "PC-A")
+        self.app._render_saved()
+        self.app.ip_var.set("192.168.1.5")
+        self.assertEqual(self.app._call_target(), ("192.168.1.5", 50512))
+
+    def test_forget_removes_the_shown_address(self):
+        self.app.settings.remember_peer("192.168.1.5", 50505, "PC-A")
+        self.app.settings.remember_peer("192.168.1.9", 50505, "PC-B")
+        self.app._render_saved()
+        self.app.ip_var.set("192.168.1.5")
+        self.app._on_forget()
+        self.app._drain_events()
+        self.assertEqual([p["ip"] for p in self.app.settings.saved_peers], ["192.168.1.9"])
+        self.assertEqual(len(self.app.ip_combo["values"]), 1)
+
+    def test_forget_with_an_unknown_address_drops_the_newest(self):
+        self.app.settings.remember_peer("192.168.1.5")
+        self.app._render_saved()
+        self.app.ip_var.set("not-in-the-list")
+        self.app._on_forget()
+        self.app._drain_events()
+        self.assertEqual(self.app.settings.saved_peers, [])
+
+    def test_saved_peers_event_persists_the_settings(self):
+        with mock.patch.object(Settings, "save") as save:
+            self.app._emit("saved_peers")
+            self.app._drain_events()
+        self.assertTrue(save.called)
 
     def test_buttons_follow_the_call_state(self):
         def states():
@@ -115,12 +165,20 @@ class GuiTest(unittest.TestCase):
         self.assertIn("line %d" % (self.gui.MAX_LOG_LINES + 49), self.app._log_lines[-1])
 
     def test_language_switch_rebuilds_the_interface(self):
+        self.app._set_language("he")
+        self.assertTrue(self.app.S.is_rtl)
+        self.assertIn("שיחה", self.app.root.title())
+        self.assertEqual(str(self.app.call_btn["text"]), self.app.S("call"))
         self.app._set_language("en")
         self.assertFalse(self.app.S.is_rtl)
         self.assertEqual(str(self.app.call_btn["text"]), "Call")
+
+    def test_saved_addresses_survive_a_language_switch(self):
+        self.app.settings.remember_peer("192.168.1.5", 50505, "PC-A")
+        self.app._render_saved()
         self.app._set_language("he")
-        self.assertTrue(self.app.S.is_rtl)
-        self.assertEqual(str(self.app.call_btn["text"]), self.app.S("call"))
+        self.assertEqual(len(self.app.ip_combo["values"]), 1)
+        self.assertEqual(self.app.ip_var.get(), "192.168.1.5")
 
     def test_settings_dialog_saves_and_applies(self):
         with mock.patch.object(self.gui.tk, "Toplevel", wraps=self.gui.tk.Toplevel):

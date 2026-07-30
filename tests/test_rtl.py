@@ -1,5 +1,6 @@
 import unittest
 
+from lanphone.config import DEFAULT_LANGUAGE
 from lanphone.i18n import EN, HE, Strings
 from lanphone.rtl import contains_rtl, to_visual
 
@@ -65,8 +66,10 @@ class StringsTest(unittest.TestCase):
         self.assertEqual(strings("no_such_key"), "no_such_key")
         self.assertTrue(strings("log_calling"))  # missing {ip}
 
-    def test_unknown_language_falls_back(self):
-        self.assertEqual(Strings("fr").language, "he")
+    def test_unknown_language_falls_back_to_the_default(self):
+        self.assertEqual(Strings("fr").language, DEFAULT_LANGUAGE)
+        self.assertEqual(Strings().language, DEFAULT_LANGUAGE)
+        self.assertFalse(Strings().is_rtl)
 
     def test_every_placeholder_matches_between_languages(self):
         import string

@@ -3,7 +3,15 @@ import unittest
 import numpy as np
 
 from lanphone import protocol
-from lanphone.config import MAX_AUDIO_PAYLOAD, SUPPORTED_RATES, Settings, max_frame_ms
+from lanphone.config import (
+    DEFAULT_LANGUAGE,
+    MAX_AUDIO_PAYLOAD,
+    MAX_SAVED_PEERS,
+    SIGNALING_PORT,
+    SUPPORTED_RATES,
+    Settings,
+    max_frame_ms,
+)
 
 
 class TestAudioPackets(unittest.TestCase):
@@ -85,11 +93,96 @@ class TestSettings(unittest.TestCase):
         self.assertEqual(settings.frame_ms, max_frame_ms(settings.wire_rate))
         self.assertEqual(settings.jitter_ms, 20)
         self.assertEqual(settings.volume, 2.0)
-        self.assertEqual(settings.language, "he")
+        self.assertEqual(settings.language, DEFAULT_LANGUAGE)
         self.assertTrue(settings.display_name)
+
+    def test_the_interface_defaults_to_english(self):
+        self.assertEqual(DEFAULT_LANGUAGE, "en")
+        self.assertEqual(Settings().language, "en")
+        # Hebrew stays available and is kept when it was chosen.
+        self.assertEqual(Settings(language="he").language, "he")
 
     def test_frame_samples(self):
         self.assertEqual(Settings(wire_rate=16000, frame_ms=20).frame_samples, 320)
+
+
+class SavedAddressTest(unittest.TestCase):
+    def test_addresses_are_kept_most_recent_first(self):
+        settings = Settings()
+        self.assertTrue(settings.remember_peer("192.168.1.5", 50505, "PC-A"))
+        self.assertTrue(settings.remember_peer("192.168.1.9", 50505, "PC-B"))
+        self.assertEqual([p["ip"] for p in settings.saved_peers], ["192.168.1.9", "192.168.1.5"])
+        self.assertEqual(settings.last_peer_ip, "192.168.1.9")
+
+    def test_calling_the_same_address_again_moves_it_up_without_duplicating(self):
+        settings = Settings()
+        settings.remember_peer("10.0.0.1", 50505, "A")
+        settings.remember_peer("10.0.0.2", 50505, "B")
+        self.assertTrue(settings.remember_peer("10.0.0.1"))
+        self.assertEqual([p["ip"] for p in settings.saved_peers], ["10.0.0.1", "10.0.0.2"])
+        # A later call with no name must not wipe the name we already had.
+        self.assertEqual(settings.saved_peers[0]["name"], "A")
+
+    def test_repeating_the_top_entry_reports_no_change(self):
+        settings = Settings()
+        settings.remember_peer("10.0.0.1", 50505, "A")
+        self.assertFalse(settings.remember_peer("10.0.0.1", 50505, "A"))
+        self.assertTrue(settings.remember_peer("10.0.0.1", 50505, "A2"))
+
+    def test_blank_addresses_are_ignored(self):
+        settings = Settings()
+        self.assertFalse(settings.remember_peer("   "))
+        self.assertFalse(settings.remember_peer(""))
+        self.assertEqual(settings.saved_peers, [])
+
+    def test_the_list_is_capped(self):
+        settings = Settings()
+        for index in range(MAX_SAVED_PEERS + 8):
+            settings.remember_peer(f"10.0.0.{index}")
+        self.assertEqual(len(settings.saved_peers), MAX_SAVED_PEERS)
+        self.assertEqual(settings.saved_peers[0]["ip"], f"10.0.0.{MAX_SAVED_PEERS + 7}")
+
+    def test_forget(self):
+        settings = Settings()
+        settings.remember_peer("10.0.0.1")
+        self.assertTrue(settings.forget_peer("10.0.0.1"))
+        self.assertFalse(settings.forget_peer("10.0.0.1"))
+        self.assertEqual(settings.saved_peers, [])
+
+    def test_port_is_remembered_per_address(self):
+        settings = Settings()
+        settings.remember_peer("10.0.0.1", 50512)
+        self.assertEqual(settings.saved_port("10.0.0.1"), 50512)
+        self.assertEqual(settings.saved_port("10.0.0.99"), SIGNALING_PORT)
+
+    def test_survives_a_round_trip_through_json(self):
+        import json
+        from dataclasses import asdict
+
+        settings = Settings()
+        settings.remember_peer("192.168.1.5", 50505, "PC-A")
+        restored = Settings(**json.loads(json.dumps(asdict(settings))))
+        self.assertEqual(restored.saved_peers, settings.saved_peers)
+
+    def test_a_hand_edited_file_cannot_break_the_app(self):
+        settings = Settings(
+            saved_peers=[
+                {"ip": "10.0.0.1", "port": "nonsense", "name": None},
+                {"ip": "  "},
+                {"nope": 1},
+                "not a dict",
+                {"ip": "10.0.0.1"},  # duplicate
+                {"ip": "10.0.0.2", "port": 99999},
+            ]
+        )
+        self.assertEqual([p["ip"] for p in settings.saved_peers], ["10.0.0.1", "10.0.0.2"])
+        self.assertTrue(all(0 < p["port"] < 65536 for p in settings.saved_peers))
+        self.assertTrue(all(isinstance(p["name"], str) for p in settings.saved_peers))
+
+    def test_saved_peers_are_not_shared_between_instances(self):
+        first, second = Settings(), Settings()
+        first.remember_peer("10.0.0.1")
+        self.assertEqual(second.saved_peers, [])
 
 
 if __name__ == "__main__":

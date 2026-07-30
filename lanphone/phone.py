@@ -40,6 +40,7 @@ class Phone:
         self.local_ip = "127.0.0.1"
         self.peer_name = ""
         self.peer_ip = ""
+        self._peer_port = SIGNALING_PORT
         self.rtt_ms: float | None = None
 
         self.inputs: list[audiolib.DeviceInfo] = []
@@ -230,6 +231,18 @@ class Phone:
     # ------------------------------------------------------------------
     # outgoing calls
     # ------------------------------------------------------------------
+    def remember_peer(self, ip: str, port: int = SIGNALING_PORT, name: str = "") -> None:
+        """Add an address to the saved list and let the interface persist it."""
+        if self.settings.remember_peer(ip, port, name):
+            self._emit("saved_peers")
+
+    def forget_peer(self, ip: str) -> bool:
+        if not self.settings.forget_peer(ip):
+            return False
+        self._emit("saved_peers")
+        self._emit("log", key="log_peer_forgotten", ip=ip)
+        return True
+
     def place_call(self, host: str, port: int = SIGNALING_PORT) -> None:
         with self._lock:
             if self.state != IDLE:
@@ -237,12 +250,13 @@ class Phone:
             self.state = CALLING
             self.peer_ip = host
             self.peer_name = host
+            self._peer_port = int(port)
             self.rtt_ms = None
             self._call_id = random.getrandbits(32)
             # Starts the no-answer timeout; without this the ticker would still
             # be holding the timestamp of the previous call.
             self._call_started = time.monotonic()
-        self.settings.last_peer_ip = host
+        self.remember_peer(host, port)
         self._emit("state", state=CALLING)
         self._emit("log", key="log_calling", ip=host)
         threading.Thread(target=self._dial, args=(host, int(port)), daemon=True).start()
@@ -269,6 +283,7 @@ class Phone:
                 "name": self.settings.display_name,
                 "call_id": self._call_id,
                 "audio_port": self.transport.port,
+                "sig_port": self.signaling.port,  # so the callee can call back
                 "rate": self.settings.wire_rate,
                 "frame_ms": self.settings.frame_ms,
             }
@@ -289,6 +304,7 @@ class Phone:
             with self._lock:
                 if self.state == CALLING:
                     self.peer_name = str(msg.get("name") or self.peer_ip)[:64]
+                    self.remember_peer(self.peer_ip, self._peer_port, self.peer_name)
             self._emit("log", key="log_ringing_out", name=self.peer_name)
             self._emit("state", state=CALLING)
         elif kind == protocol.ACCEPT:
@@ -332,10 +348,13 @@ class Phone:
             }
             self.peer_name = self._pending["name"]
             self.peer_ip = link.peer_ip
+            self._peer_port = _clamp_port(msg.get("sig_port"))
             self.state = RINGING
             self._call_started = time.monotonic()
 
         link.send({"t": protocol.RINGING, "name": self.settings.display_name})
+        # An incoming call is worth remembering too, so calling back is one click.
+        self.remember_peer(link.peer_ip, self._peer_port, self.peer_name)
         self._emit("state", state=RINGING)
         self._emit("log", key="log_incoming", name=self.peer_name, ip=self.peer_ip)
         self._emit("incoming", name=self.peer_name, ip=self.peer_ip)
@@ -383,6 +402,7 @@ class Phone:
             self._emit("log", key="log_link_lost")
             self._finish_call()
             return
+        self.remember_peer(link.peer_ip, self._peer_port, self.peer_name)
         self._begin_media(link.peer_ip, port, self._call_id)
 
     # ------------------------------------------------------------------
@@ -525,6 +545,14 @@ def _clamp_rate(value: Any) -> int:
     except (TypeError, ValueError):
         return DEFAULT_WIRE_RATE
     return rate if rate in SUPPORTED_RATES else DEFAULT_WIRE_RATE
+
+
+def _clamp_port(value: Any) -> int:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return SIGNALING_PORT
+    return port if 0 < port < 65536 else SIGNALING_PORT
 
 
 def _clamp_frame_ms(value: Any, rate: int = 16000) -> int:

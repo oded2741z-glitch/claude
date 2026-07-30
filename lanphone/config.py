@@ -5,10 +5,16 @@ from __future__ import annotations
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 
 APP_NAME = "LAN Phone"
 PROTOCOL_VERSION = 1
+
+LANGUAGES = ("en", "he")
+DEFAULT_LANGUAGE = "en"
+
+# How many previously called addresses are kept.
+MAX_SAVED_PEERS = 12
 
 # Default ports.  All of them fall back to the next free port when taken, which
 # makes it possible to run two copies of the app on a single machine for testing.
@@ -54,6 +60,33 @@ def config_path() -> str:
     return os.path.join(config_dir(), "settings.json")
 
 
+def _clean_saved_peers(raw: object) -> list[dict]:
+    """Accept only well-formed entries: the file may have been edited by hand."""
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    if not isinstance(raw, list):
+        return cleaned
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        ip = str(item.get("ip") or "").strip()
+        if not ip or ip in seen:
+            continue
+        try:
+            port = int(item.get("port") or SIGNALING_PORT)
+        except (TypeError, ValueError):
+            port = SIGNALING_PORT
+        seen.add(ip)
+        cleaned.append(
+            {
+                "ip": ip,
+                "port": port if 0 < port < 65536 else SIGNALING_PORT,
+                "name": str(item.get("name") or "").strip()[:64],
+            }
+        )
+    return cleaned[:MAX_SAVED_PEERS]
+
+
 def default_display_name() -> str:
     import socket
 
@@ -74,12 +107,14 @@ class Settings:
     mic_gain: float = 1.0
     auto_answer: bool = False
     auto_pick_new_device: bool = True
-    language: str = "he"
+    language: str = DEFAULT_LANGUAGE
     rtl_fix: bool = True
     wire_rate: int = DEFAULT_WIRE_RATE
     frame_ms: int = DEFAULT_FRAME_MS
     jitter_ms: int = DEFAULT_JITTER_MS
     last_peer_ip: str = ""
+    # Addresses that were called (or called us), most recent first.
+    saved_peers: list[dict] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.display_name:
@@ -90,8 +125,39 @@ class Settings:
         self.jitter_ms = max(20, min(400, int(self.jitter_ms)))
         self.volume = max(0.0, min(2.0, float(self.volume)))
         self.mic_gain = max(0.0, min(4.0, float(self.mic_gain)))
-        if self.language not in ("he", "en"):
-            self.language = "he"
+        if self.language not in LANGUAGES:
+            self.language = DEFAULT_LANGUAGE
+        self.saved_peers = _clean_saved_peers(self.saved_peers)
+
+    # -- saved addresses -------------------------------------------------
+    def remember_peer(self, ip: str, port: int = SIGNALING_PORT, name: str = "") -> bool:
+        """Move an address to the top of the saved list.  True if anything changed."""
+        ip = (ip or "").strip()
+        if not ip:
+            return False
+        known = next((p for p in self.saved_peers if p["ip"] == ip), None)
+        entry = {
+            "ip": ip,
+            "port": int(port) if port else SIGNALING_PORT,
+            "name": (name or "").strip()[:64] or (known or {}).get("name", ""),
+        }
+        others = [p for p in self.saved_peers if p["ip"] != ip]
+        changed = self.saved_peers[:1] != [entry] or len(others) + 1 != len(self.saved_peers)
+        self.saved_peers = [entry, *others][:MAX_SAVED_PEERS]
+        self.last_peer_ip = ip
+        return changed
+
+    def forget_peer(self, ip: str) -> bool:
+        ip = (ip or "").strip()
+        before = len(self.saved_peers)
+        self.saved_peers = [p for p in self.saved_peers if p["ip"] != ip]
+        return len(self.saved_peers) != before
+
+    def saved_port(self, ip: str, default: int = SIGNALING_PORT) -> int:
+        for peer in self.saved_peers:
+            if peer["ip"] == (ip or "").strip():
+                return int(peer.get("port") or default)
+        return default
 
     @classmethod
     def load(cls) -> "Settings":

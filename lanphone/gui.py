@@ -31,13 +31,14 @@ class PhoneApp:
         self._peers: list[dict[str, Any]] = []
         self._input_devices: list[audiolib.DeviceInfo] = []
         self._output_devices: list[audiolib.DeviceInfo] = []
+        self._saved: list[dict[str, Any]] = []
         self._in_peak = 0.0
         self._out_peak = 0.0
         self._topmost_until = 0.0
         self._alive = True
 
         self.root = tk.Tk()
-        self.root.title(f"{self.S.raw('app_title')} - {APP_NAME}")
+        self.root.title(self._window_title())
         self.root.minsize(760, 560)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._init_fonts()
@@ -59,6 +60,10 @@ class PhoneApp:
                 tkfont.nametofont(name).configure(family=family, size=10)
         except Exception:  # noqa: BLE001 - fonts are cosmetic
             pass
+
+    def _window_title(self) -> str:
+        translated = self.S.raw("app_title")
+        return translated if translated == APP_NAME else f"{translated} - {APP_NAME}"
 
     @property
     def _anchor(self) -> str:
@@ -128,12 +133,20 @@ class PhoneApp:
         label_col, field_col = self._columns
         ip_row = ttk.Frame(peers_box)
         ip_row.grid(row=1, column=0, sticky="ew", padx=6, pady=4)
-        ip_row.columnconfigure(field_col, weight=1)
-        ttk.Label(ip_row, text=self.S("manual_ip")).grid(row=0, column=label_col, sticky=self._anchor)
+        # label | address box | forget, mirrored for right-to-left
+        addr_cols = (2, 1, 0) if self.S.is_rtl else (0, 1, 2)
+        ip_row.columnconfigure(addr_cols[1], weight=1)
+        ttk.Label(ip_row, text=self.S("address")).grid(row=0, column=addr_cols[0], sticky=self._anchor)
         self.ip_var = tk.StringVar(value=self.settings.last_peer_ip)
-        ip_entry = ttk.Entry(ip_row, textvariable=self.ip_var, width=18)
-        ip_entry.grid(row=0, column=field_col, sticky="ew", padx=6)
-        ip_entry.bind("<Return>", lambda _e: self._on_call())
+        # Editable on purpose: type a new address, or pick a saved one.
+        self.ip_combo = ttk.Combobox(ip_row, textvariable=self.ip_var, width=18)
+        self.ip_combo.grid(row=0, column=addr_cols[1], sticky="ew", padx=6)
+        self.ip_combo.bind("<Return>", lambda _e: self._on_call())
+        self.ip_combo.bind("<<ComboboxSelected>>", self._on_saved_selected)
+        self.forget_btn = ttk.Button(
+            ip_row, text=self.S("forget"), width=8, command=self._on_forget
+        )
+        self.forget_btn.grid(row=0, column=addr_cols[2], sticky="e")
 
         buttons = ttk.Frame(peers_box)
         buttons.grid(row=2, column=0, sticky="ew", padx=6, pady=(4, 8))
@@ -245,6 +258,7 @@ class PhoneApp:
         self._render_log()
         self._render_devices()
         self._render_peers()
+        self._render_saved()
         self._update_state(self.phone.state)
 
     def _build_menu(self) -> None:
@@ -293,6 +307,9 @@ class PhoneApp:
                 self._render_peers()
             elif kind == "devices":
                 self._render_devices()
+            elif kind == "saved_peers":
+                self.settings.save()
+                self._render_saved()
             elif kind == "incoming":
                 self._alert_incoming()
 
@@ -342,6 +359,16 @@ class PhoneApp:
         if index >= len(self._peers):
             return None
         return self._peers[index]["id"]
+
+    def _render_saved(self) -> None:
+        """Fill the address dropdown from the saved list."""
+        self._saved = list(self.settings.saved_peers)
+        labels = []
+        for peer in self._saved:
+            name = peer.get("name")
+            labels.append(self.S.visual(f"{peer['ip']}  ({name})") if name else peer["ip"])
+        self.ip_combo.configure(values=labels)
+        self.forget_btn.configure(state="normal" if self._saved else "disabled")
 
     def _render_devices(self) -> None:
         self._input_devices = list(self.phone.inputs)
@@ -436,6 +463,18 @@ class PhoneApp:
                 self.ip_var.set(peer["ip"])
                 return
 
+    def _on_saved_selected(self, _event: Any = None) -> None:
+        """Selecting from the dropdown puts the bare address in the box."""
+        index = self.ip_combo.current()
+        if 0 <= index < len(self._saved):
+            self.ip_var.set(self._saved[index]["ip"])
+
+    def _on_forget(self) -> None:
+        address = self.ip_var.get().strip()
+        if not self.phone.forget_peer(address) and self._saved:
+            # Nothing typed that matches: drop the most recent entry instead.
+            self.phone.forget_peer(self._saved[0]["ip"])
+
     def _call_target(self) -> tuple[str, int] | None:
         key = self._selected_peer_key()
         typed = self.ip_var.get().strip()
@@ -447,7 +486,8 @@ class PhoneApp:
         for peer in self._peers:
             if peer["ip"] == typed:
                 return peer["ip"], peer["sig_port"]
-        return typed, SIGNALING_PORT
+        # Not on the network right now: use the port saved with the address.
+        return typed, self.settings.saved_port(typed, SIGNALING_PORT)
 
     def _on_call(self) -> None:
         if self.phone.state != IDLE:
@@ -513,7 +553,7 @@ class PhoneApp:
         self.settings.language = language
         self.settings.save()
         self.S = Strings(language, self.settings.rtl_fix)
-        self.root.title(f"{self.S.raw('app_title')} - {APP_NAME}")
+        self.root.title(self._window_title())
         self._log_lines.clear()
         self._build_ui()
         self.ip_label.configure(text=f"{self.S('my_ip')} {self.phone.local_ip}")

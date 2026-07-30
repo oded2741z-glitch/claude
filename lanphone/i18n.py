@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .config import DEFAULT_LANGUAGE
 from .rtl import to_visual
 
 HE = {
@@ -15,7 +16,8 @@ HE = {
     "state_in_call": "בשיחה",
     "peers_group": "מחשבים ברשת",
     "no_peers": "(מחפש מחשבים...)",
-    "manual_ip": "כתובת ידנית:",
+    "address": "כתובת:",
+    "forget": "הסר",
     "call": "התקשר",
     "hangup": "נתק",
     "answer": "ענה",
@@ -71,6 +73,7 @@ HE = {
     "log_monitor_on": "בדיקה עצמית פעילה - אתה שומע את המיקרופון שלך.",
     "log_monitor_off": "בדיקה עצמית כבויה.",
     "log_settings_saved": "ההגדרות נשמרו.",
+    "log_peer_forgotten": "הכתובת {ip} הוסרה מהרשימה השמורה.",
     "log_rate_from_peer": "הצד המתקשר קבע איכות של {rate} הרץ.",
     "err_no_target": "בחר מחשב מהרשימה או הקלד כתובת IP.",
     "err_bad_ip": "כתובת לא תקינה: {ip}",
@@ -93,7 +96,8 @@ EN = {
     "state_in_call": "In call",
     "peers_group": "Computers on the network",
     "no_peers": "(searching...)",
-    "manual_ip": "Manual address:",
+    "address": "Address:",
+    "forget": "Forget",
     "call": "Call",
     "hangup": "Hang up",
     "answer": "Answer",
@@ -148,6 +152,7 @@ EN = {
     "log_monitor_on": "Self test on - you hear your own microphone.",
     "log_monitor_off": "Self test off.",
     "log_settings_saved": "Settings saved.",
+    "log_peer_forgotten": "Removed {ip} from the saved addresses.",
     "log_rate_from_peer": "Caller selected {rate} Hz.",
     "err_no_target": "Pick a computer from the list or type an IP address.",
     "err_bad_ip": "Invalid address: {ip}",
@@ -165,8 +170,8 @@ TABLES = {"he": HE, "en": EN}
 class Strings:
     """Look up interface strings, ready for display."""
 
-    def __init__(self, language: str = "he", rtl_fix: bool = True) -> None:
-        self.language = language if language in TABLES else "he"
+    def __init__(self, language: str = DEFAULT_LANGUAGE, rtl_fix: bool = True) -> None:
+        self.language = language if language in TABLES else DEFAULT_LANGUAGE
         self.rtl_fix = rtl_fix
 
     @property

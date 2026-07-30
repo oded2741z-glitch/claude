@@ -114,6 +114,40 @@ class CallFlowTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: third.state == IDLE))
         self.assertEqual(callee.state, IN_CALL)  # existing call untouched
 
+    def test_both_sides_remember_each_other(self):
+        caller, callee, caller_log, callee_log = self.connect(auto_answer=True)
+        self.assertTrue(wait_until(lambda: caller.state == IN_CALL))
+
+        # The caller stored the address it dialled, with the answered name.
+        saved = caller.settings.saved_peers
+        self.assertEqual([p["ip"] for p in saved], ["127.0.0.1"])
+        self.assertEqual(saved[0]["name"], "callee")
+        self.assertEqual(saved[0]["port"], callee.signaling.port)
+
+        # The callee stored the caller, including the port to call it back on.
+        saved = callee.settings.saved_peers
+        self.assertEqual([p["ip"] for p in saved], ["127.0.0.1"])
+        self.assertEqual(saved[0]["name"], "caller")
+        self.assertEqual(saved[0]["port"], caller.signaling.port)
+
+        # The interface is told to persist the list.
+        self.assertIn("saved_peers", [kind for kind, _ in caller_log.events])
+        self.assertIn("saved_peers", [kind for kind, _ in callee_log.events])
+
+    def test_an_address_is_saved_even_when_the_call_fails(self):
+        caller, caller_log = self.make_phone("caller")
+        caller.place_call("192.0.2.99", 50505)
+        self.assertTrue(wait_until(lambda: caller.state == IDLE))
+        self.assertEqual([p["ip"] for p in caller.settings.saved_peers], ["192.0.2.99"])
+
+    def test_forgetting_an_address(self):
+        caller, caller_log = self.make_phone("caller")
+        caller.remember_peer("10.1.1.1", 50505, "PC")
+        self.assertTrue(caller.forget_peer("10.1.1.1"))
+        self.assertEqual(caller.settings.saved_peers, [])
+        self.assertIn("log_peer_forgotten", caller_log.keys())
+        self.assertFalse(caller.forget_peer("10.1.1.1"))
+
     def test_unanswered_call_gives_up(self):
         with mock.patch.object(phonelib, "PING_INTERVAL", 0.05), mock.patch.object(
             phonelib, "CALL_TIMEOUT", 0.3

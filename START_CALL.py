@@ -174,7 +174,10 @@ class LiteIntercomApp:
             
         self.active_peer_ip = ip
         self.active_peer_name = name
-        self.contact_buttons[ip].configure(fg_color=COLORS["ACCENT"], text_color=COLORS["BG_MAIN"])
+        # An incoming call may come from someone who is not in ip_list.txt, so
+        # there is no button to highlight. That must not abort the call setup.
+        if ip in self.contact_buttons:
+            self.contact_buttons[ip].configure(fg_color=COLORS["ACCENT"], text_color=COLORS["BG_MAIN"])
         self.call_btn.configure(text=f"START CALL WITH {name.upper()}")
 
     def toggle_call(self):
@@ -247,6 +250,19 @@ class LiteIntercomApp:
         # Send from the shared audio socket (bound to AUDIO_PORT) so the return
         # path is opened on that port. self.audio_send_target is updated to the
         # peer's real source address once their audio arrives (NAT-safe).
+
+        # Punch the return path open before touching the microphone: opening the
+        # input stream takes time and can fail outright (device busy), and until
+        # something goes out of AUDIO_PORT the firewall drops the peer's audio
+        # as unsolicited - which is exactly what makes a call go one-way.
+        target = self.audio_send_target
+        if target:
+            for _ in range(3):
+                try:
+                    self.audio_sock.sendto(b"\x00" * 4, target)
+                except Exception:
+                    break
+
         try:
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32') as stream:
                 while self.is_calling and self.running_event.is_set():
@@ -267,6 +283,9 @@ class LiteIntercomApp:
                 if not self.is_calling:
                     outdata.fill(0)
                     return
+                # Priming packets carry no audio, but their source address is
+                # still worth learning (see below).
+                is_priming = len(data) <= 4
                 # Learn the peer's real source address from the first audio
                 # packet of the call, then accept audio only from that same
                 # source. This works even through NAT, where the source
@@ -277,8 +296,14 @@ class LiteIntercomApp:
                     # Reply to the exact address+port the audio came from so
                     # return audio traverses the peer's NAT / firewall.
                     self.audio_send_target = addr
+                    if is_priming:
+                        outdata.fill(0)
+                        return
                     audio_chunk = np.frombuffer(data, dtype='float32')
-                    outdata[:] = audio_chunk.reshape(-1, 1)
+                    n = min(len(audio_chunk), frames)
+                    outdata[:n, 0] = audio_chunk[:n]
+                    if n < frames:
+                        outdata[n:, 0] = 0
                 else:
                     outdata.fill(0)
             except:

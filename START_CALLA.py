@@ -74,6 +74,14 @@ class LiteIntercomApp:
 
         self._audio_queue = queue.Queue(maxsize=10)
 
+        # Device hot-plug coordination. A PortAudio rescan may only run while
+        # no stream is open, so the capture side asks for one and waits for
+        # the playback side to release its output stream first.
+        self._rescan_request = threading.Event()
+        self._output_idle = threading.Event()
+        self._output_idle.set()
+        self._mic_ok = None
+
         self.ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.ctrl_sock.bind(("0.0.0.0", CTRL_PORT))
         self.ctrl_sock.settimeout(SOCK_TIMEOUT)
@@ -134,6 +142,10 @@ class LiteIntercomApp:
                                       text_color=COLORS["TEXT_WHITE"], font=("Consolas", 14, "bold"),
                                       command=self.toggle_call)
         self.call_btn.pack(side="bottom", fill="x", padx=10, pady=(5, 20))
+
+        self.mic_status_label = ctk.CTkLabel(self.root, text="", font=("Consolas", 10),
+                                             text_color=COLORS["BTN_QUIT_HOVER"], anchor="w")
+        self.mic_status_label.pack(side="bottom", fill="x", padx=10)
 
         ctk.CTkLabel(self.root, text="oT", font=("Consolas", 10, "bold"), text_color=COLORS["ACCENT"]).place(relx=0.98, rely=0.99, anchor="se")
 
@@ -230,8 +242,9 @@ class LiteIntercomApp:
             self.end_call()
 
     def _start_call(self):
-        self._refresh_audio_devices()
+        self._rescan_devices()
         self._drain_audio_queue()
+        self._set_mic_status(None)
         self.is_calling = True
         self.call_btn.configure(text="END CALL", fg_color=COLORS["BTN_QUIT_HOVER"], text_color=COLORS["TEXT_WHITE"], hover_color="#CC0000")
         threading.Thread(target=self._transmit_audio, daemon=True).start()
@@ -242,6 +255,7 @@ class LiteIntercomApp:
 
         self.is_calling = False
         self._drain_audio_queue()
+        self._set_mic_status(None)
         btn_text = f"START CALL WITH {self.active_peer_name.upper()}" if self.active_peer_name else "START CALL"
         self.call_btn.configure(text=btn_text, fg_color=COLORS["BTN_BASE"], text_color=COLORS["TEXT_WHITE"], hover_color=COLORS["ACCENT"])
 
@@ -295,27 +309,54 @@ class LiteIntercomApp:
         self.select_peer(ip, self.peers.get(ip, caller_name))
         self._start_call()
 
-    def _refresh_audio_devices(self):
-        # PortAudio only scans audio devices once, so devices plugged in after
-        # startup are invisible until it is re-initialized. Safe to call only
-        # while no stream is open (i.e. before a call starts).
+    def _rescan_devices(self):
+        # PortAudio only scans audio devices once, so a microphone plugged in
+        # later is invisible until it is re-initialized. Re-initializing while
+        # a stream is open corrupts that stream, so park the output stream
+        # first and reopen it afterwards.
+        self._rescan_request.set()
         try:
-            sd._terminate()
-            sd._initialize()
+            deadline = time.monotonic() + 2.0
+            while not self._output_idle.is_set() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception:
+                pass
+        finally:
+            self._rescan_request.clear()
+
+    def _set_mic_status(self, ok):
+        if ok == self._mic_ok:
+            return
+        self._mic_ok = ok
+        text = "" if ok is not False else "MIC NOT FOUND - RECONNECTING..."
+        try:
+            self.root.after(0, lambda t=text: self.mic_status_label.configure(text=t))
         except Exception:
             pass
 
     def _transmit_audio(self):
-        try:
-            with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32') as stream:
-                while self.is_calling and self.running_event.is_set() and self.active_peer_ip:
-                    data, _ = stream.read(CHUNK)
-                    try:
-                        self.audio_sock.sendto(data.tobytes(), (self.active_peer_ip, AUDIO_PORT))
-                    except OSError:
-                        break
-        except Exception:
-            pass
+        # Reopened in a loop so unplugging the microphone mid-call does not
+        # silently kill capture: the stream errors out, the devices are
+        # rescanned, and transmission resumes when a microphone is back.
+        while self.is_calling and self.running_event.is_set():
+            try:
+                with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32') as stream:
+                    self._set_mic_status(True)
+                    while self.is_calling and self.running_event.is_set() and self.active_peer_ip:
+                        data, _ = stream.read(CHUNK)
+                        try:
+                            self.audio_sock.sendto(data.tobytes(), (self.active_peer_ip, AUDIO_PORT))
+                        except OSError:
+                            return
+            except Exception:
+                self._set_mic_status(False)
+                if not (self.is_calling and self.running_event.is_set()):
+                    return
+                self._rescan_devices()
+                time.sleep(0.5)
 
     def _audio_receiver(self):
         # Receiving happens here rather than inside the playback callback:
@@ -357,19 +398,24 @@ class LiteIntercomApp:
                 outdata.fill(0)
 
         # The output stream is opened per call (not once at startup), so each
-        # call picks up the current default output device after the refresh.
+        # call picks up the current default output device after a rescan. It is
+        # also released whenever a rescan is pending, then reopened.
         while self.running_event.is_set():
-            if not self.is_calling:
+            if not self.is_calling or self._rescan_request.is_set():
+                self._output_idle.set()
                 time.sleep(0.1)
                 continue
+
+            self._output_idle.clear()
             try:
                 with sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype='float32',
                                      blocksize=CHUNK, callback=audio_callback):
-                    while self.is_calling and self.running_event.is_set():
-                        time.sleep(0.1)
+                    while (self.is_calling and self.running_event.is_set()
+                           and not self._rescan_request.is_set()):
+                        time.sleep(0.05)
             except Exception:
-                while self.is_calling and self.running_event.is_set():
-                    time.sleep(0.1)
+                self._output_idle.set()
+                time.sleep(0.5)
 
     def toggle_window_visibility(self):
         if self.root.winfo_viewable():
@@ -403,6 +449,8 @@ class LiteIntercomApp:
             "* Toggle ALWAYS ON TOP to keep window above.\n"
             "* Toggle GHOST MODE for transparency.\n"
             "* Press F4 anywhere to hide/show window.\n"
+            "* Mic may be plugged/unplugged during a call;\n"
+            "  capture resumes on its own.\n"
             "* Edit 'ip_list.txt' to change contacts.\n"
         )
         txt.insert("1.0", help_content)

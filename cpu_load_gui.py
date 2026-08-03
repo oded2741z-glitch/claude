@@ -1048,7 +1048,7 @@ class App:
         root.after(4000, self._autostart_hw_monitor)
 
         chart_card = self._card(dash)
-        chart_card.grid(row=1, column=0, columnspan=5, sticky="nsew", pady=(12, 0))
+        chart_card.grid(row=1, column=0, columnspan=4, sticky="nsew", pady=(12, 0))
         chead = tk.Frame(chart_card, bg=CARD)
         chead.pack(fill="x", padx=14, pady=(10, 2))
         tk.Label(chead, text="Usage — last 60 seconds",
@@ -1061,6 +1061,14 @@ class App:
         self.bars = tk.Canvas(chart_card, bg=CARD, highlightthickness=0,
                               height=max(46, 24 * ((engine.cpu_count + 1) // 2)))
         self.bars.pack(fill="x", padx=14, pady=(6, 12))
+
+        # temperature bar chart (right of the usage chart)
+        temp_card = self._card(dash)
+        temp_card.grid(row=1, column=4, sticky="nsew", padx=(12, 0), pady=(12, 0))
+        tk.Label(temp_card, text="Temperature", font=self.f_label,
+                 bg=CARD, fg=MUTED).pack(anchor="w", padx=12, pady=(10, 2))
+        self.tchart = tk.Canvas(temp_card, bg=CARD, highlightthickness=0)
+        self.tchart.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         self._anim_win = None
         self._anim_lbl = None
@@ -1441,6 +1449,7 @@ class App:
         self._paint_state()
         self._draw_chart(now)
         self._draw_bars(s.cores)
+        self._draw_temp_bars(s.temp, s.gpu_temp)
         self.root.after(TICK_MS, self._tick)
 
     # -- drawing ---------------------------------------------------------------
@@ -1503,6 +1512,40 @@ class App:
                 c.create_rectangle(bar_x1, cy - 4, bar_x1 + fill_w, cy + 4, fill=BLUE, outline="")
             c.create_text(cx + col_w - gap, cy, text=f"{v:.0f}%", anchor="e",
                           fill=INK2, font=self.f_small)
+
+    def _draw_temp_bars(self, cpu_temp, gpu_temp):
+        c = self.tchart
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 40 or h < 40:
+            return
+        pl, pr, pt, pb = 30, 8, 18, 20
+        ph = h - pt - pb
+        ymax = 100.0
+        y = lambda v: pt + ph * (1 - min(v, ymax) / ymax)
+
+        for v in (0, 25, 50, 75, 100):        # scale + gridlines
+            c.create_line(pl, y(v), w - pr, y(v), fill=GRID)
+            c.create_text(pl - 6, y(v), text=str(v), anchor="e", fill=MUTED, font=self.f_small)
+        for thr, col in ((70, AMBER), (85, RED)):   # warning thresholds
+            c.create_line(pl, y(thr), w - pr, y(thr), fill=col, dash=(3, 3))
+
+        items = (("CPU", cpu_temp), ("GPU", gpu_temp))
+        slot = (w - pl - pr) / len(items)
+        bw = min(56, slot * 0.5)
+        for i, (name, temp) in enumerate(items):
+            cx = pl + slot * (i + 0.5)
+            x0, x1 = cx - bw / 2, cx + bw / 2
+            c.create_rectangle(x0, pt, x1, y(0), fill=CARD2, outline="")   # track
+            if temp is None:
+                c.create_text(cx, y(0) - 12, text="—", fill=MUTED, font=self.f_mid)
+            else:
+                col = RED if temp >= 85 else AMBER if temp >= 70 else GREEN
+                ty = y(temp)
+                c.create_rectangle(x0, ty, x1, y(0), fill=col, outline="")
+                c.create_text(cx, ty - 10, text="%.0f°C" % temp, fill=INK,
+                              font=(self.f_mid[0], 11, "bold"))
+            c.create_text(cx, h - pb + 4, text=name, anchor="n", fill=INK2, font=self.f_small)
 
 
 def main():

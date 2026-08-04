@@ -1,16 +1,23 @@
-"""The window icon, drawn in code.
+"""The window icon: a hand-made .ico if the app has one, else a drawn tile.
 
 Tk ships a feather icon and uses it for every window unless it is given
-another one.  Rather than carry an .ico file around, the icon is painted here
-pixel by pixel into a ``PhotoImage``: a dark tile with the "oT" mark in the
-accent colour, so the taskbar entry looks like the rest of the app.
+another one.  If a real ``app_icon.ico`` sits next to the app, that is what
+gets used - see ``find_icon_file`` for exactly where it looks.  Failing that,
+a small tile is painted in code, pixel by pixel, into a ``PhotoImage``: a dark
+square with the "oT" mark in the accent colour, so the window is never left
+with Tk's default feather.
 """
 
 from __future__ import annotations
 
+import os
 import struct
+import sys
 
 from . import theme
+
+# Names accepted for a hand-made icon, checked in this order.
+ICON_FILENAMES = ("app_icon.ico", "icon.ico", "lanphone.ico")
 
 # 5x7 pixel letters.  '#' is ink, anything else is background.
 GLYPHS = {
@@ -81,13 +88,60 @@ def build(size: int = 32):
     return image
 
 
-def apply(window):
-    """Give ``window`` (and every later one) the icon.
+def _search_dirs() -> list[str]:
+    """Places a hand-made icon file might live, most likely first.
 
-    The returned image must be kept alive by the caller: Tk only holds a weak
-    reference, and a collected PhotoImage takes the icon down with it.
+    Covers running from source (``python main.py``) and the packaged .exe:
+    PyInstaller extracts bundled data next to ``sys._MEIPASS``, and
+    ``LANPhone.spec`` bundles the user's own icon file there when it finds
+    one at build time (see ``resolve_icon`` in the spec).
+    """
+    dirs = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            dirs.append(meipass)
+        dirs.append(os.path.dirname(sys.executable))
+    if sys.argv and sys.argv[0]:
+        dirs.append(os.path.dirname(os.path.abspath(sys.argv[0])))
+    dirs.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    dirs.append(os.getcwd())
+    seen: list[str] = []
+    for directory in dirs:
+        if directory and directory not in seen:
+            seen.append(directory)
+    return seen
+
+
+def find_icon_file() -> str | None:
+    """A real .ico placed next to the app, if there is one.  See ``_search_dirs``."""
+    for directory in _search_dirs():
+        for name in ICON_FILENAMES:
+            path = os.path.join(directory, name)
+            if os.path.exists(path) and is_ico(path):
+                return path
+    return None
+
+
+def apply(window):
+    """Give ``window`` (and every later one) the app's icon.
+
+    Prefers a real ``app_icon.ico`` if one can be found (Windows only: that is
+    the one platform where Tk can load a .ico file as-is).  Otherwise the
+    generated tile is used, and its ``PhotoImage`` is returned so the caller
+    can keep a reference - Tk only holds a weak one, and a collected
+    PhotoImage takes the icon down with it.  ``None`` means a real file is in
+    use and there is nothing the caller needs to keep alive.
     """
     import tkinter as tk
+
+    path = find_icon_file()
+    if path and sys.platform.startswith("win"):
+        try:
+            window.iconbitmap(default=path)
+            return None
+        except tk.TclError:
+            pass  # fall through to the generated tile
 
     icon = build()
     try:

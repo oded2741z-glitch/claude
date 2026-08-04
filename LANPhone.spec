@@ -12,9 +12,6 @@ sys.path.insert(0, HERE)
 
 from lanphone import appicon  # noqa: E402  (needs HERE on the path first)
 
-# Names accepted for a hand-made icon, in order of preference.
-ICON_NAMES = ("app_icon.ico", "icon.ico", "lanphone.ico")
-
 
 def resolve_icon():
     """The icon to build with.
@@ -24,7 +21,7 @@ def resolve_icon():
     checked here and reported.  With no usable file, the app's own icon is
     generated, which is better than PyInstaller's default anyway.
     """
-    for name in ICON_NAMES:
+    for name in appicon.ICON_FILENAMES:
         path = os.path.join(HERE, name)
         if not os.path.exists(path):
             continue
@@ -60,6 +57,13 @@ for package in ("sounddevice",):
     datas += package_datas
     binaries += package_binaries
     hiddenimports += package_hiddenimports
+
+# Carry a hand-made icon into the bundle itself: appicon.find_icon_file() looks
+# for it there (via sys._MEIPASS) at runtime, so the running app - not just the
+# .exe's own file icon - uses it too.  A generated fallback icon needs no such
+# copy: appicon regenerates the identical tile at runtime on its own.
+if os.path.dirname(icon) == HERE:
+    datas.append((icon, "."))
 
 a = Analysis(
     [os.path.join(HERE, "main.py")],

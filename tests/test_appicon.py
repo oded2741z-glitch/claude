@@ -6,10 +6,28 @@ work wherever PyInstaller runs.
 
 import os
 import struct
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from lanphone import appicon, theme
+
+try:
+    import tkinter  # noqa: F401
+
+    HAVE_TKINTER = True
+except ImportError:
+    HAVE_TKINTER = False
+
+try:
+    import tkinter as _tk
+
+    _root = _tk.Tk()  # PhotoImage needs a live root even just to construct one
+    _root.destroy()
+    HAVE_DISPLAY = True
+except Exception:  # noqa: BLE001 - no tkinter, or no display
+    HAVE_DISPLAY = False
 
 
 class PixelsTest(unittest.TestCase):
@@ -76,6 +94,127 @@ class WriteIcoTest(unittest.TestCase):
         appicon.write_ico(self.path, sizes=(32,))
         with open(self.path, "rb") as fh:
             self.assertEqual(struct.unpack("<H", fh.read(6)[4:])[0], 1)
+
+
+class FindIconFileTest(unittest.TestCase):
+    """Where a hand-made app_icon.ico is looked for, and what wins."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def write_real_ico(self, *parts):
+        path = os.path.join(self.tmp.name, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        appicon.write_ico(path, sizes=(16,))
+        return path
+
+    def test_no_file_anywhere_means_none(self):
+        with mock.patch.object(appicon, "_search_dirs", return_value=[self.tmp.name]):
+            self.assertIsNone(appicon.find_icon_file())
+
+    def test_finds_app_icon_ico(self):
+        self.write_real_ico("app_icon.ico")
+        with mock.patch.object(appicon, "_search_dirs", return_value=[self.tmp.name]):
+            found = appicon.find_icon_file()
+        self.assertEqual(found, os.path.join(self.tmp.name, "app_icon.ico"))
+
+    def test_app_icon_ico_is_preferred_over_icon_ico(self):
+        self.write_real_ico("icon.ico")
+        self.write_real_ico("app_icon.ico")
+        with mock.patch.object(appicon, "_search_dirs", return_value=[self.tmp.name]):
+            found = appicon.find_icon_file()
+        self.assertEqual(os.path.basename(found), "app_icon.ico")
+
+    def test_a_renamed_png_is_skipped_in_favour_of_a_real_one_further_along(self):
+        fake_dir = os.path.join(self.tmp.name, "a")
+        real_dir = os.path.join(self.tmp.name, "b")
+        os.makedirs(fake_dir)
+        with open(os.path.join(fake_dir, "app_icon.ico"), "wb") as fh:
+            fh.write(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)  # a renamed .png
+        self.write_real_ico("b", "app_icon.ico")
+        with mock.patch.object(appicon, "_search_dirs", return_value=[fake_dir, real_dir]):
+            found = appicon.find_icon_file()
+        self.assertEqual(found, os.path.join(real_dir, "app_icon.ico"))
+
+    def test_search_dirs_includes_the_running_scripts_directory(self):
+        with mock.patch.object(sys, "argv", ["/somewhere/main.py"]):
+            self.assertIn("/somewhere", appicon._search_dirs())
+
+    def test_search_dirs_prefers_the_frozen_bundle_when_frozen(self):
+        with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(
+            sys, "_MEIPASS", "/bundle", create=True
+        ), mock.patch.object(sys, "executable", "/dist/LANPhone.exe"):
+            dirs = appicon._search_dirs()
+        self.assertEqual(dirs[0], "/bundle")
+        self.assertIn("/dist", dirs)
+
+
+@unittest.skipUnless(HAVE_TKINTER, "tkinter is not installed")
+class ApplyPrefersFileTest(unittest.TestCase):
+    """The one apply() path that never touches a real Tk root.
+
+    It returns before calling build(), so unlike the fallback tests below it
+    runs headless: importing the tkinter module (for tk.TclError) works fine
+    without a display, only constructing a PhotoImage needs one.
+    """
+
+    def test_prefers_a_real_icon_file_on_windows(self):
+        window = mock.Mock()
+        with mock.patch.object(appicon, "find_icon_file", return_value="/x/app_icon.ico"), mock.patch.object(
+            sys, "platform", "win32"
+        ):
+            result = appicon.apply(window)
+        window.iconbitmap.assert_called_once_with(default="/x/app_icon.ico")
+        window.iconphoto.assert_not_called()
+        self.assertIsNone(result)  # nothing generated, nothing to keep alive
+
+
+@unittest.skipUnless(HAVE_DISPLAY, "no live Tk root available")
+class ApplyFallsBackTest(unittest.TestCase):
+    """These paths reach build(), which needs a real, undestroyed root.
+
+    A create-then-destroy probe (like the module-level HAVE_DISPLAY check)
+    is not enough - PhotoImage looks up Tk's *current* default root, so one
+    has to stay alive for the duration of each test.
+    """
+
+    def setUp(self):
+        self.root = _tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def test_falls_back_to_the_drawn_tile_off_windows_even_with_a_real_file(self):
+        window = mock.Mock()
+        with mock.patch.object(appicon, "find_icon_file", return_value="/x/app_icon.ico"), mock.patch.object(
+            sys, "platform", "linux"
+        ):
+            result = appicon.apply(window)
+        window.iconbitmap.assert_not_called()
+        window.iconphoto.assert_called_once()
+        self.assertIsNotNone(result)
+
+    def test_falls_back_to_the_drawn_tile_with_no_file(self):
+        window = mock.Mock()
+        with mock.patch.object(appicon, "find_icon_file", return_value=None), mock.patch.object(
+            sys, "platform", "win32"
+        ):
+            result = appicon.apply(window)
+        window.iconbitmap.assert_not_called()
+        window.iconphoto.assert_called_once()
+        self.assertIsNotNone(result)
+
+    def test_a_file_iconbitmap_rejects_still_falls_back(self):
+        import tkinter as tk
+
+        window = mock.Mock()
+        window.iconbitmap.side_effect = tk.TclError("nope")
+        with mock.patch.object(appicon, "find_icon_file", return_value="/x/app_icon.ico"), mock.patch.object(
+            sys, "platform", "win32"
+        ):
+            result = appicon.apply(window)
+        window.iconphoto.assert_called_once()
+        self.assertIsNotNone(result)
 
 
 class IsIcoTest(unittest.TestCase):

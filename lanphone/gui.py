@@ -10,12 +10,13 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from . import audio as audiolib
-from . import net, theme, winchrome
+from . import appicon, net, theme, winchrome
 from .config import APP_NAME, SIGNALING_PORT, SUPPORTED_RATES, Settings
 from .i18n import Strings, severity
 from .phone import CALLING, IDLE, IN_CALL, RINGING, Phone
 
 VERSION = "1.0"
+WATERMARK = "oT"
 TICK_MS = 100
 MAX_LOG_LINES = 400
 
@@ -41,6 +42,9 @@ class PhoneApp:
         self.root.minsize(780, 580)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.style = theme.apply(self.root)
+        # Kept on the instance on purpose: Tk drops an icon whose PhotoImage
+        # gets garbage collected, and the feather comes back.
+        self.icon = appicon.apply(self.root)
         winchrome.apply(self.root, caption=theme.BG, text=theme.TEXT)
         self.container = ttk.Frame(self.root, padding=(2, 0, 2, 2))
         self.container.pack(fill="both", expand=True)
@@ -240,8 +244,12 @@ class PhoneApp:
         self.log_text.tag_configure("alert", foreground=theme.WARN)
         self.log_text.tag_configure("event", foreground=theme.ACCENT)
 
-        self.stats_label = ttk.Label(self.container, text="", anchor="w", style=theme.DIM)
-        self.stats_label.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
+        footer = ttk.Frame(self.container)
+        footer.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 8))
+        footer.columnconfigure(0, weight=1)
+        self.stats_label = ttk.Label(footer, text="", anchor="w", style=theme.DIM)
+        self.stats_label.grid(row=0, column=0, sticky="ew")
+        ttk.Label(footer, text=WATERMARK, style=theme.WATERMARK).grid(row=0, column=1, sticky="e")
 
         self._render_log()
         self._render_devices()
@@ -265,13 +273,9 @@ class PhoneApp:
         left.grid(row=0, column=left_col, sticky="w")
         right.grid(row=0, column=right_col, sticky="e")
 
-        for text, command in (
-            (self.S("settings"), self._open_settings),
-            (self.S("help"), self._show_about),
-        ):
-            ttk.Button(left, text=text, style=theme.TOOL_BUTTON, command=command).pack(
-                side="left", padx=(0, 4)
-            )
+        ttk.Button(
+            left, text=self.S("settings"), style=theme.TOOL_BUTTON, command=self._open_settings
+        ).pack(side="left", padx=(0, 4))
 
         ttk.Label(bar, text=APP_NAME.upper(), style=theme.TITLE, anchor="center").grid(
             row=0, column=1, sticky="ew"
@@ -559,9 +563,6 @@ class PhoneApp:
 
     def _on_gain(self, _value: Any = None) -> None:
         self.phone.set_mic_gain(self.gain_var.get())
-
-    def _show_about(self) -> None:
-        messagebox.showinfo(APP_NAME, self.S("about_text", version=VERSION))
 
     # ------------------------------------------------------------------
     # settings dialog

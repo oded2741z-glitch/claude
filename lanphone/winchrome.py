@@ -91,8 +91,13 @@ def dark_titlebar(window, caption: str | None = None, text: str | None = None) -
         return False
 
 
-def hide_titlebar_icon(window) -> bool:
-    """Remove the icon from the left of the title bar."""
+def hide_titlebar_icon(window, clear_icons: bool = False) -> bool:
+    """Remove the icon from the left of the title bar.
+
+    ``clear_icons`` also drops the window's icons, which empties the taskbar
+    entry back to Tk's feather - so it stays off by default and the app's own
+    icon (see ``appicon``) is what the taskbar and Alt-Tab show.
+    """
     if not is_supported():
         return False
     try:
@@ -105,8 +110,9 @@ def hide_titlebar_icon(window) -> bool:
 
         style = get_long(ctypes.c_void_p(hwnd), GWL_EXSTYLE) or 0
         set_long(ctypes.c_void_p(hwnd), GWL_EXSTYLE, ctypes.c_void_p(int(style) | WS_EX_DLGMODALFRAME))
-        for which in (ICON_SMALL, ICON_BIG):
-            user32.SendMessageW(ctypes.c_void_p(hwnd), WM_SETICON, which, 0)
+        if clear_icons:
+            for which in (ICON_SMALL, ICON_BIG):
+                user32.SendMessageW(ctypes.c_void_p(hwnd), WM_SETICON, which, 0)
         # The frame only re-reads its style when told to redraw itself.
         user32.SetWindowPos(
             ctypes.c_void_p(hwnd), 0, 0, 0, 0, 0,

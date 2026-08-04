@@ -37,9 +37,7 @@ EN = {
     "monitor": "Self test (hear yourself)",
     "log_group": "Log",
     "settings": "Settings",
-    "help": "Help",
     "quit": "Quit",
-    "about": "About",
     "close": "Close",
     "save": "Save",
     "cancel": "Cancel",
@@ -85,13 +83,6 @@ EN = {
     "log_rate_from_peer": "Caller selected {rate} Hz.",
     "err_no_target": "Pick a computer from the list or type an IP address.",
     "err_bad_ip": "Invalid address: {ip}",
-    "about_text": (
-        "LAN Phone - version {version}\n\n"
-        "Both computers must be on the same network (same router).\n"
-        "If the other computer is not listed, type its IP address manually.\n"
-        "A USB headset connected while the app is running is detected and used\n"
-        "automatically; \"Refresh devices\" forces a re-scan if it ever misses one."
-    ),
 }
 
 # Log lines are coloured by what they say: trouble in amber, call progress in

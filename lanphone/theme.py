@@ -60,6 +60,7 @@ ACCENT_BUTTON = "Accent.TButton"
 DANGER_BUTTON = "Danger.TButton"
 TOOL_BUTTON = "Tool.TButton"
 METER = "Meter.Horizontal.TProgressbar"
+WATERMARK = "Watermark.TLabel"
 
 
 def apply(root: tk.Misc) -> ttk.Style:
@@ -92,6 +93,7 @@ def apply(root: tk.Misc) -> ttk.Style:
     style.configure(ACCENT_LABEL, background=BG, foreground=ACCENT)
     style.configure(TITLE, background=BG, foreground=ACCENT, font=FONT_TITLE)
     style.configure(STATUS, background=BG, foreground=TEXT, font=FONT_STATUS)
+    style.configure(WATERMARK, background=BG, foreground=TEXT_OFF, font=FONT_BOLD)
 
     # -- frames ----------------------------------------------------------
     style.configure("TFrame", background=BG)

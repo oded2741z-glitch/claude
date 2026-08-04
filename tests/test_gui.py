@@ -221,6 +221,57 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(winchrome.colorref("#151515"), 0x151515)
         self.assertEqual(winchrome.colorref(theme.ACCENT), 0x1F6AFF)  # BGR order
 
+    def test_no_help_button_is_left(self):
+        labels = [
+            str(w.cget("text"))
+            for w in _walk(self.app.root)
+            if "text" in w.keys() and w.winfo_class() == "TButton"
+        ]
+        self.assertIn("Settings", labels)
+        self.assertIn("Quit", labels)
+        self.assertNotIn("Help", labels)
+        self.assertFalse(hasattr(self.app, "_show_about"))
+
+    def test_the_watermark_is_shown_quietly(self):
+        from lanphone import theme
+
+        marks = [
+            w
+            for w in _walk(self.app.root)
+            if "text" in w.keys() and str(w.cget("text")) == self.gui.WATERMARK
+        ]
+        self.assertEqual(len(marks), 1, "expected exactly one watermark")
+        self.assertEqual(str(marks[0].cget("style")), theme.WATERMARK)
+        self.assertEqual(str(self.app.style.lookup(theme.WATERMARK, "foreground")), theme.TEXT_OFF)
+
+    def test_the_window_has_our_own_icon(self):
+        from lanphone import theme
+
+        # Tk drops an icon whose image is collected, so it has to be held on to.
+        self.assertIsNotNone(self.app.icon)
+        self.assertEqual((self.app.icon.width(), self.app.icon.height()), (32, 32))
+        self.assertEqual(self.app.icon.get(0, 0)[:3], tuple(_rgb(theme.BG)))
+        painted = {
+            self.app.icon.get(x, y)[:3]
+            for y in range(32)
+            for x in range(32)
+        }
+        self.assertIn(tuple(_rgb(theme.ACCENT)), painted, "the mark was never drawn")
+
+    def test_the_icon_mark_stays_inside_the_tile(self):
+        from lanphone import appicon, theme
+
+        for size in (16, 32, 48, 128):
+            grid = appicon._pixels(size, appicon._scale_for(size))
+            self.assertEqual(len(grid), size)
+            self.assertTrue(all(len(row) == size for row in grid))
+            ink = [(x, y) for y, row in enumerate(grid) for x, c in enumerate(row) if c == theme.ACCENT]
+            self.assertTrue(ink, f"nothing drawn at {size}px")
+            self.assertTrue(
+                all(0 < x < size - 1 and 0 < y < size - 1 for x, y in ink),
+                f"the mark touches the edge at {size}px",
+            )
+
     def test_dark_theme_is_applied(self):
         from lanphone import theme
 
@@ -270,6 +321,12 @@ class GuiTest(unittest.TestCase):
         self.app._on_close()
         self.assertFalse(self.app._alive)
         self.app._tick()  # must not raise after the window is gone
+
+
+def _rgb(color):
+    """'#rrggbb' -> (r, g, b), to compare against PhotoImage.get()."""
+    value = color.lstrip("#")
+    return [int(value[i : i + 2], 16) for i in (0, 2, 4)]
 
 
 def _walk(widget):

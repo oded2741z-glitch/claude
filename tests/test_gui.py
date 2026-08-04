@@ -1,5 +1,6 @@
 """Interface tests.  Skipped when there is no tkinter or no display."""
 
+import sys
 import unittest
 from unittest import mock
 
@@ -24,7 +25,7 @@ class GuiTest(unittest.TestCase):
         from lanphone import gui
 
         self.gui = gui
-        fresh = Settings(display_name="test-pc")  # English by default
+        fresh = Settings(display_name="test-pc")
         patches = [
             mock.patch.object(Settings, "load", classmethod(lambda cls: fresh)),
             mock.patch.object(Settings, "save", lambda self: None),
@@ -46,10 +47,10 @@ class GuiTest(unittest.TestCase):
     def peer(self, name="PC-2", ip="192.168.1.42", key="a"):
         return {"id": key, "name": name, "ip": ip, "sig_port": 50505, "last_seen": 0}
 
-    def test_window_builds_in_english(self):
-        self.assertFalse(self.app.S.is_rtl)
+    def test_window_builds(self):
         self.assertEqual(self.app.root.title(), "LAN Phone")  # not doubled up
         self.assertEqual(str(self.app.call_btn["text"]), "Call")
+        self.assertEqual(str(self.app.hangup_btn["text"]), "Hang up")
 
     def test_peer_list_replaces_the_placeholder(self):
         self.assertEqual(self.app.peer_list.size(), 1)  # "(searching...)"
@@ -164,22 +165,6 @@ class GuiTest(unittest.TestCase):
         self.assertLessEqual(len(self.app._log_lines), self.gui.MAX_LOG_LINES)
         self.assertIn("line %d" % (self.gui.MAX_LOG_LINES + 49), self.app._log_lines[-1])
 
-    def test_language_switch_rebuilds_the_interface(self):
-        self.app._set_language("he")
-        self.assertTrue(self.app.S.is_rtl)
-        self.assertIn("שיחה", self.app.root.title())
-        self.assertEqual(str(self.app.call_btn["text"]), self.app.S("call"))
-        self.app._set_language("en")
-        self.assertFalse(self.app.S.is_rtl)
-        self.assertEqual(str(self.app.call_btn["text"]), "Call")
-
-    def test_saved_addresses_survive_a_language_switch(self):
-        self.app.settings.remember_peer("192.168.1.5", 50505, "PC-A")
-        self.app._render_saved()
-        self.app._set_language("he")
-        self.assertEqual(len(self.app.ip_combo["values"]), 1)
-        self.assertEqual(self.app.ip_var.get(), "192.168.1.5")
-
     def test_settings_dialog_saves_and_applies(self):
         with mock.patch.object(self.gui.tk, "Toplevel", wraps=self.gui.tk.Toplevel):
             self.app._open_settings()
@@ -215,6 +200,27 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(error.called)
         self.assertFalse(place.called)
 
+    def test_there_is_no_language_option_left(self):
+        """One language only: no toggle, no menu bar, no Hebrew on screen."""
+        self.assertFalse(hasattr(self.app, "_toggle_language"))
+        self.assertFalse(hasattr(self.app, "_set_language"))
+        self.assertIsNone(self.app.root["menu"] or None)
+        for widget in _walk(self.app.root):
+            text = str(widget.cget("text")) if "text" in widget.keys() else ""
+            self.assertFalse(
+                any("\u0590" <= ch <= "\u08ff" for ch in text),
+                f"right-to-left text on screen: {text!r}",
+            )
+
+    def test_window_chrome_is_requested(self):
+        from lanphone import theme, winchrome
+
+        # Windows-only; everywhere else it reports that it did nothing.
+        self.assertEqual(winchrome.is_supported(), sys.platform.startswith("win"))
+        self.assertFalse(winchrome.apply(self.app.root) and not winchrome.is_supported())
+        self.assertEqual(winchrome.colorref("#151515"), 0x151515)
+        self.assertEqual(winchrome.colorref(theme.ACCENT), 0x1F6AFF)  # BGR order
+
     def test_dark_theme_is_applied(self):
         from lanphone import theme
 
@@ -233,24 +239,6 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(str(self.app.answer_btn["style"]), theme.ACCENT_BUTTON)
         self.assertEqual(str(self.app.hangup_btn["style"]), theme.DANGER_BUTTON)
         self.assertEqual(str(self.app.mic_meter["style"]), theme.METER)
-
-    def test_toolbar_offers_the_other_language_and_toggles(self):
-        # Styled buttons instead of a native menu bar, which Windows would
-        # draw in system colours.
-        self.assertIsNone(self.app.root["menu"] or None)
-        self.assertEqual(self.app._other_language_name(), self.app.S.visual("עברית"))
-        self.app._toggle_language()
-        self.assertTrue(self.app.S.is_rtl)
-        self.assertEqual(self.app._other_language_name(), "English")
-        self.app._toggle_language()
-        self.assertFalse(self.app.S.is_rtl)
-
-    def test_hebrew_button_label_is_reordered_in_the_english_interface(self):
-        from lanphone.rtl import to_visual
-
-        # Tk draws Hebrew left to right whatever the interface language is.
-        self.assertEqual(self.app._other_language_name(), to_visual("עברית"))
-        self.assertNotEqual(self.app._other_language_name(), "עברית")
 
     def test_log_lines_are_coloured_by_severity(self):
         self.app._emit("log", key="log_audio_error", err="boom")
@@ -285,6 +273,12 @@ class GuiTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_TK, f"tkinter/display unavailable: {TK_REASON}")
+def _walk(widget):
+    yield widget
+    for child in widget.winfo_children():
+        yield from _walk(child)
+
+
 class LevelMeterTest(unittest.TestCase):
     def test_level_percent_range(self):
         from lanphone.gui import _level_percent

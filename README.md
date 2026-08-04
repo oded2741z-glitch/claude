@@ -9,9 +9,8 @@
 
 ![המסך הראשי](docs/screenshot-en.png)
 
-הממשק באנגלית. מעבר לעברית בלחיצה על כפתור **`עברית`** בסרגל העליון
-(צילום מסך של הממשק בעברית נמצא ב-[docs/screenshot-he.png](docs/screenshot-he.png)).
-המדריך כאן מציין את שמות הכפתורים כפי שהם מופיעים על המסך.
+הממשק באנגלית בלבד, והמדריך כאן מציין את שמות הכפתורים כפי שהם מופיעים על
+המסך.
 
 ---
 
@@ -70,7 +69,7 @@ pyinstaller --noconfirm --clean LANPhone.spec
 pyinstaller --onefile --windowed --icon=icon.ico --collect-all sounddevice --name LANPhone main.py
 ```
 
-**שימו לב שמצביעים רק על `main.py`** — לא על 11 קבצי הקוד. PyInstaller עוקב
+**שימו לב שמצביעים רק על `main.py`** — לא על 13 קבצי הקוד. PyInstaller עוקב
 אחרי ה-`import`ים ואוסף לבד את כל מה שהתוכנה מייבאת, כך שריבוי קבצים לא דורש
 שום דגל נוסף. מה שכן דורש טיפול מיוחד זה דברים ש-PyInstaller לא יכול לראות
 בקוד: קבצי נתונים (`--add-data`), ייבוא דינמי (`--hidden-import`), וספריות
@@ -146,9 +145,15 @@ pyinstaller --onefile --windowed --icon=icon.ico --collect-all sounddevice --nam
 
 * **סרגל כפתורים במקום תפריט.** Windows מצייר את שורת התפריטים בעצמו ומתעלם
   מהצבעים שמוגדרים לה, מה שהיה משאיר פס בהיר מעל חלון כהה. לכן `Settings`,
-  `עברית`, `Help` ו-`Quit` הם כפתורים רגילים בסרגל העליון.
+  `Help` ו-`Quit` הם כפתורים רגילים בסרגל העליון.
 * **ערכת `clam` של ttk.** זו ערכת הבסיס היחידה שמכבדת הגדרות צבע ב-Windows;
   ברירת המחדל (`vista`) מציירת כפתורים ושדות בצבעי המערכת ומתעלמת כמעט מהכול.
+* **שורת הכותרת שחורה ובלי אייקון.** גם אותה Windows מצייר, ו-Tk לא יכול לגעת
+  בה, אז `lanphone/winchrome.py` פונה ישירות ל-Win32: מצב כהה דרך
+  `DwmSetWindowAttribute`, צבע כותרת מדויק ב-Windows 11, והסרת האייקון
+  באמצעות `WS_EX_DLGMODALFRAME`. במערכות אחרות הקוד פשוט לא עושה כלום.
+* **ממשק בשפה אחת.** ל-Tk אין תמיכה בכתיבה מימין לשמאל, כך שממשק עברי חייב
+  סידור ידני של כל תווית והיפוך של כל פאנל. השכבה הזאת הוסרה לגמרי.
 
 ביומן יש גם צבע לפי סוג ההודעה: תקלות בענבר, התקדמות שיחה בכתום, והשעה
 באפור עמום.
@@ -165,7 +170,6 @@ pyinstaller --onefile --windowed --icon=icon.ico --collect-all sounddevice --nam
 | הד (הצד השני שומע את עצמו) | קורה כשמשתמשים ברמקולים במקום אוזניות. עם אוזניות זה נעלם. אין בתוכנה מבטל הד. |
 | הקול קטוע | הגדילו את `Jitter buffer` ל-100–150 מ"ש (כפתור `Settings`). ב-Wi-Fi חלש כדאי גם להוריד את `Audio quality` ל-16000. |
 | הקול מעוות / רועש מדי | הורידו את `Mic gain` ואת `Volume` מתחת ל-1. |
-| עברתם לעברית והכתב נראה הפוך | `Settings` ➜ בטלו את `Right-to-left text fix`, או חזרו ל-`English` בסרגל העליון. |
 
 ## חומת אש
 
@@ -251,8 +255,7 @@ Windows לא רואה אותן והבעיה אינה בתוכנה.
 python -m unittest discover -s tests -t .
 ```
 
-133 בדיקות שמכסות המרת קצב דגימה, חוצץ ההשהיה, פורמט החבילות, סידור טקסט מימין
-לשמאל, מנוע ההקלטה וההשמעה (מול כרטיס קול מדומה), הממשק הגרפי, הכתובות השמורות, ושיחה
+121 בדיקות שמכסות המרת קצב דגימה, חוצץ ההשהיה, פורמט החבילות, מנוע ההקלטה וההשמעה (מול כרטיס קול מדומה), הממשק הגרפי, הכתובות השמורות, ושיחה
 מלאה מקצה לקצה — התקשרות, מענה, דחייה, "תפוס", ניתוק, פסק זמן ובחירת איכות — הכול
 על ממשק ה-loopback, בלי צורך בכרטיס קול אמיתי. בדיקות הממשק מדלגות על עצמן
 בסביבה בלי `tkinter` או בלי מסך.
@@ -269,8 +272,8 @@ python -m unittest discover -s tests -t .
 | `lanphone/jitter.py` | חוצץ ההשהיה |
 | `lanphone/resample.py` | המרת קצב דגימה |
 | `lanphone/theme.py` | ערכת הצבעים והגופנים של הממשק |
-| `lanphone/rtl.py` | סידור טקסט עברי לתצוגה ב-Tk |
-| `lanphone/i18n.py` | מחרוזות הממשק (עברית ואנגלית) |
+| `lanphone/winchrome.py` | שורת הכותרת של Windows (שחורה, בלי אייקון) |
+| `lanphone/i18n.py` | מחרוזות הממשק |
 | `lanphone/config.py` | קבועים, הגדרות והכתובות השמורות |
 | `main.py` | נקודת הכניסה (וגם נקודת הכניסה לבנייה) |
 | `LANPhone.spec` + `build.bat` | בנייה של קובץ EXE יחיד |
@@ -293,16 +296,17 @@ Every address you call — and every address that calls you — is saved with th
 peer's name and port, and offered in the **Address** dropdown next time, so a
 call back is one click. **Forget** drops the shown address from the list.
 
-The interface is in English; the toolbar has a button that switches to Hebrew.
-Hebrew text is reordered for display because Tk has no bidirectional text
-support - that applies to any Hebrew, including a Hebrew computer name in the
-English interface, and can be turned off in Settings.
+The interface is English only. Tk has no bidirectional text support, so a
+Hebrew interface meant reordering every label by hand and mirroring every
+panel; that layer has been removed.
 
 The look is a dark theme with orange accents, red for anything that ends a call,
 one-pixel borders and a monospace font; all of it lives in `lanphone/theme.py`.
 It uses ttk's `clam` base theme, the only built-in one that honours colours on
 Windows, and a button strip instead of a native menu bar, which Windows would
-paint in system colours.
+paint in system colours. `lanphone/winchrome.py` goes to Win32 directly for the
+title bar Tk cannot reach: dark mode, an exact caption colour on Windows 11, and
+no application icon.
 
 Run `python -m lanphone --list-devices` to check what the sound system sees, and
 `python -m unittest discover -s tests -t .` for the test suite.

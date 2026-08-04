@@ -10,9 +10,6 @@ from dataclasses import asdict, dataclass, field, fields
 APP_NAME = "LAN Phone"
 PROTOCOL_VERSION = 1
 
-LANGUAGES = ("en", "he")
-DEFAULT_LANGUAGE = "en"
-
 # How many previously called addresses are kept.
 MAX_SAVED_PEERS = 12
 
@@ -107,8 +104,6 @@ class Settings:
     mic_gain: float = 1.0
     auto_answer: bool = False
     auto_pick_new_device: bool = True
-    language: str = DEFAULT_LANGUAGE
-    rtl_fix: bool = True
     wire_rate: int = DEFAULT_WIRE_RATE
     frame_ms: int = DEFAULT_FRAME_MS
     jitter_ms: int = DEFAULT_JITTER_MS
@@ -125,8 +120,6 @@ class Settings:
         self.jitter_ms = max(20, min(400, int(self.jitter_ms)))
         self.volume = max(0.0, min(2.0, float(self.volume)))
         self.mic_gain = max(0.0, min(4.0, float(self.mic_gain)))
-        if self.language not in LANGUAGES:
-            self.language = DEFAULT_LANGUAGE
         self.saved_peers = _clean_saved_peers(self.saved_peers)
 
     # -- saved addresses -------------------------------------------------

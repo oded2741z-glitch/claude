@@ -1,99 +1,11 @@
-"""User interface strings in Hebrew and English."""
+"""User interface strings.
+
+One language, English: Tk has no bidirectional text support, so a Hebrew
+interface needed every label reordered by hand and every panel mirrored, and
+that whole layer is gone.
+"""
 
 from __future__ import annotations
-
-from .config import DEFAULT_LANGUAGE
-from .rtl import to_visual
-
-HE = {
-    "app_title": "שיחה ברשת מקומית",
-    "my_name": "השם שלי:",
-    "my_ip": "הכתובת שלי:",
-    "status": "מצב:",
-    "state_idle": "פנוי",
-    "state_calling": "מתקשר...",
-    "state_ringing": "שיחה נכנסת",
-    "state_in_call": "בשיחה",
-    "peers_group": "מחשבים ברשת",
-    "no_peers": "(מחפש מחשבים...)",
-    "address": "כתובת:",
-    "forget": "הסר",
-    "call": "התקשר",
-    "hangup": "נתק",
-    "answer": "ענה",
-    "reject": "דחה",
-    "audio_group": "התקני שמע",
-    "mic": "מיקרופון:",
-    "speaker": "אוזניות / רמקול:",
-    "refresh_devices": "רענן התקנים",
-    "auto_pick_new": "בחר אוטומטית התקן חדש (אוזניות USB)",
-    "auto_answer": "ענה אוטומטית לשיחות נכנסות",
-    "mic_level": "עוצמת מיקרופון:",
-    "volume": "עוצמת שמיעה:",
-    "mic_gain": "הגבר מיקרופון:",
-    "mute": "השתק מיקרופון",
-    "monitor": "בדיקה עצמית (שמע את עצמך)",
-    "log_group": "יומן",
-    "settings": "הגדרות",
-    "language": "שפה",
-    "help": "עזרה",
-    "quit": "יציאה",
-    "about": "אודות",
-    "close": "סגור",
-    "save": "שמור",
-    "cancel": "בטל",
-    "wire_rate": "איכות שמע (דגימות בשנייה):",
-    "frame_ms": "אורך מקטע (מ\"ש):",
-    "jitter_ms": "חוצץ השהיה (מ\"ש):",
-    "rtl_fix": "תיקון כתיבה מימין לשמאל",
-    "stats": "נשלחו {sent} · התקבלו {recv} · אבדו {lost} · חוצץ {depth} · הלוך-חזור {rtt}",
-    "rtt_unknown": "?",
-    # log lines
-    "log_started": "התוכנה מוכנה. כתובת מקומית {ip}, פורט שיחות {port}.",
-    "log_audio_ready": "שמע פעיל: מיקרופון \"{mic}\", יציאה \"{out}\".",
-    "log_audio_error": "שגיאת שמע: {err}",
-    "log_no_input": "לא נמצא מיקרופון. חבר אוזניות ולחץ \"רענן התקנים\".",
-    "log_no_output": "לא נמצאה יציאת שמע. חבר אוזניות ולחץ \"רענן התקנים\".",
-    "log_devices_refreshed": "רשימת ההתקנים עודכנה ({count} התקנים).",
-    "log_new_device": "זוהה התקן חדש: {name}",
-    "log_device_gone": "התקן השמע נותק: {name}",
-    "log_discovery_error": "חיפוש אוטומטי של מחשבים לא פעיל ({err}). השתמש בכתובת ידנית.",
-    "log_peer_found": "נמצא ברשת: {name} ({ip})",
-    "log_peer_left": "יצא מהרשת: {name}",
-    "log_calling": "מתקשר אל {ip}...",
-    "log_call_failed": "החיבור אל {ip} נכשל: {err}",
-    "log_why_other_subnet": (
-        "המחשב הזה נמצא ברשת {local} ואילו {ip} נמצאת ברשת אחרת - "
-        "שני המחשבים חייבים להיות מחוברים לאותו ראוטר."
-    ),
-    "log_why_calling_self": "{ip} היא הכתובת של המחשב הזה עצמו.",
-    "log_why_no_network": "אין חיבור רשת פעיל במחשב הזה.",
-    "log_why_no_dhcp": (
-        "הכתובת {local} אומרת שהראוטר לא נתן כתובת - בדוק את חיבור הרשת."
-    ),
-    "log_ringing_out": "מצלצל אצל {name}...",
-    "log_incoming": "שיחה נכנסת מ-{name} ({ip})",
-    "log_call_started": "השיחה החלה עם {name}.",
-    "log_call_ended": "השיחה הסתיימה.",
-    "log_rejected": "השיחה נדחתה.",
-    "log_busy": "הצד השני תפוס.",
-    "log_peer_hangup": "הצד השני ניתק.",
-    "log_link_lost": "החיבור אבד.",
-    "log_missed": "שיחה שלא נענתה מ-{name}.",
-    "log_monitor_on": "בדיקה עצמית פעילה - אתה שומע את המיקרופון שלך.",
-    "log_monitor_off": "בדיקה עצמית כבויה.",
-    "log_settings_saved": "ההגדרות נשמרו.",
-    "log_peer_forgotten": "הכתובת {ip} הוסרה מהרשימה השמורה.",
-    "log_rate_from_peer": "הצד המתקשר קבע איכות של {rate} הרץ.",
-    "err_no_target": "בחר מחשב מהרשימה או הקלד כתובת IP.",
-    "err_bad_ip": "כתובת לא תקינה: {ip}",
-    "about_text": (
-        "שיחה ברשת מקומית - גרסה {version}\n\n"
-        "שני המחשבים חייבים להיות באותה רשת (אותו ראוטר).\n"
-        "אם המחשב השני לא מופיע ברשימה, הקלד את כתובת ה-IP שלו ידנית.\n"
-        "אם חיברת אוזניות USB אחרי הפעלת התוכנה - לחץ \"רענן התקנים\"."
-    ),
-}
 
 EN = {
     "app_title": "LAN Phone",
@@ -125,7 +37,6 @@ EN = {
     "monitor": "Self test (hear yourself)",
     "log_group": "Log",
     "settings": "Settings",
-    "language": "Language",
     "help": "Help",
     "quit": "Quit",
     "about": "About",
@@ -135,7 +46,6 @@ EN = {
     "wire_rate": "Audio quality (samples/second):",
     "frame_ms": "Frame length (ms):",
     "jitter_ms": "Jitter buffer (ms):",
-    "rtl_fix": "Right-to-left text fix",
     "stats": "sent {sent} · recv {recv} · lost {lost} · buffer {depth} · rtt {rtt}",
     "rtt_unknown": "?",
     "log_started": "Ready. Local address {ip}, call port {port}.",
@@ -182,8 +92,6 @@ EN = {
     ),
 }
 
-TABLES = {"he": HE, "en": EN}
-
 # Log lines are coloured by what they say: trouble in amber, call progress in
 # the accent colour, everything else plain.
 ALERT_KEYS = frozenset(
@@ -218,37 +126,13 @@ def severity(key: str) -> str:
 
 
 class Strings:
-    """Look up interface strings, ready for display."""
+    """Look up an interface string, formatted."""
 
-    def __init__(self, language: str = DEFAULT_LANGUAGE, rtl_fix: bool = True) -> None:
-        self.language = language if language in TABLES else DEFAULT_LANGUAGE
-        self.rtl_fix = rtl_fix
-
-    @property
-    def is_rtl(self) -> bool:
-        return self.language == "he"
-
-    def raw(self, key: str, **kwargs: object) -> str:
-        """The string in logical order (for stdout, files, tests)."""
-        table = TABLES[self.language]
-        text = table.get(key) or EN.get(key) or key
+    def __call__(self, key: str, **kwargs: object) -> str:
+        text = EN.get(key, key)
         if kwargs:
             try:
                 text = text.format(**kwargs)
             except (KeyError, IndexError):
                 pass
         return text
-
-    def __call__(self, key: str, **kwargs: object) -> str:
-        """The string in the order Tk needs to draw it."""
-        return self.visual(self.raw(key, **kwargs))
-
-    def visual(self, text: str) -> str:
-        """Reorder text for display: labels, peer names, device names.
-
-        Not gated on the interface language.  Tk's missing bidi support mangles
-        Hebrew wherever it appears - a Hebrew computer name, or the "עברית"
-        button - even when every label around it is English.  ``to_visual``
-        leaves text without right-to-left characters alone.
-        """
-        return to_visual(text) if self.rtl_fix else text

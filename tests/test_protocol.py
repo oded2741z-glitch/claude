@@ -4,7 +4,6 @@ import numpy as np
 
 from lanphone import protocol
 from lanphone.config import (
-    DEFAULT_LANGUAGE,
     MAX_AUDIO_PAYLOAD,
     MAX_SAVED_PEERS,
     SIGNALING_PORT,
@@ -88,19 +87,24 @@ class TestControlMessages(unittest.TestCase):
 
 class TestSettings(unittest.TestCase):
     def test_clamps_bad_values(self):
-        settings = Settings(wire_rate=12345, frame_ms=500, jitter_ms=1, volume=9.0, language="de")
+        settings = Settings(wire_rate=12345, frame_ms=500, jitter_ms=1, volume=9.0)
         self.assertIn(settings.wire_rate, SUPPORTED_RATES)
         self.assertEqual(settings.frame_ms, max_frame_ms(settings.wire_rate))
         self.assertEqual(settings.jitter_ms, 20)
         self.assertEqual(settings.volume, 2.0)
-        self.assertEqual(settings.language, DEFAULT_LANGUAGE)
         self.assertTrue(settings.display_name)
 
-    def test_the_interface_defaults_to_english(self):
-        self.assertEqual(DEFAULT_LANGUAGE, "en")
-        self.assertEqual(Settings().language, "en")
-        # Hebrew stays available and is kept when it was chosen.
-        self.assertEqual(Settings(language="he").language, "he")
+    def test_an_old_settings_file_with_dropped_fields_still_loads(self):
+        # language/rtl_fix used to be stored; unknown keys must be ignored.
+        import json
+        from unittest import mock
+
+        old = json.dumps({"display_name": "PC", "language": "he", "rtl_fix": True, "volume": 0.5})
+        with mock.patch("builtins.open", mock.mock_open(read_data=old)):
+            settings = Settings.load()
+        self.assertEqual(settings.display_name, "PC")
+        self.assertEqual(settings.volume, 0.5)
+        self.assertFalse(hasattr(settings, "language"))
 
     def test_frame_samples(self):
         self.assertEqual(Settings(wire_rate=16000, frame_ms=20).frame_samples, 320)

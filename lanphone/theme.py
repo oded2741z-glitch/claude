@@ -10,8 +10,11 @@ colours directly and are handled by ``style_listbox`` / ``style_text``.
 from __future__ import annotations
 
 import sys
-import tkinter as tk
-from tkinter import ttk
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # imported lazily below: the palette is useful without Tk
+    import tkinter as tk
+    from tkinter import ttk
 
 # -- palette ---------------------------------------------------------------
 BG = "#151515"  # window background
@@ -65,6 +68,9 @@ WATERMARK = "Watermark.TLabel"
 
 def apply(root: tk.Misc) -> ttk.Style:
     """Point every widget class at the palette above."""
+    import tkinter as tk
+    from tkinter import ttk
+
     style = ttk.Style(root)
     try:
         style.theme_use("clam")

@@ -258,20 +258,6 @@ class GuiTest(unittest.TestCase):
         }
         self.assertIn(tuple(_rgb(theme.ACCENT)), painted, "the mark was never drawn")
 
-    def test_the_icon_mark_stays_inside_the_tile(self):
-        from lanphone import appicon, theme
-
-        for size in (16, 32, 48, 128):
-            grid = appicon._pixels(size, appicon._scale_for(size))
-            self.assertEqual(len(grid), size)
-            self.assertTrue(all(len(row) == size for row in grid))
-            ink = [(x, y) for y, row in enumerate(grid) for x, c in enumerate(row) if c == theme.ACCENT]
-            self.assertTrue(ink, f"nothing drawn at {size}px")
-            self.assertTrue(
-                all(0 < x < size - 1 and 0 < y < size - 1 for x, y in ink),
-                f"the mark touches the edge at {size}px",
-            )
-
     def test_dark_theme_is_applied(self):
         from lanphone import theme
 

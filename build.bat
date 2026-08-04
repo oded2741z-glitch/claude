@@ -16,12 +16,16 @@ echo Installing build requirements...
 %PY% -m pip install --upgrade pyinstaller -r requirements.txt
 if errorlevel 1 goto nodeps
 
-if exist icon.ico (
-    echo Using icon.ico for the executable.
+if exist app_icon.ico (
+    echo Found app_icon.ico.
+) else if exist icon.ico (
+    echo Found icon.ico.
 ) else (
-    echo No icon.ico here - the executable gets the default icon.
-    echo Put an icon.ico next to this file to use your own.
+    echo No icon file here - the build generates the app's own icon.
+    echo To use your own, save a real .ico as app_icon.ico next to this file.
 )
+echo A file that is only named .ico ^(a renamed .png^) is reported and skipped,
+echo so it can no longer stop the build.
 
 echo.
 echo Building. This takes a minute or two...

@@ -2,16 +2,52 @@
 #   pyinstaller --noconfirm --clean LANPhone.spec
 # or just run build.bat on Windows.
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all
 
 # PyInstaller defines SPECPATH when it runs this file.
 HERE = globals().get("SPECPATH") or os.getcwd()
+sys.path.insert(0, HERE)
 
-# Drop an icon.ico next to this file and the build picks it up; without one the
-# executable just gets the default PyInstaller icon.
-icon_path = os.path.join(HERE, "icon.ico")
-icon = icon_path if os.path.exists(icon_path) else None
+from lanphone import appicon  # noqa: E402  (needs HERE on the path first)
+
+# Names accepted for a hand-made icon, in order of preference.
+ICON_NAMES = ("app_icon.ico", "icon.ico", "lanphone.ico")
+
+
+def resolve_icon():
+    """The icon to build with.
+
+    A file that is not really a .ico - a renamed .png, most often - makes
+    PyInstaller stop with an error instead of just skipping the icon, so it is
+    checked here and reported.  With no usable file, the app's own icon is
+    generated, which is better than PyInstaller's default anyway.
+    """
+    for name in ICON_NAMES:
+        path = os.path.join(HERE, name)
+        if not os.path.exists(path):
+            continue
+        if appicon.is_ico(path):
+            print(f"[LANPhone] using icon {name}")
+            return path
+        print(
+            f"[LANPhone] {name} is not a real Windows .ico file - its contents do not\n"
+            f"           match the extension, which usually means an image was renamed.\n"
+            f"           PyInstaller stops the whole build over this unless Pillow is\n"
+            f"           installed to convert it, so it is being ignored. Either save a\n"
+            f"           true .ico (any online converter does it) or run:\n"
+            f"               pip install pillow\n"
+            f"           Building with the app's own icon in the meantime."
+        )
+    generated = os.path.join(HERE, "build", "lanphone.ico")
+    os.makedirs(os.path.dirname(generated), exist_ok=True)
+    appicon.write_ico(generated)
+    print(f"[LANPhone] no icon file found; generated {generated}")
+    return generated
+
+
+icon = resolve_icon()
 
 datas = []
 binaries = []

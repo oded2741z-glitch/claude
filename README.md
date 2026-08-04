@@ -19,6 +19,28 @@ No dependencies — Python standard library only.
 - **Linux (Debian/Ubuntu):** if tkinter is missing, `sudo apt install python3-tk`.
 - **Windows:** tkinter is included with the standard Python installer. Install `psutil` (`pip install psutil`) to enable CPU-usage readings.
 
+## Building a standalone executable · בניית קובץ הרצה
+
+The app is a single Python file, but you can package it into one self-contained executable with [PyInstaller](https://pyinstaller.org) so it runs without Python installed.
+
+**Linux (Ubuntu 22.04 and up):**
+
+```bash
+sudo apt install python3-tk        # once
+./build_linux.sh                   # produces dist/cpu_load_gui
+```
+
+Build **on the oldest Ubuntu you want to support** (e.g. 22.04): a binary built against an older glibc runs on newer releases, but not the reverse. For GPU load and temperature the target also needs an OpenCL loader (`sudo apt install ocl-icd-libopencl1`) plus your GPU's OpenCL driver — these are loaded at runtime, not bundled.
+
+**Windows:**
+
+```bat
+pip install pyinstaller
+pyinstaller --onefile --windowed cpu_load_gui.py
+```
+
+PyInstaller cannot cross-compile — build the Linux binary on Linux and the Windows `.exe` on Windows.
+
 ## Features
 
 * **Intensity slider (0–100%)** — each worker runs a 100 ms duty cycle (busy for the target percentage, sleeping for the rest); adjustable live while running

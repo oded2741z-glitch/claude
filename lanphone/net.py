@@ -22,22 +22,64 @@ from .config import (
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
-def local_ip() -> str:
-    """Best guess at the LAN address of this machine."""
+def local_ip(target: str = "8.8.8.8") -> str:
+    """The address this machine would use to reach ``target``."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # No packet is sent; this only asks the routing table which source
         # address would be used for an outbound connection.
-        sock.connect(("8.8.8.8", 80))
+        sock.connect((target, 80))
         return sock.getsockname()[0]
     except OSError:
         pass
     finally:
         sock.close()
+    # No default route at all - a LAN with no gateway, for instance. Fall back
+    # to whatever the machine calls itself, skipping addresses that mean
+    # "no network": loopback and the 169.254.x.x DHCP-failed range.
+    addresses = []
     try:
-        return socket.gethostbyname(socket.gethostname())
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addresses.append(info[4][0])
     except OSError:
-        return "127.0.0.1"
+        pass
+    for address in addresses:
+        if not address.startswith(("127.", "169.254.")):
+            return address
+    return addresses[0] if addresses else "127.0.0.1"
+
+
+# Reasons a call could not even leave this machine.
+OTHER_SUBNET = "other_subnet"
+CALLING_SELF = "calling_self"
+NO_NETWORK = "no_network"
+NO_DHCP = "no_dhcp"
+
+
+def diagnose_target(host: str, local: str) -> str | None:
+    """Explain why ``host`` is unreachable, or None when there is no clue.
+
+    Windows reports "an unreachable network" for anything with no route, which
+    is accurate and useless. Nearly always the two machines are simply on
+    different subnets, and comparing the addresses says so outright.
+    """
+    try:
+        target = ipaddress.ip_address(host.strip())
+        here = ipaddress.ip_address(local.strip())
+    except ValueError:
+        return None  # a host name, or no address of our own: cannot judge
+    if target == here:
+        return CALLING_SELF
+    if here.is_loopback:
+        return NO_NETWORK
+    if here.is_link_local:  # 169.254.x.x: DHCP never answered
+        return NO_DHCP
+    # Home routers hand out /24s, so this is a strong hint rather than proof.
+    if ipaddress.ip_network(f"{here}/24", strict=False) != ipaddress.ip_network(
+        f"{target}/24", strict=False
+    ):
+        return OTHER_SUBNET
+    return None
 
 
 def broadcast_targets(ip: str | None = None) -> list[str]:

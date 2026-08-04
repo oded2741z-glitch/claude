@@ -6,9 +6,17 @@ from unittest import mock
 
 import numpy as np
 
+from lanphone import net
 from lanphone import phone as phonelib
 from lanphone.config import Settings
-from lanphone.net import AudioTransport, Discovery, SignalingServer, bind_with_fallback, is_valid_host
+from lanphone.net import (
+    AudioTransport,
+    Discovery,
+    SignalingServer,
+    bind_with_fallback,
+    diagnose_target,
+    is_valid_host,
+)
 from lanphone.phone import IDLE, IN_CALL, RINGING, Phone
 
 BASE_PORT = 51500
@@ -180,6 +188,18 @@ class CallFlowTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: "log_call_failed" in caller_log.keys()))
         self.assertTrue(wait_until(lambda: caller.state == IDLE))
 
+    def test_a_failed_call_explains_a_wrong_subnet(self):
+        caller, caller_log = self.make_phone("caller")
+        caller.local_ip = "192.168.0.7"
+        # 192.0.2.x is the documentation range: nothing there to connect to.
+        caller.place_call("192.0.2.11", 50505)
+        self.assertTrue(wait_until(lambda: "log_call_failed" in caller_log.keys(), timeout=15))
+        self.assertIn("log_why_other_subnet", caller_log.keys())
+        # The message names both addresses, which is the whole point of it.
+        entry = [d for k, d in caller_log.events if d.get("key") == "log_why_other_subnet"][0]
+        self.assertEqual(entry["ip"], "192.0.2.11")
+        self.assertEqual(entry["local"], "192.168.0.7")
+
     def test_caller_rate_is_adopted_by_callee(self):
         caller, caller_log = self.make_phone("caller")
         callee, callee_log = self.make_phone("callee", auto_answer=True)
@@ -220,6 +240,28 @@ class NetHelpersTest(unittest.TestCase):
         other = bind_with_fallback(second, 51999)
         self.assertEqual(port, 51999)
         self.assertNotEqual(other, port)
+
+    def test_diagnose_unreachable_targets(self):
+        # The case behind "A socket operation was attempted to an unreachable
+        # network": the two machines are on different subnets.
+        self.assertEqual(diagnose_target("192.168.1.11", "192.168.0.7"), net.OTHER_SUBNET)
+        self.assertEqual(diagnose_target("10.0.0.5", "192.168.1.7"), net.OTHER_SUBNET)
+        self.assertEqual(diagnose_target("192.168.1.11", "192.168.1.11"), net.CALLING_SELF)
+        self.assertEqual(diagnose_target("192.168.1.11", "127.0.0.1"), net.NO_NETWORK)
+        self.assertEqual(diagnose_target("192.168.1.11", "169.254.3.4"), net.NO_DHCP)
+
+    def test_no_diagnosis_when_there_is_nothing_to_say(self):
+        # Same subnet: the address is fine, something else is wrong.
+        self.assertIsNone(diagnose_target("192.168.1.11", "192.168.1.7"))
+        # A host name cannot be compared with an address.
+        self.assertIsNone(diagnose_target("other-pc", "192.168.1.7"))
+        self.assertIsNone(diagnose_target("192.168.1.11", ""))
+        self.assertIsNone(diagnose_target("  ", "192.168.1.7"))
+
+    def test_local_ip_is_usable(self):
+        address = net.local_ip()
+        self.assertTrue(is_valid_host(address))
+        self.assertFalse(address.startswith("169.254."))
 
     def test_host_validation(self):
         for good in ("192.168.1.10", "10.0.0.1", "127.0.0.1", "pc-oded"):

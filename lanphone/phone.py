@@ -266,6 +266,9 @@ class Phone:
             link = net.connect_signaling(host, port)
         except OSError as exc:
             self._emit("log", key="log_call_failed", ip=host, err=_reason(exc))
+            reason = net.diagnose_target(host, self.local_ip)
+            if reason is not None:
+                self._emit("log", key=f"log_why_{reason}", ip=host, local=self.local_ip)
             self._finish_call(notify=False)
             return
         with self._lock:

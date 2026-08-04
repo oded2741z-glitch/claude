@@ -62,6 +62,15 @@ HE = {
     "log_peer_left": "יצא מהרשת: {name}",
     "log_calling": "מתקשר אל {ip}...",
     "log_call_failed": "החיבור אל {ip} נכשל: {err}",
+    "log_why_other_subnet": (
+        "המחשב הזה נמצא ברשת {local} ואילו {ip} נמצאת ברשת אחרת - "
+        "שני המחשבים חייבים להיות מחוברים לאותו ראוטר."
+    ),
+    "log_why_calling_self": "{ip} היא הכתובת של המחשב הזה עצמו.",
+    "log_why_no_network": "אין חיבור רשת פעיל במחשב הזה.",
+    "log_why_no_dhcp": (
+        "הכתובת {local} אומרת שהראוטר לא נתן כתובת - בדוק את חיבור הרשת."
+    ),
     "log_ringing_out": "מצלצל אצל {name}...",
     "log_incoming": "שיחה נכנסת מ-{name} ({ip})",
     "log_call_started": "השיחה החלה עם {name}.",
@@ -142,6 +151,13 @@ EN = {
     "log_peer_left": "Left the network: {name}",
     "log_calling": "Calling {ip}...",
     "log_call_failed": "Could not reach {ip}: {err}",
+    "log_why_other_subnet": (
+        "This computer is on network {local} and {ip} is on a different one - "
+        "both computers must be connected to the same router."
+    ),
+    "log_why_calling_self": "{ip} is this computer's own address.",
+    "log_why_no_network": "This computer has no active network connection.",
+    "log_why_no_dhcp": "The address {local} means the router never assigned one - check the network connection.",
     "log_ringing_out": "Ringing {name}...",
     "log_incoming": "Incoming call from {name} ({ip})",
     "log_call_started": "Call started with {name}.",
@@ -181,6 +197,10 @@ ALERT_KEYS = frozenset(
         "log_discovery_error",
         "log_busy",
         "log_missed",
+        "log_why_other_subnet",
+        "log_why_calling_self",
+        "log_why_no_network",
+        "log_why_no_dhcp",
     }
 )
 EVENT_KEYS = frozenset(

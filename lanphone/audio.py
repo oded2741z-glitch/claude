@@ -9,6 +9,8 @@ restarting the app.
 
 from __future__ import annotations
 
+import ctypes
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -20,6 +22,10 @@ from .jitter import JitterBuffer
 from .resample import make_resampler
 
 _sd = None
+
+# PortAudio is a single global: re-initialising it in one thread while another
+# opens a stream would crash. Every entry point that touches it takes this.
+PORTAUDIO_LOCK = threading.RLock()
 
 
 def backend():
@@ -67,11 +73,37 @@ class DeviceInfo:
 def refresh_devices() -> None:
     """Make PortAudio re-scan the system for devices."""
     sd = backend()
+    with PORTAUDIO_LOCK:
+        try:
+            sd._terminate()
+        except Exception:  # noqa: BLE001 - never let a rescan kill the app
+            pass
+        sd._initialize()
+
+
+def scan_devices() -> tuple[list[DeviceInfo], list[DeviceInfo]]:
+    """Re-scan the system and return what is connected right now."""
+    with PORTAUDIO_LOCK:
+        refresh_devices()
+        return list_devices()
+
+
+def device_change_token() -> tuple[int, int] | None:
+    """A cheap value that changes when the system's audio devices change.
+
+    PortAudio caches its device list, so noticing a headset being plugged in
+    otherwise costs a full re-initialisation - which cannot be done while a
+    call is running.  On Windows these two MME counters answer the question
+    directly and cost nothing, so the expensive rescan happens only when
+    something really did change.  ``None`` where there is no such shortcut.
+    """
+    if not sys.platform.startswith("win"):
+        return None
     try:
-        sd._terminate()
-    except Exception:  # noqa: BLE001 - never let a rescan kill the app
-        pass
-    sd._initialize()
+        winmm = ctypes.windll.winmm
+        return int(winmm.waveInGetNumDevs()), int(winmm.waveOutGetNumDevs())
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def list_devices() -> tuple[list[DeviceInfo], list[DeviceInfo]]:
@@ -139,21 +171,37 @@ def looks_like_headset(dev: DeviceInfo) -> bool:
     return any(hint in lowered for hint in _HEADSET_HINTS)
 
 
-def pick_default(devices: list[DeviceInfo], previous: list[DeviceInfo] | None = None) -> DeviceInfo | None:
-    """Choose a device: a newly appeared headset first, else the system default."""
+def preferred_device(
+    devices: list[DeviceInfo],
+    current: DeviceInfo | None,
+    fresh: list[DeviceInfo],
+    prefer_headset: bool,
+    remembered: str = "",
+) -> DeviceInfo | None:
+    """Which device to use now, in order of priority:
+
+    a headset that was just plugged in, the device already in use if it is
+    still there, the one remembered from last time, any headset, the system
+    default.  A headset appearing wins over the current choice on purpose -
+    that is the whole point of plugging one in.
+    """
     if not devices:
         return None
-    if previous is not None:
-        known = {dev.key for dev in previous}
-        fresh = [dev for dev in devices if dev.key not in known]
+    if prefer_headset:
         for dev in fresh:
             if looks_like_headset(dev):
                 return dev
-        if fresh:
-            return fresh[0]
-    for dev in devices:
-        if looks_like_headset(dev):
-            return dev
+    if current is not None:
+        still_there = find_device(devices, current.key)
+        if still_there is not None:
+            return still_there
+    known = find_device(devices, remembered)
+    if known is not None:
+        return known
+    if prefer_headset:
+        for dev in devices:
+            if looks_like_headset(dev):
+                return dev
     return devices[0]
 
 
@@ -256,18 +304,21 @@ class AudioEngine:
         in_stream = out_stream = None
         in_rate = out_rate = 0
 
-        # Streams are opened outside the lock (opening can block for a while)
-        # and started only once the engine is configured for their rates.
-        if input_device is not None:
-            try:
-                in_stream, in_rate = self._open_input(sd, input_device)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{input_device.name}: {exc}")
-        if output_device is not None:
-            try:
-                out_stream, out_rate = self._open_output(sd, output_device)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{output_device.name}: {exc}")
+        # Streams are opened outside the engine lock (opening can block for a
+        # while) and started only once the engine is configured for their rates.
+        # PORTAUDIO_LOCK keeps a device rescan from pulling the library out
+        # from under us while a stream is being opened.
+        with PORTAUDIO_LOCK:
+            if input_device is not None:
+                try:
+                    in_stream, in_rate = self._open_input(sd, input_device)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{input_device.name}: {exc}")
+            if output_device is not None:
+                try:
+                    out_stream, out_rate = self._open_output(sd, output_device)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{output_device.name}: {exc}")
 
         with self._lock:
             self._reported_failure = False
@@ -312,19 +363,20 @@ class AudioEngine:
             self.input_rate = self.output_rate = 0
             self.in_level = self.out_level = 0.0
 
-        # Closing has to happen with the lock released: abort() waits for the
-        # audio callback to return, and the callback wants the same lock.
-        for stream in streams:
-            if stream is None:
-                continue
-            try:
-                stream.abort(ignore_errors=True)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                stream.close(ignore_errors=True)
-            except Exception:  # noqa: BLE001
-                pass
+        # Closing has to happen with the engine lock released: abort() waits for
+        # the audio callback to return, and the callback wants that same lock.
+        with PORTAUDIO_LOCK:
+            for stream in streams:
+                if stream is None:
+                    continue
+                try:
+                    stream.abort(ignore_errors=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    stream.close(ignore_errors=True)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def begin_call(self) -> None:
         with self._lock:

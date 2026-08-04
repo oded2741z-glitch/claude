@@ -20,6 +20,8 @@ IN_CALL = "in_call"
 
 PING_INTERVAL = 2.0
 CALL_TIMEOUT = 45.0
+# How often to look for a headset that was just plugged in.
+DEVICE_POLL_INTERVAL = 1.5
 
 
 class Phone:
@@ -71,6 +73,9 @@ class Phone:
         self._stop_ticker = threading.Event()
         self._last_recovery = 0.0
         self._monitor_requested = False
+        self._audio_was_running = False
+        self._device_watch: threading.Thread | None = None
+        self._stop_device_watch = threading.Event()
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -90,6 +95,9 @@ class Phone:
             self._emit("log", key="log_discovery_error", err=str(self.discovery.bind_error))
         self._emit("log", key="log_started", ip=self.local_ip, port=self.signaling.port)
         self.refresh_devices(initial=True)
+        self._stop_device_watch.clear()
+        self._device_watch = threading.Thread(target=self._watch_devices, daemon=True)
+        self._device_watch.start()
 
     def stop(self) -> None:
         try:
@@ -97,6 +105,9 @@ class Phone:
         except Exception:  # noqa: BLE001
             pass
         self._stop_ticker.set()
+        self._stop_device_watch.set()
+        if self._device_watch is not None:
+            self._device_watch.join(timeout=2.0)
         if self.discovery is not None:
             self.discovery.stop()
         self.signaling.stop()
@@ -108,58 +119,101 @@ class Phone:
     # ------------------------------------------------------------------
     def refresh_devices(self, initial: bool = False) -> list[audiolib.DeviceInfo]:
         """Re-scan the system.  Returns devices that were not there before."""
-        was_running = self.engine.running
-        if was_running:
-            self.engine.stop()
-
-        previous = {dev.key for dev in self.inputs + self.outputs}
         try:
-            if not initial:
-                audiolib.refresh_devices()
-            self.inputs, self.outputs = audiolib.list_devices()
+            devices = audiolib.list_devices() if initial else self._rescan()
         except audiolib.AudioUnavailable as exc:
             self.inputs, self.outputs = [], []
             self._emit("log", key="log_audio_error", err=str(exc))
             self._emit("devices")
             return []
+        return self._apply_devices(*devices, announce=not initial)
 
-        new_devices = [d for d in self.inputs + self.outputs if d.key not in previous]
-        if not initial:
-            self._emit("log", key="log_devices_refreshed", count=len(self.inputs) + len(self.outputs))
-        for dev in new_devices:
-            if not initial:
+    def _rescan(self) -> tuple[list[audiolib.DeviceInfo], list[audiolib.DeviceInfo]]:
+        """Ask the system again.  Stops the streams: PortAudio has to restart."""
+        self._audio_was_running = self.engine.running
+        if self._audio_was_running:
+            self.engine.stop()
+        return audiolib.scan_devices()
+
+    def _apply_devices(
+        self,
+        inputs: list[audiolib.DeviceInfo],
+        outputs: list[audiolib.DeviceInfo],
+        announce: bool,
+    ) -> list[audiolib.DeviceInfo]:
+        previous = {dev.key for dev in self.inputs + self.outputs}
+        self.inputs, self.outputs = inputs, outputs
+        fresh = [d for d in inputs + outputs if d.key not in previous]
+
+        if announce:
+            self._emit("log", key="log_devices_refreshed", count=len(inputs) + len(outputs))
+            for dev in fresh:
                 self._emit("log", key="log_new_device", name=dev.label)
 
-        self._resolve_selection(new_devices if not initial else None)
+        before = (self.selected_input, self.selected_output)
+        self._resolve_selection(fresh if announce else [])
+        if announce:
+            for chosen, was in zip((self.selected_input, self.selected_output), before):
+                if chosen is not None and chosen != was:
+                    self._emit("log", key="log_using_device", name=chosen.label)
+
         self._emit("devices")
-        if was_running or self._monitor_requested:
-            self.ensure_audio()
-        return new_devices
+        if self._audio_was_running or self._monitor_requested:
+            self._audio_was_running = False
+            self.ensure_audio(restart=True)
+        return fresh
 
-    def _resolve_selection(self, new_devices: list[audiolib.DeviceInfo] | None) -> None:
-        """Keep the user's choice if it still exists, otherwise choose sensibly."""
-        auto = self.settings.auto_pick_new_device
-        fresh_in = [d for d in (new_devices or []) if d.is_input]
-        fresh_out = [d for d in (new_devices or []) if not d.is_input]
-
-        wanted_in = self.selected_input.key if self.selected_input else self.settings.input_device_name
-        wanted_out = self.selected_output.key if self.selected_output else self.settings.output_device_name
-
-        if auto and fresh_in:
-            self.selected_input = audiolib.pick_default(fresh_in)
-        else:
-            self.selected_input = audiolib.find_device(self.inputs, wanted_in) or audiolib.pick_default(self.inputs)
-
-        if auto and fresh_out:
-            self.selected_output = audiolib.pick_default(fresh_out)
-        else:
-            self.selected_output = audiolib.find_device(self.outputs, wanted_out) or audiolib.pick_default(self.outputs)
-
+    def _resolve_selection(self, fresh: list[audiolib.DeviceInfo]) -> None:
+        """Pick the devices to use, preferring a headset that just appeared."""
+        prefer = self.settings.auto_pick_new_device
+        self.selected_input = audiolib.preferred_device(
+            self.inputs,
+            self.selected_input,
+            [d for d in fresh if d.is_input],
+            prefer,
+            self.settings.input_device_name,
+        )
+        self.selected_output = audiolib.preferred_device(
+            self.outputs,
+            self.selected_output,
+            [d for d in fresh if not d.is_input],
+            prefer,
+            self.settings.output_device_name,
+        )
         self._remember_selection()
         if not self.inputs:
             self._emit("log", key="log_no_input")
         if not self.outputs:
             self._emit("log", key="log_no_output")
+
+    # -- automatic hot-plug detection ------------------------------------
+    def _watch_devices(self) -> None:
+        """Notice a headset being plugged in without anyone pressing Refresh."""
+        token = audiolib.device_change_token()
+        while not self._stop_device_watch.wait(DEVICE_POLL_INTERVAL):
+            try:
+                if token is not None:
+                    # Cheap check (Windows): only rescan when it really changed,
+                    # so this can run during a call too.
+                    current = audiolib.device_change_token()
+                    if current == token:
+                        continue
+                    token = current
+                    self.refresh_devices()
+                    continue
+                # No cheap signal: the rescan itself is the check, so it may
+                # only run while the sound card is free.
+                if self.engine.running:
+                    continue
+                inputs, outputs = audiolib.scan_devices()
+                if {d.key for d in inputs + outputs} != {
+                    d.key for d in self.inputs + self.outputs
+                }:
+                    self._apply_devices(inputs, outputs, announce=True)
+            except audiolib.AudioUnavailable:
+                continue
+            except Exception:  # noqa: BLE001 - a watcher must never take the app down
+                continue
 
     def _remember_selection(self) -> None:
         self.settings.input_device_name = self.selected_input.key if self.selected_input else ""

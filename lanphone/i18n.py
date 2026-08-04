@@ -28,7 +28,7 @@ EN = {
     "mic": "Microphone:",
     "speaker": "Headset / speaker:",
     "refresh_devices": "Refresh devices",
-    "auto_pick_new": "Auto-select newly connected device (USB headset)",
+    "auto_pick_new": "Always use a headset when one is connected",
     "auto_answer": "Auto-answer incoming calls",
     "mic_level": "Mic level:",
     "volume": "Volume:",
@@ -51,10 +51,11 @@ EN = {
     "log_started": "Ready. Local address {ip}, call port {port}.",
     "log_audio_ready": "Audio running: mic \"{mic}\", output \"{out}\".",
     "log_audio_error": "Audio error: {err}",
-    "log_no_input": "No microphone found. Connect a headset and press \"Refresh devices\".",
-    "log_no_output": "No audio output found. Connect a headset and press \"Refresh devices\".",
+    "log_no_input": "No microphone found. Connect a headset - it is picked up automatically.",
+    "log_no_output": "No audio output found. Connect a headset - it is picked up automatically.",
     "log_devices_refreshed": "Device list updated ({count} devices).",
     "log_new_device": "New device detected: {name}",
+    "log_using_device": "Now using: {name}",
     "log_device_gone": "Audio device disconnected: {name}",
     "log_discovery_error": "Automatic discovery is off ({err}). Use a manual address.",
     "log_peer_found": "Found on the network: {name} ({ip})",
@@ -88,7 +89,8 @@ EN = {
         "LAN Phone - version {version}\n\n"
         "Both computers must be on the same network (same router).\n"
         "If the other computer is not listed, type its IP address manually.\n"
-        "If you plugged in a USB headset after starting the app, press \"Refresh devices\"."
+        "A USB headset connected while the app is running is detected and used\n"
+        "automatically; \"Refresh devices\" forces a re-scan if it ever misses one."
     ),
 }
 
@@ -112,7 +114,14 @@ ALERT_KEYS = frozenset(
     }
 )
 EVENT_KEYS = frozenset(
-    {"log_incoming", "log_call_started", "log_ringing_out", "log_new_device", "log_audio_ready"}
+    {
+        "log_incoming",
+        "log_call_started",
+        "log_ringing_out",
+        "log_new_device",
+        "log_using_device",
+        "log_audio_ready",
+    }
 )
 
 

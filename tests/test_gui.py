@@ -272,13 +272,13 @@ class GuiTest(unittest.TestCase):
         self.app._tick()  # must not raise after the window is gone
 
 
-@unittest.skipUnless(HAVE_TK, f"tkinter/display unavailable: {TK_REASON}")
 def _walk(widget):
     yield widget
     for child in widget.winfo_children():
         yield from _walk(child)
 
 
+@unittest.skipUnless(HAVE_TK, f"tkinter/display unavailable: {TK_REASON}")
 class LevelMeterTest(unittest.TestCase):
     def test_level_percent_range(self):
         from lanphone.gui import _level_percent

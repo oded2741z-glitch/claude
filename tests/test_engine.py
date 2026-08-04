@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from lanphone import audio as audiolib
-from lanphone.audio import RING_INCOMING, AudioEngine, DeviceInfo, find_device, looks_like_headset, pick_default
+from lanphone.audio import RING_INCOMING, AudioEngine, DeviceInfo, find_device, looks_like_headset
 
 
 class FakeStream:
@@ -253,13 +253,6 @@ class DeviceHelpersTest(unittest.TestCase):
         self.assertTrue(looks_like_headset(MIC))
         self.assertTrue(looks_like_headset(DeviceInfo(0, "Jabra Headphone", "MME", 1, 48000, True)))
         self.assertFalse(looks_like_headset(DeviceInfo(0, "Realtek Digital Output", "MME", 2, 48000, False)))
-
-    def test_new_headset_wins_over_the_default(self):
-        old = [DeviceInfo(0, "Realtek Microphone", "MME", 1, 48000, True)]
-        now = old + [MIC]
-        self.assertEqual(pick_default(now, previous=old), MIC)
-        self.assertEqual(pick_default(old, previous=old), old[0])
-        self.assertIsNone(pick_default([]))
 
     def test_devices_are_found_by_key_then_by_name(self):
         devices = [MIC, DeviceInfo(9, "Other", "MME", 1, 48000, True)]

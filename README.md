@@ -75,11 +75,19 @@ pip install pyinstaller numpy sounddevice
 pyinstaller --noconfirm --clean LANPhone.spec
 ```
 
-או בלי קובץ ה-spec, הכול בשורה אחת (שקול לחלוטין):
+או בלי קובץ ה-spec, הכול בשורה אחת:
 
 ```bat
 pyinstaller --onefile --windowed --icon=app_icon.ico --collect-all sounddevice --name LANPhone main.py
 ```
+
+⚠️ **זה לא שקול לחלוטין ל-spec.** כשמריצים `pyinstaller` עם קובץ `.py` (לא
+`.spec`), הוא **דורס** את `LANPhone.spec` בגרסת ברירת המחדל שלו — כולל מחיקת
+ההגנה על אייקון פגום שמתוארת למטה. אם `app_icon.ico` לא תקין, הפקודה הזאת
+עלולה **לקרוס** (`FileNotFoundError` מתוך PyInstaller/Pillow) במקום לדלג
+בעדינות. השתמשו בשורה הזו רק אם אין לכם אייקון מותאם, או שוודאתם שה-ICO
+תקין. אחרת — `pyinstaller --noconfirm --clean LANPhone.spec` (או `build.bat`)
+תמיד בטוח יותר, כי הוא לא נוגע בקובץ ה-spec.
 
 **שימו לב שמצביעים רק על `main.py`** — לא על 14 קבצי הקוד. PyInstaller עוקב
 אחרי ה-`import`ים ואוסף לבד את כל מה שהתוכנה מייבאת, כך שריבוי קבצים לא דורש
@@ -100,6 +108,10 @@ pyinstaller --onefile --windowed --icon=app_icon.ico --collect-all sounddevice -
   ב-PyInstaller. זו התראה גנרית; `More info ➜ Run anyway` פותר.
 * ה-EXE נבנה עבור מערכת ההפעלה שבנתה אותו: בנייה ב-Windows ל-Windows בלבד,
   ו-64 ביט אם ה-Python שבנה הוא 64 ביט.
+* **חלצו את הפרויקט לנתיב קצר**, כמו `C:\LANPhone`. חילוץ ZIP בתוך ZIP
+  (תיקיות עם `(1)`, `(2)` בשם) מייצר נתיב ארוך שחוצה את מגבלת 260 התווים
+  של Windows, וגורם לבנייה לקרוס עם `FileNotFoundError` על קובץ שכביכול
+  לא קיים — למרות שהתיקייה שלו קיימת.
 * גם ב-EXE עובדות אפשרויות שורת הפקודה (`LANPhone.exe --list-devices`), ומכיוון
   שאין חלון קונסולה הפלט מוצג בחלון הודעה.
 

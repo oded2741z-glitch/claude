@@ -89,8 +89,8 @@ def broadcast_targets(ip: str | None = None) -> list[str]:
     try:
         # Home routers hand out /24 subnets; the directed broadcast gets through
         # on setups where 255.255.255.255 is filtered.
-        net = ipaddress.ip_network(f"{ip}/24", strict=False)
-        targets.append(str(net.broadcast_address))
+        subnet = ipaddress.ip_network(f"{ip}/24", strict=False)
+        targets.append(str(subnet.broadcast_address))
     except ValueError:
         pass
     return targets

@@ -245,18 +245,17 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(str(self.app.style.lookup(theme.WATERMARK, "foreground")), theme.TEXT_OFF)
 
     def test_the_window_has_our_own_icon(self):
-        from lanphone import theme
+        from lanphone import appicon
 
         # Tk drops an icon whose image is collected, so it has to be held on to.
         self.assertIsNotNone(self.app.icon)
         self.assertEqual((self.app.icon.width(), self.app.icon.height()), (32, 32))
-        self.assertEqual(self.app.icon.get(0, 0)[:3], tuple(_rgb(theme.BG)))
-        painted = {
-            self.app.icon.get(x, y)[:3]
-            for y in range(32)
-            for x in range(32)
-        }
-        self.assertIn(tuple(_rgb(theme.ACCENT)), painted, "the mark was never drawn")
+        painted = {self.app.icon.get(x, y)[:3] for y in range(32) for x in range(32)}
+        self.assertEqual(
+            painted,
+            {tuple(_rgb(appicon.ICON_COLOUR))},
+            "the icon is meant to be a plain black square",
+        )
 
     def test_dark_theme_is_applied(self):
         from lanphone import theme

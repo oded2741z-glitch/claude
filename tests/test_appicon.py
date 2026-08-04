@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from lanphone import appicon, theme
+from lanphone import appicon
 
 try:
     import tkinter  # noqa: F401
@@ -31,27 +31,17 @@ except Exception:  # noqa: BLE001 - no tkinter, or no display
 
 
 class PixelsTest(unittest.TestCase):
-    def test_the_mark_stays_inside_the_tile(self):
+    def test_the_tile_is_the_requested_size(self):
         for size in (16, 32, 48, 64, 128, 256):
-            grid = appicon._pixels(size, appicon._scale_for(size))
+            grid = appicon._pixels(size)
             self.assertEqual(len(grid), size)
             self.assertTrue(all(len(row) == size for row in grid))
-            ink = [
-                (x, y)
-                for y, row in enumerate(grid)
-                for x, cell in enumerate(row)
-                if cell == theme.ACCENT
-            ]
-            self.assertTrue(ink, f"nothing drawn at {size}px")
-            self.assertTrue(
-                all(0 < x < size - 1 and 0 < y < size - 1 for x, y in ink),
-                f"the mark touches the edge at {size}px",
-            )
 
-    def test_the_tile_uses_only_the_two_theme_colours(self):
-        grid = appicon._pixels(32, appicon._scale_for(32))
+    def test_the_tile_is_a_solid_black_square(self):
+        grid = appicon._pixels(32)
         used = {cell for row in grid for cell in row}
-        self.assertEqual(used, {theme.BG, theme.ACCENT})
+        self.assertEqual(used, {"#000000"})
+        self.assertEqual(appicon.ICON_COLOUR, "#000000")
 
 
 class WriteIcoTest(unittest.TestCase):

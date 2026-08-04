@@ -951,70 +951,18 @@ def make_resampler(src_rate: int, dst_rate: int) -> Resampler | None:
 # Names accepted for a hand-made icon, checked in this order.
 ICON_FILENAMES = ("app_icon.ico", "icon.ico", "lanphone.ico")
 
-# 5x7 pixel letters.  '#' is ink, anything else is background.
-GLYPHS = {
-    "o": (
-        ".....",
-        ".....",
-        ".###.",
-        "#...#",
-        "#...#",
-        "#...#",
-        ".###.",
-    ),
-    "T": (
-        "#####",
-        "..#..",
-        "..#..",
-        "..#..",
-        "..#..",
-        "..#..",
-        "..#..",
-    ),
-}
-
-MARK = "oT"
-GLYPH_WIDTH = 5
-GLYPH_HEIGHT = 7
-GLYPH_GAP = 1
-MARK_CELLS = GLYPH_WIDTH * len(MARK) + GLYPH_GAP * (len(MARK) - 1)
+ICON_COLOUR = "#000000"
 
 
-def _scale_for(size: int) -> int:
-    """Biggest whole-pixel scale that leaves a margin on every side."""
-    margin = max(1, size // 10)
-    room = size - 2 * margin
-    return max(1, min(room // MARK_CELLS, room // GLYPH_HEIGHT))
-
-
-def _pixels(size: int, scale: int) -> list[list[str]]:
-    background, ink = BG   , ACCENT       
-    grid = [[background] * size for _ in range(size)]
-
-    text_width = MARK_CELLS * scale
-    left = (size - text_width) // 2
-    top = (size - GLYPH_HEIGHT * scale) // 2
-
-    for index, letter in enumerate(MARK):
-        rows = GLYPHS[letter]
-        offset = left + index * (GLYPH_WIDTH + GLYPH_GAP) * scale
-        for y, row in enumerate(rows):
-            for x, cell in enumerate(row):
-                if cell != "#":
-                    continue
-                for dy in range(scale):
-                    for dx in range(scale):
-                        py, px = top + y * scale + dy, offset + x * scale + dx
-                        if 0 <= py < size and 0 <= px < size:
-                            grid[py][px] = ink
-    return grid
+def _pixels(size: int) -> list[list[str]]:
+    return [[ICON_COLOUR] * size for _ in range(size)]
 
 
 def build(size: int = 32):
     """A ``size`` x ``size`` ``PhotoImage``.  A Tk root must already exist."""
     import tkinter as tk
 
-    grid = _pixels(size, _scale_for(size))
+    grid = _pixels(size)
     image = tk.PhotoImage(width=size, height=size)
     image.put("{" + "} {".join(" ".join(row) for row in grid) + "}")
     return image
@@ -1108,11 +1056,11 @@ def is_ico(path: str) -> bool:
 
 def _bmp_image(size: int) -> bytes:
     """One icon image in the BMP form .ico files use: header, BGRA, AND mask."""
-    grid = _pixels(size, _scale_for(size))
+    grid = _pixels(size)
     rgb = {}
-    for color in (BG   , ACCENT       ):
-        value = color.lstrip("#")
-        rgb[color] = bytes((int(value[4:6], 16), int(value[2:4], 16), int(value[0:2], 16), 255))
+    for colour in {cell for row in grid for cell in row}:
+        value = colour.lstrip("#")
+        rgb[colour] = bytes((int(value[4:6], 16), int(value[2:4], 16), int(value[0:2], 16), 255))
 
     # BITMAPINFOHEADER, with double height: the XOR image plus the AND mask.
     header = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, size * size * 4, 0, 0, 0, 0)

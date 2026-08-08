@@ -1,0 +1,13 @@
+# Core requirements for ouster_gui.py
+ouster-sdk>=0.11
+numpy
+matplotlib
+
+# Optional - only needed for "Export to MCAP (Foxglove)"
+# mcap
+# mcap-protobuf-support
+# foxglove-schemas-protobuf
+# protobuf
+
+# Tkinter is not on PyPI; on Debian/Ubuntu install it with:
+#   sudo apt install python3-tk

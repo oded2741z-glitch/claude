@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
-Ouster Lidar Fleet Manager - Projects / Equipment / Sensors
-===========================================================
-A Tkinter application that organizes Ouster digital lidars into a simple
-three-level hierarchy and lets you talk to each sensor:
+Sensor Fleet Manager - Projects / Equipment / Sensors
+=====================================================
+A Tkinter application that organizes sensors into a simple three-level
+hierarchy and lets you talk to each one:
 
-    Project  ->  Equipment  ->  Ouster sensor  ->  Sensor dashboard
+    Project  ->  Equipment  ->  Sensor  ->  Sensor dashboard
 
   * Projects    - a site, a customer, a research program ...
   * Equipment   - the vehicle / mast / robot the sensors are mounted on
-  * Sensors     - one entry per physical Ouster lidar (hostname or IP)
+  * Sensors     - one entry per physical device, of one of two types:
+                    - Ouster lidar, reached by hostname / IP (ouster-sdk)
+                    - Camera: USB (0, /dev/video0) or network
+                      (rtsp://..., http://.../video.mjpg), through OpenCV
 
 Everything is stored locally in ~/.ouster_projects.json, so the tree, the
 per-sensor configuration and the per-sensor network settings survive
 restarts and can be copied between machines.
 
-From a sensor's dashboard you can:
+From an Ouster sensor's dashboard you can:
 
   * READ FROM THE SENSOR   - pull the live configuration, read metadata,
     query status / telemetry / alerts, stream scans and view
@@ -29,8 +32,18 @@ From a sensor's dashboard you can:
     (so the app is fully usable without a physical sensor) and export a
     recording to MCAP for Foxglove.
 
-Tested with ouster-sdk 1.0.0; also compatible with the older
-`ouster.sdk.client` API (< 1.0).
+From a camera's dashboard you can:
+
+  * READ FROM THE CAMERA   - probe it, pull its current settings
+    (resolution, FPS, FOURCC, brightness, contrast, saturation, gain,
+    exposure), watch a live preview, take snapshots and replay video files.
+  * WRITE TO THE CAMERA    - push the stored settings, on the running
+    capture when a preview is open, and read back what the camera kept.
+  * Record the live image to MP4 / AVI.
+
+Tested with ouster-sdk 1.0.0 (also compatible with the older
+`ouster.sdk.client` API < 1.0) and OpenCV 4.x / 5.x. Both packages are
+optional; only the matching sensor type needs them.
 
 Run:  python3 ouster_gui.py
 """
@@ -51,7 +64,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 import numpy as np
 
@@ -107,6 +120,16 @@ try:
     HAVE_MCAP = True
 except Exception:
     HAVE_MCAP = False
+
+# --- OpenCV (optional: only needed for the camera sensors) -------------------
+try:
+    import cv2
+    HAVE_CV2 = True
+    CV2_IMPORT_ERROR = None
+except Exception as _e:
+    cv2 = None
+    HAVE_CV2 = False
+    CV2_IMPORT_ERROR = _e
 
 # --- matplotlib embedded in Tk ------------------------------------------------
 import matplotlib
@@ -277,6 +300,33 @@ UDP_PROFILES = [
 EQUIPMENT_TYPES = ["Vehicle", "Drone / UAV", "Robot / AMR", "Mast / Tripod",
                    "Rail / Gantry", "Building / Fixed", "Lab bench", "Other"]
 
+# --- sensor kinds -----------------------------------------------------------
+# Every sensor in the tree carries a "kind"; the dashboard is built from it.
+KIND_OUSTER = "ouster"
+KIND_CAMERA = "camera"
+KIND_LABELS = {KIND_OUSTER: "Ouster lidar",
+               KIND_CAMERA: "Camera"}
+KIND_KEYS = {label: key for key, label in KIND_LABELS.items()}
+KIND_ADDRESS_LABELS = {
+    KIND_OUSTER: "Hostname / IP",
+    KIND_CAMERA: "Camera source",
+}
+
+CAMERA_BACKENDS = ["auto", "v4l2", "ffmpeg", "gstreamer", "dshow",
+                   "avfoundation"]
+CAMERA_FOURCCS = [UNCHANGED, "MJPG", "YUYV", "H264", "GREY", "RGB3"]
+# (config key, OpenCV property name, label) - blank in the form = don't touch
+CAMERA_PROPS = [
+    ("width", "CAP_PROP_FRAME_WIDTH", "Width"),
+    ("height", "CAP_PROP_FRAME_HEIGHT", "Height"),
+    ("fps", "CAP_PROP_FPS", "FPS"),
+    ("brightness", "CAP_PROP_BRIGHTNESS", "Brightness"),
+    ("contrast", "CAP_PROP_CONTRAST", "Contrast"),
+    ("saturation", "CAP_PROP_SATURATION", "Saturation"),
+    ("gain", "CAP_PROP_GAIN", "Gain"),
+    ("exposure", "CAP_PROP_EXPOSURE", "Exposure"),
+]
+
 # (field name, plot title, colormap)
 FIELD_SPECS = [
     ("RANGE", "Range [mm]", "viridis"),
@@ -307,6 +357,23 @@ DEFAULT_SENSOR_CONFIG = {
 DEFAULT_SENSOR_NETWORK = {
     "static_ip": "",     # e.g. 192.168.1.50/24  ("" = DHCP / link-local)
     "gateway": "",
+}
+# per-camera settings; "" means "leave whatever the camera is using"
+DEFAULT_CAMERA_CONFIG = {
+    "backend": "auto",
+    "fourcc": UNCHANGED,
+    "width": "1280",
+    "height": "720",
+    "fps": "30",
+    "brightness": "",
+    "contrast": "",
+    "saturation": "",
+    "gain": "",
+    "exposure": "",
+}
+DEFAULT_CONFIG_BY_KIND = {
+    KIND_OUSTER: DEFAULT_SENSOR_CONFIG,
+    KIND_CAMERA: DEFAULT_CAMERA_CONFIG,
 }
 
 
@@ -413,10 +480,16 @@ class Store:
     # -- helpers ------------------------------------------------------------
     @staticmethod
     def normalize_sensor(sensor: dict) -> dict:
+        # records written before cameras existed are Ouster lidars
+        kind = sensor.get("kind") or KIND_OUSTER
+        if kind not in DEFAULT_CONFIG_BY_KIND:
+            kind = KIND_OUSTER
+        sensor["kind"] = kind
         cfg = sensor.get("config")
         if not isinstance(cfg, dict):
             cfg = {}
-        sensor["config"] = {**copy.deepcopy(DEFAULT_SENSOR_CONFIG), **cfg}
+        defaults = DEFAULT_CONFIG_BY_KIND[kind]
+        sensor["config"] = {**copy.deepcopy(defaults), **cfg}
         net = sensor.get("network")
         if not isinstance(net, dict):
             net = {}
@@ -787,6 +860,267 @@ class ScanReader(threading.Thread):
         return status
 
 
+def cv_source(source):
+    """'0' -> device index 0; anything else is a URL or a file path."""
+    text = str(source).strip()
+    return int(text) if text.isdigit() else text
+
+
+def fourcc_to_text(value) -> str:
+    """Decode the packed integer CAP_PROP_FOURCC into e.g. 'MJPG'."""
+    try:
+        code = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if code <= 0:
+        return ""
+    text = "".join(chr((code >> (8 * i)) & 0xFF) for i in range(4))
+    return text.strip().strip("\x00")
+
+
+class CameraReader(threading.Thread):
+    """Background thread that reads frames from a camera (USB device index,
+    RTSP / HTTP URL) or a video file and pushes RGB images into a queue.
+
+    The same thread owns the capture for its whole life, so settings
+    changes, snapshots and recording are handled here through small
+    requests instead of a second process touching the device.
+    """
+
+    def __init__(self, source, out_queue: queue.Queue, log_fn,
+                 props=None, backend="auto", is_file: bool = False,
+                 loop: bool = False):
+        super().__init__(daemon=True)
+        self.source = source
+        self.out_queue = out_queue
+        self.log = log_fn
+        self.backend = backend
+        self.is_file = is_file
+        self.loop = loop
+        self.info = {}
+        self._props = dict(props or {})
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._pending_props = None
+        self._snapshot_path = None
+        self._record_request = None     # a path to start, False to stop
+        self._recording = False
+
+    # -- requests from the UI thread ----------------------------------------
+    def stop(self):
+        self._stop_event.set()
+
+    def apply_props(self, props: dict):
+        with self._lock:
+            self._pending_props = dict(props)
+
+    def snapshot(self, path: str):
+        with self._lock:
+            self._snapshot_path = path
+
+    def start_recording(self, path: str):
+        with self._lock:
+            self._record_request = path
+
+    def stop_recording(self):
+        with self._lock:
+            self._record_request = False
+
+    @property
+    def recording(self) -> bool:
+        return self._recording
+
+    # -- capture helpers -----------------------------------------------------
+    _BACKEND_APIS = {"v4l2": "CAP_V4L2", "ffmpeg": "CAP_FFMPEG",
+                     "gstreamer": "CAP_GSTREAMER", "dshow": "CAP_DSHOW",
+                     "avfoundation": "CAP_AVFOUNDATION"}
+
+    def open_capture(self):
+        api = getattr(cv2, self._BACKEND_APIS.get(self.backend, "CAP_ANY"), 0)
+        cap = cv2.VideoCapture(cv_source(self.source), api)
+        if not cap.isOpened():
+            raise RuntimeError(f"could not open camera source "
+                               f"'{self.source}'")
+        return cap
+
+    @staticmethod
+    def set_props(cap, props: dict) -> dict:
+        """Apply the non-empty settings; return what the camera kept."""
+        fourcc = str(props.get("fourcc", "")).strip()
+        if fourcc and fourcc != UNCHANGED and len(fourcc) == 4:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+        for key, prop, _label in CAMERA_PROPS:
+            value = str(props.get(key, "")).strip()
+            if not value:
+                continue
+            try:
+                cap.set(getattr(cv2, prop), float(value))
+            except (ValueError, AttributeError):
+                continue
+        return CameraReader.read_props(cap)
+
+    @staticmethod
+    def read_props(cap) -> dict:
+        """Read the settings this app knows about back off the capture."""
+        out = {}
+        for key, prop, _label in CAMERA_PROPS:
+            try:
+                value = cap.get(getattr(cv2, prop))
+            except AttributeError:
+                continue
+            if value is None:
+                continue
+            # OpenCV reports -1 for a property the backend does not expose;
+            # exposure is excluded because -1 is a real value there
+            if value == -1 and key not in ("exposure",):
+                continue
+            if key in ("width", "height"):
+                out[key] = str(int(round(value)))
+            else:
+                out[key] = f"{value:g}"
+        code = fourcc_to_text(cap.get(cv2.CAP_PROP_FOURCC))
+        if code:
+            out["fourcc"] = code
+        return out
+
+    def describe(self, cap) -> dict:
+        width = int(round(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0))
+        height = int(round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+        return {"source": str(self.source), "backend": self.backend,
+                "width": width, "height": height, "fps": float(fps),
+                "fourcc": fourcc_to_text(cap.get(cv2.CAP_PROP_FOURCC)),
+                "frames": int(frames) if self.is_file else 0}
+
+    # -- thread body ---------------------------------------------------------
+    def run(self):
+        try:
+            first = True
+            while not self._stop_event.is_set():
+                self._play_once(first)
+                first = False
+                if not (self.is_file and self.loop):
+                    break
+                if self._stop_event.is_set():
+                    break
+                self.log("Looping video...")
+            self.log("Camera stopped.")
+        except Exception as e:
+            self.out_queue.put(("error", str(e)))
+        finally:
+            self.out_queue.put(("stopped", None))
+
+    def _play_once(self, announce=True):
+        cap = None
+        writer = None
+        try:
+            if announce:
+                self.log(f"Opening camera: {self.source} ...")
+            cap = self.open_capture()
+            self.set_props(cap, self._props)
+            self.info = self.describe(cap)
+            self.out_queue.put(("camera_info", self.info))
+            if announce:
+                self.log(f"Camera opened: {self.info['width']}x"
+                         f"{self.info['height']} @ {self.info['fps']:g} fps"
+                         + (f" [{self.info['fourcc']}]"
+                            if self.info["fourcc"] else ""))
+            # video files are paced by their own frame rate
+            delay = (1.0 / self.info["fps"]
+                     if self.is_file and self.info["fps"] > 0 else 0.0)
+
+            n = 0
+            while not self._stop_event.is_set():
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                n += 1
+                writer = self._service_requests(cap, frame, writer)
+                self._publish(frame, n)
+                if delay:
+                    time.sleep(delay)
+        finally:
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
+                self._recording = False
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+    def _service_requests(self, cap, frame, writer):
+        with self._lock:
+            props, self._pending_props = self._pending_props, None
+            snap, self._snapshot_path = self._snapshot_path, None
+            record, self._record_request = self._record_request, None
+
+        if props is not None:
+            kept = self.set_props(cap, props)
+            self.info = self.describe(cap)
+            self.out_queue.put(("camera_info", self.info))
+            self.out_queue.put(("camera_props", kept))
+
+        if snap:
+            try:
+                cv2.imwrite(snap, frame)
+                self.log(f"Snapshot saved -> {snap}")
+            except Exception as e:
+                self.log(f"ERROR saving snapshot: {e}")
+
+        if record is False and writer is not None:
+            writer.release()
+            writer = None
+            self._recording = False
+            self.log("Recording stopped.")
+        elif isinstance(record, str) and writer is None:
+            try:
+                height, width = frame.shape[:2]
+                fps = self.info.get("fps") or 0.0
+                if fps <= 0:
+                    fps = 25.0
+                code = "mp4v" if record.lower().endswith(".mp4") else "MJPG"
+                writer = cv2.VideoWriter(record,
+                                         cv2.VideoWriter_fourcc(*code),
+                                         fps, (width, height))
+                if not writer.isOpened():
+                    raise RuntimeError("the video writer could not be opened "
+                                       "(try a .avi file name)")
+                self._recording = True
+                self.log(f"Recording started -> {record} "
+                         f"({width}x{height} @ {fps:g} fps, {code})")
+            except Exception as e:
+                writer = None
+                self._recording = False
+                self.log(f"ERROR starting recording: {e}")
+
+        if writer is not None:
+            try:
+                writer.write(frame)
+            except Exception as e:
+                self.log(f"ERROR writing video frame: {e}")
+        return writer
+
+    def _publish(self, frame, index):
+        rgb = np.ascontiguousarray(frame[:, :, ::-1])   # BGR -> RGB
+        # keep only the freshest frame, but never drop info/error events
+        pending = []
+        try:
+            while True:
+                old = self.out_queue.get_nowait()
+                if old[0] != "camera":
+                    pending.append(old)
+        except queue.Empty:
+            pass
+        for ev in pending:
+            self.out_queue.put(ev)
+        self.out_queue.put(("camera", rgb, index, self._recording))
+
+
 def enable_dark_title_bar(root: tk.Tk):
     """Ask Windows to draw this window's title bar dark (no-op elsewhere;
     on Linux the title bar color follows the desktop theme).
@@ -827,7 +1161,7 @@ def enable_dark_title_bar(root: tk.Tk):
 class OusterGuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title(f"Ouster Lidar Fleet Manager  v{__version__}  ·  "
+        root.title(f"Sensor Fleet Manager  v{__version__}  ·  "
                    "Powered by Python")
         root.geometry("1320x880")
         root.minsize(1000, 640)
@@ -850,6 +1184,7 @@ class OusterGuiApp:
 
         # dashboard widgets (recreated every time the dashboard is shown)
         self.log_lines = deque(maxlen=500)
+        self._log_pending = deque()      # written by worker threads
         self.log_widget = None
         self.info_var = None
         self.canvas = None
@@ -861,16 +1196,22 @@ class OusterGuiApp:
         self.last_images = {}
         self.last_frame_id = 0
         self.cfg_vars = {}
+        self.cam_ax = None
+        self.cam_artist = None
 
         self._build_shell()
         self._poll_queue()
 
-        self.log(f"Ouster Lidar Fleet Manager v{__version__} ready.")
+        self.log(f"Sensor Fleet Manager v{__version__} ready.")
         self.log(f"Project database: {self.store.path}")
         if not HAVE_OUSTER:
-            self.log("WARNING: ouster-sdk is not installed "
-                     f"({OUSTER_IMPORT_ERROR}).")
-            self.log("Install it with:  pip install ouster-sdk")
+            self.log("NOTE: ouster-sdk is not installed "
+                     f"({OUSTER_IMPORT_ERROR}); Ouster lidar sensors are "
+                     "read-only. Install it with:  pip install ouster-sdk")
+        if not HAVE_CV2:
+            self.log("NOTE: OpenCV is not installed "
+                     f"({CV2_IMPORT_ERROR}); camera sensors are read-only. "
+                     "Install it with:  pip install opencv-python")
 
         self.show_projects()
 
@@ -943,6 +1284,8 @@ class OusterGuiApp:
         self.view_buttons = {}
         self.last_images = {}
         self.cfg_vars = {}
+        self.cam_ax = None
+        self.cam_artist = None
         for child in self.body.winfo_children():
             child.destroy()
 
@@ -1120,7 +1463,7 @@ class OusterGuiApp:
 
         self._build_list_screen(
             f"Equipment · {project.get('name', '')}",
-            "The platform the lidars are mounted on: a vehicle, a mast, "
+            "The platform the sensors are mounted on: a vehicle, a mast, "
             "a robot ...",
             [("name", "Equipment", 260), ("type", "Type", 180),
              ("serial", "Serial / asset ID", 180),
@@ -1201,19 +1544,29 @@ class OusterGuiApp:
         for sensor in equipment.get("sensors", []):
             Store.normalize_sensor(sensor)
             cfg = sensor["config"]
+            if sensor["kind"] == KIND_CAMERA:
+                summary = "x".join(v for v in (cfg.get("width"),
+                                               cfg.get("height")) if v)
+                if cfg.get("fps"):
+                    summary += f" @ {cfg['fps']} fps"
+            else:
+                summary = cfg.get("lidar_mode", "")
             rows.append((sensor, {
                 "name": sensor.get("name", ""),
+                "kind": KIND_LABELS.get(sensor["kind"], sensor["kind"]),
                 "host": sensor.get("host", ""),
                 "model": sensor.get("model", ""),
-                "mode": cfg.get("lidar_mode", ""),
+                "mode": summary,
                 "last_seen": sensor.get("last_seen") or "never",
             }))
 
         self._build_list_screen(
-            f"Ouster sensors · {equipment.get('name', '')}",
-            "Open a sensor to read data from it or push settings to it.",
-            [("name", "Sensor", 220), ("host", "Hostname / IP", 240),
-             ("model", "Model", 140), ("mode", "Saved lidar mode", 140),
+            f"Sensors · {equipment.get('name', '')}",
+            "Ouster lidars and cameras. Open one to read data from it or "
+            "push settings to it.",
+            [("name", "Sensor", 200), ("kind", "Type", 110),
+             ("host", "Address / source", 220),
+             ("model", "Model", 130), ("mode", "Saved settings", 140),
              ("last_seen", "Last contact", 140)],
             rows,
             [("Open", self.open_sensor, "Accent.TButton"),
@@ -1226,36 +1579,63 @@ class OusterGuiApp:
                             f"on '{equipment.get('name', '')}'.")
 
     _SENSOR_FIELDS = [
+        {"key": "kind_label", "label": "Sensor type", "kind": "combo",
+         "values": list(KIND_LABELS.values()),
+         "default": KIND_LABELS[KIND_OUSTER],
+         "hint": "the type decides which dashboard the sensor opens"},
         {"key": "name", "label": "Sensor name", "required": True,
-         "hint": "e.g. 'front-left OS1'"},
-        {"key": "host", "label": "Hostname / IP", "required": True,
-         "hint": "e.g. os-122xxxxxxxxxx.local  or  192.168.1.50"},
+         "hint": "e.g. 'front-left OS1' or 'cabin camera'"},
+        {"key": "host", "label": "Address / source", "required": True,
+         "hint": "Ouster: os-122xxxxxxxxxx.local or 192.168.1.50  ·  "
+                 "camera: 0 for the first USB camera, or an RTSP / HTTP URL"},
         {"key": "model", "label": "Model / product line",
          "hint": "optional, e.g. OS1-128 (filled in automatically after "
-                 "the first connection)"},
+                 "the first connection to an Ouster sensor)"},
         {"key": "notes", "label": "Notes", "kind": "text"},
     ]
 
+    @staticmethod
+    def _split_kind(values: dict) -> tuple:
+        """Pull the sensor-type combobox out of a form result."""
+        label = values.pop("kind_label", "")
+        return KIND_KEYS.get(label, KIND_OUSTER), values
+
     def new_sensor(self):
-        dialog = FormDialog(self.root, "New Ouster sensor",
-                            self._SENSOR_FIELDS, ok_text="Create")
-        if dialog.result:
-            sensor = self.store.add_sensor(self.equipment, dialog.result)
-            self.log(f"Sensor '{sensor['name']}' ({sensor.get('host')}) "
-                     f"added to '{self.equipment.get('name')}'.")
-            self.show_sensors()
+        dialog = FormDialog(self.root, "New sensor", self._SENSOR_FIELDS,
+                            ok_text="Create")
+        if not dialog.result:
+            return
+        kind, values = self._split_kind(dialog.result)
+        values["kind"] = kind
+        sensor = self.store.add_sensor(self.equipment, values)
+        self.log(f"{KIND_LABELS[kind]} '{sensor['name']}' "
+                 f"({sensor.get('host')}) added to "
+                 f"'{self.equipment.get('name')}'.")
+        self.show_sensors()
 
     def edit_sensor(self):
         sensor = self._require_selection("Sensor")
         if sensor is None:
             return
+        initial = dict(sensor)
+        initial["kind_label"] = KIND_LABELS.get(sensor.get("kind"),
+                                                KIND_LABELS[KIND_OUSTER])
         dialog = FormDialog(self.root, "Edit sensor", self._SENSOR_FIELDS,
-                            initial=sensor)
-        if dialog.result:
-            sensor.update(dialog.result)
-            self.store.save()
-            self.log(f"Sensor '{sensor['name']}' updated.")
-            self.show_sensors()
+                            initial=initial)
+        if not dialog.result:
+            return
+        kind, values = self._split_kind(dialog.result)
+        if kind != sensor.get("kind"):
+            # a different kind needs a different config block
+            sensor["config"] = {}
+            self.log(f"Sensor type changed to {KIND_LABELS[kind]}; its "
+                     "settings were reset to the defaults.")
+        sensor.update(values)
+        sensor["kind"] = kind
+        Store.normalize_sensor(sensor)
+        self.store.save()
+        self.log(f"Sensor '{sensor['name']}' updated.")
+        self.show_sensors()
 
     def delete_sensor(self):
         sensor = self._require_selection("Sensor")
@@ -1327,17 +1707,28 @@ class OusterGuiApp:
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._build_connection_panel(left)
-        self._build_config_panel(left)
-        self._build_stream_panel(left)
-        self._build_record_panel(left)
-        self._build_log_panel(left)
-        self._build_viz_panel(right)
+        if self.sensor_kind() == KIND_CAMERA:
+            self._build_camera_connection_panel(left)
+            self._build_camera_config_panel(left)
+            self._build_camera_stream_panel(left)
+            self._build_log_panel(left)
+            self._build_camera_viz_panel(right)
+        else:
+            self._build_connection_panel(left)
+            self._build_config_panel(left)
+            self._build_stream_panel(left)
+            self._build_record_panel(left)
+            self._build_log_panel(left)
+            self._build_viz_panel(right)
 
-        self.status_var.set(f"Sensor '{sensor.get('name')}' "
+        self.status_var.set(f"{KIND_LABELS[self.sensor_kind()]} "
+                            f"'{sensor.get('name')}' "
                             f"({sensor.get('host')}) - "
                             f"{self.project.get('name')} / "
                             f"{self.equipment.get('name')}")
+
+    def sensor_kind(self) -> str:
+        return (self.sensor or {}).get("kind", KIND_OUSTER)
 
     def _build_connection_panel(self, parent):
         sensor = self.sensor
@@ -1479,11 +1870,13 @@ class OusterGuiApp:
             bg=Theme.LOG_BG, fg=Theme.LOG_FG, insertbackground=Theme.LOG_FG,
             relief=tk.FLAT, borderwidth=0, highlightthickness=0)
         self.log_widget.pack(fill=tk.X)
-        # replay what happened before this panel existed
+        # replay what happened before this panel existed; everything is on
+        # screen now, so nothing is left pending
         self.log_widget.configure(state=tk.NORMAL)
         self.log_widget.insert(tk.END, "".join(self.log_lines))
         self.log_widget.see(tk.END)
         self.log_widget.configure(state=tk.DISABLED)
+        self._log_pending.clear()
 
     def _build_viz_panel(self, parent):
         sensor = self.sensor
@@ -1531,6 +1924,459 @@ class OusterGuiApp:
         widget.configure(bg=Theme.PANEL, highlightthickness=0)
         widget.pack(fill=tk.BOTH, expand=True)
         self._build_axes()
+
+    # ---------------------------------------------------- camera dashboard --
+    def _build_camera_connection_panel(self, parent):
+        sensor = self.sensor
+        conn = ttk.LabelFrame(parent, text="  CAMERA CONNECTION  ", padding=10)
+        conn.pack(fill=tk.X, pady=4)
+        ttk.Label(conn, text="Camera source:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.host_var = tk.StringVar(value=sensor.get("host", ""))
+        ttk.Entry(conn, textvariable=self.host_var).pack(
+            fill=tk.X, pady=(3, 0))
+        ttk.Label(conn, text="0 = first USB camera · rtsp://user:pass@host/"
+                             "stream · http://host/video.mjpg · /dev/video0",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 3))
+        ttk.Button(conn, text="Save source to project",
+                   command=self.on_save_host).pack(fill=tk.X, pady=(0, 4))
+        row = ttk.Frame(conn, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Button(row, text="Probe camera",
+                   command=self.on_probe_camera).pack(side=tk.LEFT,
+                                                      expand=True, fill=tk.X,
+                                                      padx=(0, 3))
+        ttk.Button(row, text="Open in browser",
+                   command=self.on_get_info).pack(side=tk.LEFT, expand=True,
+                                                  fill=tk.X, padx=(3, 0))
+        ttk.Label(conn, text="'Open in browser' only makes sense for an IP "
+                             "camera's web page.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W)
+
+    def _build_camera_config_panel(self, parent):
+        cfg_values = self.sensor["config"]
+        cfg = ttk.LabelFrame(parent, text="  CAMERA SETTINGS  ", padding=10)
+        cfg.pack(fill=tk.X, pady=4)
+
+        ttk.Label(cfg, text="Capture backend:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["backend"] = tk.StringVar(
+            value=str(cfg_values.get("backend", "auto")))
+        ttk.Combobox(cfg, textvariable=self.cfg_vars["backend"],
+                     values=CAMERA_BACKENDS,
+                     state="readonly").pack(fill=tk.X, pady=3)
+        ttk.Label(cfg, text="Pixel format (FOURCC):",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["fourcc"] = tk.StringVar(
+            value=str(cfg_values.get("fourcc", UNCHANGED)))
+        ttk.Combobox(cfg, textvariable=self.cfg_vars["fourcc"],
+                     values=CAMERA_FOURCCS).pack(fill=tk.X, pady=3)
+
+        grid = ttk.Frame(cfg, style="Panel.TFrame")
+        grid.pack(fill=tk.X, pady=3)
+        for i, (key, _prop, label) in enumerate(CAMERA_PROPS):
+            ttk.Label(grid, text=f"{label}:",
+                      style="Muted.TLabel").grid(row=i, column=0, sticky=tk.W,
+                                                 pady=1)
+            self.cfg_vars[key] = tk.StringVar(
+                value=str(cfg_values.get(key, "")))
+            ttk.Entry(grid, textvariable=self.cfg_vars[key],
+                      width=10).grid(row=i, column=1, padx=6, pady=1,
+                                     sticky=tk.W)
+        ttk.Label(cfg, text="Leave a box empty to keep whatever the camera "
+                            "is already using.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 0))
+
+        ttk.Button(cfg, text="⤓  Pull from camera",
+                   command=self.on_pull_camera).pack(fill=tk.X, pady=(8, 3))
+        ttk.Button(cfg, text="⤒  Push to camera", style="Accent.TButton",
+                   command=self.on_push_camera).pack(fill=tk.X, pady=3)
+        ttk.Button(cfg, text="Save to project (no camera access)",
+                   command=lambda: self.on_save_camera_config(True)).pack(
+            fill=tk.X, pady=3)
+        ttk.Label(cfg, text="Cameras are free to ignore a setting; after a "
+                            "push the values the camera actually kept are "
+                            "written back into the form.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 0))
+
+    def _build_camera_stream_panel(self, parent):
+        live = ttk.LabelFrame(parent, text="  LIVE VIEW / RECORDING  ",
+                              padding=10)
+        live.pack(fill=tk.X, pady=4)
+        self.start_btn = ttk.Button(live, text="▶  Start Preview",
+                                    style="Accent.TButton",
+                                    command=self.on_start_preview)
+        self.start_btn.pack(fill=tk.X, pady=3)
+        self.stop_btn = ttk.Button(live, text="■  Stop Preview",
+                                   command=self.on_stop_stream,
+                                   state=tk.DISABLED)
+        self.stop_btn.pack(fill=tk.X, pady=3)
+        ttk.Button(live, text="📷  Snapshot...",
+                   command=self.on_snapshot).pack(fill=tk.X, pady=3)
+        self.record_btn = ttk.Button(live, text="●  Start Recording",
+                                     command=self.on_toggle_camera_record)
+        self.record_btn.pack(fill=tk.X, pady=3)
+        ttk.Button(live, text="▶  Play video file...",
+                   command=self.on_open_video).pack(fill=tk.X, pady=3)
+        self.loop_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(live, text="Loop playback (repeat)",
+                        variable=self.loop_var,
+                        style="TCheckbutton").pack(anchor=tk.W, pady=(2, 0))
+
+    def _build_camera_viz_panel(self, parent):
+        sensor = self.sensor
+        info = ttk.LabelFrame(parent, text="  CAMERA INFO  ", padding=8)
+        info.pack(fill=tk.X)
+        self.info_var = tk.StringVar(
+            value=f"{sensor.get('name', '')}  ·  source "
+                  f"{sensor.get('host', '')}\n"
+                  "Not connected - use 'Probe camera' or 'Start Preview'.")
+        ttk.Label(info, textvariable=self.info_var, style="Info.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+
+        viz = ttk.LabelFrame(parent, text="  LIVE IMAGE  ", padding=6)
+        viz.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.fig = Figure(figsize=(8, 6), dpi=90, tight_layout=True,
+                          facecolor=Theme.PANEL)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=viz)
+        widget = self.canvas.get_tk_widget()
+        widget.configure(bg=Theme.PANEL, highlightthickness=0)
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.cam_ax = self.fig.add_subplot(111)
+        self._style_axis(self.cam_ax, "No image yet")
+        self.cam_artist = None
+        self.canvas.draw_idle()
+
+    # ----------------------------------------------------- camera actions ---
+    def _require_cv2(self) -> bool:
+        if not HAVE_CV2:
+            messagebox.showerror(
+                "OpenCV missing",
+                "Camera sensors need the OpenCV Python package "
+                f"({CV2_IMPORT_ERROR}).\n\n"
+                "Install it with:\n    pip install opencv-python")
+            return False
+        return True
+
+    def _collect_camera_config(self):
+        """Read the camera form, or None if a value is not a number."""
+        values = {key: var.get().strip()
+                  for key, var in self.cfg_vars.items()}
+        for key, _prop, label in CAMERA_PROPS:
+            text = values.get(key, "")
+            if not text:
+                continue
+            try:
+                float(text)
+            except ValueError:
+                messagebox.showerror(
+                    "Invalid camera setting",
+                    f"'{label}' must be a number, or empty to leave it "
+                    "unchanged.")
+                return None
+        fourcc = values.get("fourcc", "")
+        if fourcc and fourcc != UNCHANGED and len(fourcc) != 4:
+            messagebox.showerror(
+                "Invalid pixel format",
+                "FOURCC codes are exactly four characters, e.g. MJPG.")
+            return None
+        return values
+
+    def on_save_camera_config(self, announce=False):
+        values = self._collect_camera_config()
+        if values is None:
+            return None
+        self.sensor["config"].update(values)
+        self.sensor["host"] = self.host_var.get().strip()
+        self.store.save()
+        if announce:
+            self.log(f"Camera settings saved to project for "
+                     f"'{self.sensor.get('name')}' (camera not opened).")
+        return values
+
+    def _camera_backend(self) -> str:
+        var = self.cfg_vars.get("backend")
+        return var.get() if var is not None else "auto"
+
+    def on_probe_camera(self):
+        """Open the camera briefly and report what it is."""
+        if not self._require_cv2():
+            return
+        source = self.host_var.get().strip()
+        if not source:
+            messagebox.showerror("Probe camera",
+                                 "Please enter a camera source.")
+            return
+        self.log(f"Probing camera {source} ...")
+        backend = self._camera_backend()
+
+        def work():
+            reader = CameraReader(source, self.frame_queue, self.log,
+                                  backend=backend)
+            cap = None
+            try:
+                cap = reader.open_capture()
+                info = reader.describe(cap)
+            except Exception as e:
+                self.log(f"ERROR probing camera: {e}")
+                return
+            finally:
+                if cap is not None:
+                    cap.release()
+            self.log(f"Camera reachable: {info['width']}x{info['height']} @ "
+                     f"{info['fps']:g} fps"
+                     + (f" [{info['fourcc']}]" if info["fourcc"] else ""))
+            self.frame_queue.put(("camera_info", info))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_pull_camera(self):
+        """Read the camera's current settings into the form and project."""
+        if not self._require_cv2():
+            return
+        source = self.host_var.get().strip()
+        if not source:
+            messagebox.showerror("Pull from camera",
+                                 "Please enter a camera source.")
+            return
+        if self.reader is not None and isinstance(self.reader, CameraReader):
+            # the preview owns the device; ask the reader for a read-back
+            self.reader.apply_props({})
+            self.log("Reading settings from the running preview ...")
+            return
+        self.log(f"Reading settings from camera {source} ...")
+        backend = self._camera_backend()
+
+        def work():
+            reader = CameraReader(source, self.frame_queue, self.log,
+                                  backend=backend)
+            cap = None
+            try:
+                cap = reader.open_capture()
+                props = CameraReader.read_props(cap)
+                info = reader.describe(cap)
+            except Exception as e:
+                self.log(f"ERROR reading camera settings: {e}")
+                return
+            finally:
+                if cap is not None:
+                    cap.release()
+            self.frame_queue.put(("camera_info", info))
+            self.frame_queue.put(("camera_props", props))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_camera_pull(self, props: dict):
+        for key, value in props.items():
+            var = self.cfg_vars.get(key)
+            if var is not None:
+                var.set(value)
+        self.sensor["config"].update(props)
+        self.sensor["last_seen"] = now_stamp()
+        self.store.save()
+        self.log("Camera settings read back into the project: "
+                 + ", ".join(f"{k}={v}" for k, v in sorted(props.items())))
+
+    def on_push_camera(self):
+        """Write the project's settings to the camera."""
+        if not self._require_cv2():
+            return
+        values = self.on_save_camera_config()
+        if values is None:
+            return
+        source = self.host_var.get().strip()
+        if not source:
+            messagebox.showerror("Push to camera",
+                                 "Please enter a camera source.")
+            return
+        if self.reader is not None and isinstance(self.reader, CameraReader):
+            # apply on the live capture, so the preview shows the result
+            self.reader.apply_props(values)
+            self.log("Settings sent to the running preview.")
+            return
+        self.log(f"Pushing settings to camera {source} ...")
+        backend = self._camera_backend()
+
+        def work():
+            reader = CameraReader(source, self.frame_queue, self.log,
+                                  backend=backend)
+            cap = None
+            try:
+                cap = reader.open_capture()
+                CameraReader.set_props(cap, values)
+                # a capture usually only commits settings once it streams
+                cap.read()
+                kept = CameraReader.read_props(cap)
+                info = reader.describe(cap)
+            except Exception as e:
+                self.log(f"ERROR pushing camera settings: {e}")
+                return
+            finally:
+                if cap is not None:
+                    cap.release()
+            self.frame_queue.put(("camera_info", info))
+            self.frame_queue.put(("camera_push", values, kept))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_camera_push(self, wanted: dict, kept: dict):
+        ignored = []
+        for key, value in wanted.items():
+            if not value or key not in kept:
+                continue
+            try:
+                same = abs(float(value) - float(kept[key])) < 1e-6
+            except ValueError:
+                same = str(value) == str(kept[key])
+            if not same:
+                ignored.append(f"{key}: asked {value}, got {kept[key]}")
+        for key, value in kept.items():
+            var = self.cfg_vars.get(key)
+            if var is not None:
+                var.set(value)
+        self.sensor["config"].update(kept)
+        self.sensor["last_seen"] = now_stamp()
+        self.store.save()
+        if ignored:
+            self.log("Camera did not accept some settings -> "
+                     + "; ".join(ignored))
+        self.log("Camera settings pushed; the form now shows what the "
+                 "camera kept.")
+
+    def _show_camera_info(self, info: dict):
+        if self.sensor is not None:
+            self.sensor["last_seen"] = now_stamp()
+            self.store.save()
+        if self.info_var is None:
+            return
+        lines = [
+            f"Source       : {info.get('source', '')}",
+            f"Backend      : {info.get('backend', '')}",
+            f"Resolution   : {info.get('width', 0)} x {info.get('height', 0)}",
+            f"Frame rate   : {info.get('fps', 0.0):g} fps",
+        ]
+        if info.get("fourcc"):
+            lines.append(f"Pixel format : {info['fourcc']}")
+        if info.get("frames"):
+            lines.append(f"Frames       : {info['frames']}")
+        self.info_var.set("\n".join(lines))
+
+    def on_start_preview(self, source_url=None, is_file=False):
+        if not self._require_cv2():
+            return
+        if self.reader is not None:
+            self.log("Preview already running.")
+            return
+        values = None if is_file else self.on_save_camera_config()
+        if values is None and not is_file:
+            return
+        source = source_url or self.host_var.get().strip()
+        if not source:
+            messagebox.showerror("Start preview",
+                                 "Please enter a camera source.")
+            return
+        self.reader = CameraReader(
+            source, self.frame_queue, self.log,
+            props=values or {}, backend=self._camera_backend(),
+            is_file=is_file, loop=is_file and self.loop_var.get())
+        self.reader.start()
+        self.start_btn.configure(state=tk.DISABLED)
+        self.stop_btn.configure(state=tk.NORMAL)
+
+    def on_open_video(self):
+        if not self._require_cv2():
+            return
+        path = filedialog.askopenfilename(
+            title="Open video file",
+            filetypes=[("Video files", "*.mp4 *.avi *.mkv *.mov *.webm"),
+                       ("All files", "*")])
+        if path:
+            self.on_stop_stream()
+            self.on_start_preview(source_url=path, is_file=True)
+
+    def on_snapshot(self):
+        if not self._require_cv2():
+            return
+        name = "".join(c if c.isalnum() or c in "-_" else "_"
+                       for c in (self.sensor or {}).get("name", "camera"))
+        path = filedialog.asksaveasfilename(
+            title="Save snapshot as", defaultextension=".png",
+            initialfile=f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.png",
+            filetypes=[("PNG image", "*.png"), ("JPEG image", "*.jpg")])
+        if not path:
+            return
+        if self.reader is not None and isinstance(self.reader, CameraReader):
+            self.reader.snapshot(path)      # grabbed by the capture thread
+            return
+        source = self.host_var.get().strip()
+        backend = self._camera_backend()
+        values = self.on_save_camera_config() or {}
+
+        def work():
+            reader = CameraReader(source, self.frame_queue, self.log,
+                                  backend=backend)
+            cap = None
+            try:
+                cap = reader.open_capture()
+                CameraReader.set_props(cap, values)
+                ok, frame = cap.read()
+                if not ok:
+                    raise RuntimeError("no frame received")
+                cv2.imwrite(path, frame)
+                self.log(f"Snapshot saved -> {path}")
+            except Exception as e:
+                self.log(f"ERROR saving snapshot: {e}")
+            finally:
+                if cap is not None:
+                    cap.release()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_toggle_camera_record(self):
+        if not self._require_cv2():
+            return
+        reader = self.reader if isinstance(self.reader, CameraReader) else None
+        if reader is not None and reader.recording:
+            reader.stop_recording()
+            self.record_btn.configure(text="●  Start Recording")
+            return
+        name = "".join(c if c.isalnum() or c in "-_" else "_"
+                       for c in (self.sensor or {}).get("name", "camera"))
+        path = filedialog.asksaveasfilename(
+            title="Save recording as", defaultextension=".mp4",
+            initialfile=f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.mp4",
+            filetypes=[("MP4 video", "*.mp4"), ("AVI video", "*.avi")])
+        if not path:
+            return
+        if reader is None:
+            # recording needs the capture thread; start the preview first
+            self.log("Starting the preview so the camera can be recorded ...")
+            self.on_start_preview()
+            reader = self.reader if isinstance(self.reader,
+                                               CameraReader) else None
+            if reader is None:
+                return
+        reader.start_recording(path)
+        self.record_btn.configure(text="■  Stop Recording")
+
+    def _draw_camera(self, rgb, index, recording=False):
+        if self.canvas is None or getattr(self, "cam_ax", None) is None:
+            return
+        title = f"Frame {index}  ·  {rgb.shape[1]}x{rgb.shape[0]}"
+        if recording:
+            title += "   ● REC"
+        if self.cam_artist is None or \
+                self.cam_artist.get_array().shape[:2] != rgb.shape[:2]:
+            self.cam_ax.clear()
+            self.cam_artist = self.cam_ax.imshow(rgb)
+        else:
+            self.cam_artist.set_data(rgb)
+        self._style_axis(self.cam_ax, title)
+        self.canvas.draw_idle()
 
     # ------------------------------------------------- sensor record I/O ----
     def on_save_host(self):
@@ -1702,14 +2548,20 @@ class OusterGuiApp:
 
     # ------------------------------------------------------------- helpers --
     def log(self, msg: str):
+        """Record a line. Safe from any thread: nothing here touches Tk -
+        the UI picks the line up on the next _poll_queue tick."""
         line = time.strftime("[%H:%M:%S] ") + msg + "\n"
         self.log_lines.append(line)
+        self._log_pending.append((line, msg.splitlines()[0][:160]))
 
-        def append():
-            self.status_var.set(msg.splitlines()[0][:160])
+    def _flush_log(self):
+        """Move pending log lines into the widget (UI thread only)."""
+        while self._log_pending:
+            line, status = self._log_pending.popleft()
+            self.status_var.set(status)
             widget = self.log_widget
             if widget is None:
-                return
+                continue
             try:
                 widget.configure(state=tk.NORMAL)
                 widget.insert(tk.END, line)
@@ -1717,8 +2569,6 @@ class OusterGuiApp:
                 widget.configure(state=tk.DISABLED)
             except tk.TclError:      # panel was destroyed meanwhile
                 self.log_widget = None
-        # log() may be called from worker threads
-        self.root.after(0, append)
 
     def _require_sdk(self) -> bool:
         if not HAVE_OUSTER:
@@ -1741,6 +2591,12 @@ class OusterGuiApp:
         if not host:
             messagebox.showerror("Web dashboard",
                                  "Please enter the sensor hostname or IP.")
+            return
+        if host.isdigit():          # a USB camera index has no web page
+            messagebox.showinfo(
+                "Open in browser",
+                f"'{host}' is a local camera device, not a network address, "
+                "so it has no web page.")
             return
         url = host if host.startswith(("http://", "https://")) \
             else f"http://{host}"
@@ -2032,6 +2888,13 @@ class OusterGuiApp:
         if self.reader is not None:
             self.reader.stop()
             self.reader = None
+            # a camera recording lives inside the capture thread
+            button = getattr(self, "record_btn", None)
+            if button is not None and self.sensor_kind() == KIND_CAMERA:
+                try:
+                    button.configure(text="●  Start Recording")
+                except tk.TclError:
+                    pass
         for name in ("start_btn", "stop_btn"):
             widget = getattr(self, name, None)
             if widget is None:
@@ -2369,6 +3232,7 @@ class OusterGuiApp:
                 return
 
     def _poll_queue(self):
+        self._flush_log()
         try:
             while True:
                 item = self.frame_queue.get_nowait()
@@ -2377,6 +3241,15 @@ class OusterGuiApp:
                     self._draw_frame(item[1], item[2])
                     if len(item) > 3:
                         self.last_frame_status = item[3]
+                elif kind == "camera":
+                    self._draw_camera(item[1], item[2],
+                                      item[3] if len(item) > 3 else False)
+                elif kind == "camera_info":
+                    self._show_camera_info(item[1])
+                elif kind == "camera_props":
+                    self._finish_camera_pull(item[1])
+                elif kind == "camera_push":
+                    self._finish_camera_push(item[1], item[2])
                 elif kind == "metadata":
                     self._show_metadata(item[1])
                 elif kind == "error":
@@ -2412,7 +3285,10 @@ class OusterGuiApp:
     def on_close(self):
         if self.sensor is not None and self.cfg_vars:
             try:
-                self.on_save_config()
+                if self.sensor_kind() == KIND_CAMERA:
+                    self.on_save_camera_config()
+                else:
+                    self.on_save_config()
             except Exception:
                 pass
         self.store.save()

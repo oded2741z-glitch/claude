@@ -1,18 +1,20 @@
-# Ouster Lidar Fleet Manager
+# Sensor Fleet Manager (Ouster lidars + cameras)
 
-A Tkinter desktop app that organizes Ouster digital lidars into a simple
-three-level hierarchy and lets you read data from each sensor or push
-settings to it.
+A Tkinter desktop app that organizes sensors into a simple three-level
+hierarchy and lets you read data from each one or push settings to it.
 
 ```
-Project  ->  Equipment  ->  Ouster sensor  ->  Sensor dashboard
+Project  ->  Equipment  ->  Sensor  ->  Sensor dashboard
 ```
 
 * **Project** - a site, a customer, a survey campaign, a research program.
-* **Equipment** - the platform the lidars are mounted on: a vehicle, a
+* **Equipment** - the platform the sensors are mounted on: a vehicle, a
   drone, a mast, a robot, a fixed installation.
-* **Sensor** - one entry per physical Ouster lidar (hostname or IP), with
-  its own saved configuration and network settings.
+* **Sensor** - one entry per physical device, with its own saved settings.
+  Each sensor has a **type**, which decides the dashboard it opens:
+  * **Ouster lidar** - reached by hostname or IP through `ouster-sdk`.
+  * **Camera** - a USB camera (`0`, `1`, `/dev/video0`) or a network
+    camera (`rtsp://...`, `http://.../video.mjpg`) through OpenCV.
 
 Everything is stored locally in `~/.ouster_projects.json`, so the tree and
 all per-sensor settings survive restarts and can be copied between
@@ -22,9 +24,15 @@ machines.
 
 ```bash
 pip install ouster-sdk numpy matplotlib
+# for camera sensors:
+pip install opencv-python
 # optional, only for "Export to MCAP":
 pip install mcap mcap-protobuf-support foxglove-schemas-protobuf protobuf
 ```
+
+Both `ouster-sdk` and `opencv-python` are optional: without one of them
+the app still runs, and only the matching sensor type reports that its
+package is missing.
 
 On Debian/Ubuntu, Tkinter comes from the system packages:
 
@@ -39,12 +47,13 @@ python3 ouster_gui.py
 ```
 
 The app opens on the **Projects** screen. Create a project, open it, create
-equipment, open it, create a sensor, then open the sensor to reach its
-dashboard. The breadcrumb at the top (`Projects › Highway 6 › Van #3 ›
-front-left OS1`) is clickable, and `←  Back` goes up one level.
+equipment, open it, create a sensor (choosing its type), then open the
+sensor to reach its dashboard. The breadcrumb at the top
+(`Projects › Highway 6 › Van #3 › front-left OS1`) is clickable, and
+`←  Back` goes up one level.
 
-Without `ouster-sdk` installed the app still runs - you can build and edit
-the project tree, but anything that talks to a sensor is disabled.
+You can always build and edit the project tree; only the actions that talk
+to hardware need the matching package installed.
 
 ## Screens
 
@@ -60,10 +69,13 @@ Each level is a list with the same four actions:
 | **Delete** | Remove the entry and everything under it (from the app only - the sensors themselves are never touched) |
 
 The projects list shows how much equipment and how many sensors each
-project holds; the sensors list shows each sensor's host, model, saved
-lidar mode and when the app last talked to it.
+project holds; the sensors list shows each sensor's type, address, model,
+saved settings and when the app last talked to it.
 
-### Sensor dashboard
+Changing a sensor's type in **Edit** resets its settings to that type's
+defaults, because a lidar and a camera keep different ones.
+
+### Ouster lidar dashboard
 
 **Reading data from the sensor**
 
@@ -112,6 +124,51 @@ lidar mode and when the app last talked to it.
   file containing `foxglove.PointCloud` messages on `/ouster/points`, plus
   IMU samples on `/ouster/imu` when the source is a PCAP.
 
+### Camera dashboard
+
+The camera source is either a device index (`0`, `1`), a device path
+(`/dev/video0`) or a URL (`rtsp://user:pass@host/stream`,
+`http://host/video.mjpg`). A capture backend can be forced (`v4l2`,
+`ffmpeg`, `gstreamer`, `dshow`, `avfoundation`) when `auto` picks the
+wrong one.
+
+**Reading from the camera**
+
+* **Probe camera** - opens the camera briefly and reports the backend,
+  resolution, frame rate and pixel format without starting a preview.
+* **Pull from camera** - reads the current settings (resolution, FPS,
+  FOURCC, brightness, contrast, saturation, gain, exposure) into the form
+  and the project. Properties the backend does not expose report `-1` in
+  OpenCV and are skipped rather than saved.
+* **Start Preview** - live image in the right-hand panel. The frame number
+  and size are shown above it, plus `● REC` while recording.
+* **Snapshot** - writes the current frame to PNG/JPEG. It comes from the
+  running preview when there is one, otherwise the camera is opened just
+  for the grab.
+* **Play video file** - replays an MP4/AVI/MKV/MOV/WEBM file through the
+  same viewer, so the dashboard is usable without a camera attached.
+  Tick **Loop playback** to repeat.
+
+**Writing to the camera**
+
+* **Push to camera** - applies the form to the camera. While a preview is
+  running the settings are applied to that live capture, so you see the
+  result immediately; otherwise the camera is opened for the write.
+* **Save to project** - stores the form without opening the camera.
+
+Cameras are free to ignore a setting - a webcam that has no `1920x1080`
+mode will quietly stay at `1280x720`. After a push the app reads the
+settings back, writes what the camera actually kept into the form and the
+project, and logs every value that did not stick. Leave a box empty to
+keep whatever the camera is already using.
+
+**Recording**
+
+* **Start Recording** - writes the live frames to MP4 (`mp4v`) or AVI
+  (`MJPG`), chosen from the file extension. Recording happens inside the
+  capture thread that already owns the device, so it does not open the
+  camera a second time; if no preview is running, one is started first.
+
 ## Data file
 
 `~/.ouster_projects.json`:
@@ -136,6 +193,7 @@ lidar mode and when the app last talked to it.
             {
               "id": "a4b8c2d16e07",
               "name": "front-left OS1",
+              "kind": "ouster",
               "host": "os-992001.local",
               "model": "OS1-128",
               "last_seen": "2026-08-08 18:12",
@@ -152,6 +210,27 @@ lidar mode and when the app last talked to it.
                 "persist": false
               },
               "network": {"static_ip": "", "gateway": ""}
+            },
+            {
+              "id": "b71e3c8a04d2",
+              "name": "cabin camera",
+              "kind": "camera",
+              "host": "0",
+              "model": "Logitech C920",
+              "last_seen": "",
+              "config": {
+                "backend": "auto",
+                "fourcc": "MJPG",
+                "width": "1280",
+                "height": "720",
+                "fps": "30",
+                "brightness": "",
+                "contrast": "",
+                "saturation": "",
+                "gain": "",
+                "exposure": ""
+              },
+              "network": {"static_ip": "", "gateway": ""}
             }
           ]
         }
@@ -160,6 +239,9 @@ lidar mode and when the app last talked to it.
   ]
 }
 ```
+
+A sensor without a `kind` is read as an Ouster lidar, so files written by
+earlier versions load unchanged.
 
 The file is written atomically (via a `.tmp` file and `os.replace`), so an
 interrupted save cannot corrupt the tree. Back it up or copy it to another
@@ -172,5 +254,6 @@ project called **Imported**.
 ## Compatibility
 
 * `ouster-sdk` >= 1.0 (`ouster.sdk.core`) and < 1.0 (`ouster.sdk.client`).
+* OpenCV 4.x / 5.x (`opencv-python`, or `opencv-python-headless`).
 * Linux (developed on Ubuntu 24.04), macOS and Windows. On Windows the
   title bar is switched to dark mode where the OS supports it.

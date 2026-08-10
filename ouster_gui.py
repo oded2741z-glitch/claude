@@ -304,16 +304,41 @@ EQUIPMENT_TYPES = ["Vehicle", "Drone / UAV", "Robot / AMR", "Mast / Tripod",
 # Every sensor in the tree carries a "kind"; the dashboard is built from it.
 KIND_OUSTER = "ouster"
 KIND_CAMERA = "camera"
+KIND_ARBE = "arbe"
 KIND_LABELS = {KIND_OUSTER: "Ouster lidar",
-               KIND_CAMERA: "Camera"}
+               KIND_CAMERA: "Camera",
+               KIND_ARBE: "Arbe radar"}
 KIND_KEYS = {label: key for key, label in KIND_LABELS.items()}
 KIND_ADDRESS_LABELS = {
     KIND_OUSTER: "Hostname / IP",
     KIND_CAMERA: "Camera source",
+    KIND_ARBE: "ROS 2 node / recording",
 }
 
 CAMERA_BACKENDS = ["auto", "v4l2", "ffmpeg", "gstreamer", "dshow",
                    "avfoundation"]
+
+# --- Arbe imaging radar -----------------------------------------------------
+# Arbe's driver publishes its detections as a ROS 2 PointCloud2; the same
+# points can also come from a recording, so the dashboard is usable without
+# the radar attached.
+ARBE_SOURCES = ["ROS 2 topic", "Recording file"]
+ARBE_COLOR_BY = ["doppler", "snr", "power", "range", "height"]
+ARBE_QOS = ["best_effort", "reliable"]
+# PointCloud2 datatype enum -> numpy
+PC2_DTYPES = {1: np.int8, 2: np.uint8, 3: np.int16, 4: np.uint16,
+              5: np.int32, 6: np.uint32, 7: np.float32, 8: np.float64}
+# field names an Arbe / generic radar cloud may use for the same quantity
+RADAR_ALIASES = {
+    "x": ("x", "X"),
+    "y": ("y", "Y"),
+    "z": ("z", "Z"),
+    "doppler": ("doppler", "velocity", "radial_velocity", "vel", "v",
+                "doppler_velocity", "range_rate"),
+    "snr": ("snr", "SNR", "snr_db"),
+    "power": ("power", "intensity", "rcs", "amplitude", "magnitude"),
+    "range": ("range", "r", "distance"),
+}
 CAMERA_FOURCCS = [UNCHANGED, "MJPG", "YUYV", "H264", "GREY", "RGB3"]
 # (config key, OpenCV property name, label) - blank in the form = don't touch
 CAMERA_PROPS = [
@@ -371,9 +396,22 @@ DEFAULT_CAMERA_CONFIG = {
     "gain": "",
     "exposure": "",
 }
+# per-radar settings
+DEFAULT_ARBE_CONFIG = {
+    "source_type": ARBE_SOURCES[0],
+    "topic": "/arbe/rviz/pointcloud",
+    "domain_id": "0",
+    "qos": ARBE_QOS[0],
+    "node": "/arbe_driver",       # ROS 2 node that owns the parameters
+    "color_by": "doppler",
+    "max_range": "150",
+    "min_snr": "",
+    "parameters": "",             # "name: value" lines, pushed with ros2 param
+}
 DEFAULT_CONFIG_BY_KIND = {
     KIND_OUSTER: DEFAULT_SENSOR_CONFIG,
     KIND_CAMERA: DEFAULT_CAMERA_CONFIG,
+    KIND_ARBE: DEFAULT_ARBE_CONFIG,
 }
 
 
@@ -403,6 +441,8 @@ class Store:
 
     def __init__(self, path: str = STORE_PATH):
         self.path = path
+        # worker threads save too (after a push / pull), so serialize writes
+        self._save_lock = threading.Lock()
         self.data = self._load()
         self._migrate_legacy()
 
@@ -429,13 +469,14 @@ class Store:
         return data
 
     def save(self):
-        tmp = self.path + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2)
-            os.replace(tmp, self.path)
-        except Exception as e:
-            print(f"Could not save {self.path}: {e}", file=sys.stderr)
+        with self._save_lock:
+            tmp = f"{self.path}.{os.getpid()}.tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, indent=2)
+                os.replace(tmp, self.path)
+            except Exception as e:
+                print(f"Could not save {self.path}: {e}", file=sys.stderr)
 
     def _migrate_legacy(self):
         """Import sensors from the v1 single-sensor settings file, once."""
@@ -1121,6 +1162,262 @@ class CameraReader(threading.Thread):
         self.out_queue.put(("camera", rgb, index, self._recording))
 
 
+def parse_pointcloud2(msg) -> dict:
+    """Decode a ROS PointCloud2 into {field name: 1-D array}.
+
+    Written against the message layout rather than the ROS Python packages,
+    so it works with rclpy messages, rosbag readers and plain stand-ins.
+    """
+    dtype = []
+    for field in msg.fields:
+        np_type = PC2_DTYPES.get(int(field.datatype))
+        if np_type is None:
+            raise ValueError(f"unsupported PointCloud2 datatype "
+                             f"{field.datatype} on field '{field.name}'")
+        count = int(getattr(field, "count", 1) or 1)
+        dtype.append((field.name, np_type, (count,) if count > 1 else ()))
+    point_step = int(msg.point_step)
+    raw = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+    n_points = len(raw) // point_step
+    raw = raw[:n_points * point_step].reshape(n_points, point_step)
+
+    out = {}
+    for (name, np_type, shape), field in zip(dtype, msg.fields):
+        width = np.dtype(np_type).itemsize * (shape[0] if shape else 1)
+        offset = int(field.offset)
+        chunk = raw[:, offset:offset + width].copy()
+        values = chunk.view(np_type)
+        out[name] = values.reshape(n_points, -1)[:, 0] if shape else \
+            values.reshape(n_points)
+    if getattr(msg, "is_bigendian", False):
+        out = {k: v.byteswap().view(v.dtype.newbyteorder())
+               for k, v in out.items()}
+    return out
+
+
+def normalize_radar_fields(fields: dict) -> dict:
+    """Map a cloud's own field names onto x/y/z/doppler/snr/power/range."""
+    lower = {str(k).lower(): np.asarray(v).reshape(-1)
+             for k, v in fields.items()}
+    out = {}
+    for key, aliases in RADAR_ALIASES.items():
+        for alias in aliases:
+            if alias.lower() in lower:
+                out[key] = lower[alias.lower()].astype(np.float64)
+                break
+    if not {"x", "y"} <= set(out):
+        raise ValueError("the point cloud has no x / y fields "
+                         f"(found: {', '.join(sorted(lower)) or 'nothing'})")
+    if "z" not in out:
+        out["z"] = np.zeros_like(out["x"])
+    if "range" not in out:
+        out["range"] = np.sqrt(out["x"] ** 2 + out["y"] ** 2 + out["z"] ** 2)
+    return out
+
+
+def radar_stats(points: dict) -> dict:
+    """Small summary of one radar frame, shown in the info panel."""
+    n = len(points.get("x", ()))
+    stats = {"points": n}
+    if not n:
+        return stats
+    stats["max_range"] = float(np.max(points["range"]))
+    for key in ("doppler", "snr", "power"):
+        if key in points and len(points[key]):
+            stats[f"{key}_min"] = float(np.min(points[key]))
+            stats[f"{key}_max"] = float(np.max(points[key]))
+    return stats
+
+
+def load_radar_recording(path: str) -> list:
+    """Read a recorded radar cloud into a list of per-frame dicts.
+
+    Supports .npz / .npy (structured), .csv / .txt (header row) and ascii
+    .pcd - the formats radar clouds are usually dumped to.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".npz":
+        with np.load(path) as data:
+            fields = {k: data[k] for k in data.files}
+    elif ext == ".npy":
+        array = np.load(path)
+        if array.dtype.names is None:
+            raise ValueError(".npy must hold a structured array with named "
+                             "columns (x, y, z, doppler ...)")
+        fields = {name: array[name] for name in array.dtype.names}
+    elif ext in (".csv", ".txt"):
+        array = np.genfromtxt(path, delimiter=",", names=True)
+        if array.dtype.names is None:
+            raise ValueError("the CSV needs a header row naming the columns")
+        fields = {name: array[name] for name in array.dtype.names}
+    elif ext == ".pcd":
+        fields = _load_ascii_pcd(path)
+    else:
+        raise ValueError(f"unsupported recording format '{ext}' "
+                         "(use .npz, .npy, .csv or .pcd)")
+
+    frame_ids = None
+    for key in list(fields):
+        if str(key).lower() in ("frame", "frame_id", "frame_index"):
+            frame_ids = np.asarray(fields.pop(key)).reshape(-1)
+            break
+    points = normalize_radar_fields(fields)
+    if frame_ids is None or len(np.unique(frame_ids)) <= 1:
+        return [points]
+    frames = []
+    for value in np.unique(frame_ids):
+        mask = frame_ids == value
+        frames.append({k: v[mask] for k, v in points.items()})
+    return frames
+
+
+def _load_ascii_pcd(path: str) -> dict:
+    """Minimal ascii PCD reader (enough for radar detection dumps)."""
+    names, rows = [], []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        in_data = False
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            if in_data:
+                rows.append([float(v) for v in line.split()])
+                continue
+            key, _, rest = line.partition(" ")
+            key = key.upper()
+            if key == "FIELDS":
+                names = rest.split()
+            elif key == "DATA":
+                if rest.strip() != "ascii":
+                    raise ValueError("only ascii .pcd files are supported")
+                in_data = True
+    if not names or not rows:
+        raise ValueError("the .pcd file has no ascii point data")
+    table = np.asarray(rows, dtype=np.float64)
+    return {name: table[:, i] for i, name in enumerate(names)
+            if i < table.shape[1]}
+
+
+class ArbeReader(threading.Thread):
+    """Background thread that feeds radar frames into a queue.
+
+    Two sources, both producing the same {x, y, z, doppler, snr, ...}
+    dict per frame:
+
+      * "ROS 2 topic"    - subscribes to the driver's PointCloud2 with
+                           rclpy (imported here, so ROS is only needed
+                           when this source is actually used)
+      * "Recording file" - replays a .npz / .npy / .csv / .pcd dump
+    """
+
+    def __init__(self, source: str, out_queue: queue.Queue, log_fn,
+                 is_file: bool = False, loop: bool = False,
+                 domain_id: str = "", qos: str = "best_effort",
+                 rate: float = 10.0):
+        super().__init__(daemon=True)
+        self.source = source
+        self.out_queue = out_queue
+        self.log = log_fn
+        self.is_file = is_file
+        self.loop = loop
+        self.domain_id = str(domain_id or "").strip()
+        self.qos = qos
+        self.rate = rate
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        try:
+            if self.is_file:
+                self._play_file()
+            else:
+                self._play_ros2()
+            self.log("Radar stream ended.")
+        except Exception as e:
+            self.out_queue.put(("error", str(e)))
+        finally:
+            self.out_queue.put(("stopped", None))
+
+    def _publish(self, points, index):
+        pending = []
+        try:
+            while True:
+                old = self.out_queue.get_nowait()
+                if old[0] != "radar":
+                    pending.append(old)
+        except queue.Empty:
+            pass
+        for ev in pending:
+            self.out_queue.put(ev)
+        self.out_queue.put(("radar", points, index, radar_stats(points)))
+
+    def _play_file(self):
+        self.log(f"Loading radar recording: {self.source} ...")
+        frames = load_radar_recording(self.source)
+        self.log(f"Loaded {len(frames)} frame(s), "
+                 f"{sum(len(f['x']) for f in frames)} points total.")
+        delay = 1.0 / self.rate if self.rate > 0 else 0.1
+        index = 0
+        while not self._stop_event.is_set():
+            for points in frames:
+                if self._stop_event.is_set():
+                    break
+                index += 1
+                self._publish(points, index)
+                time.sleep(delay)
+            if not self.loop:
+                break
+            self.log("Looping recording...")
+
+    def _play_ros2(self):
+        if self.domain_id:
+            os.environ["ROS_DOMAIN_ID"] = self.domain_id
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from rclpy.qos import (QoSProfile, QoSReliabilityPolicy,
+                                   QoSHistoryPolicy)
+            from sensor_msgs.msg import PointCloud2
+        except Exception as e:
+            raise RuntimeError(
+                "ROS 2 (rclpy + sensor_msgs) is not importable - source a "
+                f"ROS 2 environment before starting this app ({e})")
+
+        self.log(f"Subscribing to {self.source} "
+                 f"(ROS_DOMAIN_ID={self.domain_id or 'default'}, "
+                 f"{self.qos}) ...")
+        rclpy.init(args=None)
+        node = Node("sensor_fleet_manager_arbe")
+        profile = QoSProfile(
+            depth=5, history=QoSHistoryPolicy.KEEP_LAST,
+            reliability=(QoSReliabilityPolicy.BEST_EFFORT
+                         if self.qos == "best_effort"
+                         else QoSReliabilityPolicy.RELIABLE))
+        counter = {"n": 0}
+
+        def on_msg(msg):
+            try:
+                points = normalize_radar_fields(parse_pointcloud2(msg))
+            except Exception as e:
+                self.log(f"ERROR decoding PointCloud2: {e}")
+                return
+            counter["n"] += 1
+            self._publish(points, counter["n"])
+
+        node.create_subscription(PointCloud2, self.source, on_msg, profile)
+        try:
+            while not self._stop_event.is_set():
+                rclpy.spin_once(node, timeout_sec=0.1)
+        finally:
+            node.destroy_node()
+            try:
+                rclpy.shutdown()
+            except Exception:
+                pass
+
+
 def enable_dark_title_bar(root: tk.Tk):
     """Ask Windows to draw this window's title bar dark (no-op elsewhere;
     on Linux the title bar color follows the desktop theme).
@@ -1198,6 +1495,12 @@ class OusterGuiApp:
         self.cfg_vars = {}
         self.cam_ax = None
         self.cam_artist = None
+        self.radar_ax = None
+        self.radar_scatter = None
+        self.radar_colorbar = None
+        self.last_radar = None
+        self.last_radar_index = 0
+        self.param_text = None
 
         self._build_shell()
         self._poll_queue()
@@ -1286,6 +1589,11 @@ class OusterGuiApp:
         self.cfg_vars = {}
         self.cam_ax = None
         self.cam_artist = None
+        self.radar_ax = None
+        self.radar_scatter = None
+        self.radar_colorbar = None
+        self.last_radar = None
+        self.param_text = None
         for child in self.body.winfo_children():
             child.destroy()
 
@@ -1549,6 +1857,10 @@ class OusterGuiApp:
                                                cfg.get("height")) if v)
                 if cfg.get("fps"):
                     summary += f" @ {cfg['fps']} fps"
+            elif sensor["kind"] == KIND_ARBE:
+                summary = (cfg.get("topic", "")
+                           if cfg.get("source_type") == ARBE_SOURCES[0]
+                           else "recording")
             else:
                 summary = cfg.get("lidar_mode", "")
             rows.append((sensor, {
@@ -1587,7 +1899,9 @@ class OusterGuiApp:
          "hint": "e.g. 'front-left OS1' or 'cabin camera'"},
         {"key": "host", "label": "Address / source", "required": True,
          "hint": "Ouster: os-122xxxxxxxxxx.local or 192.168.1.50  ·  "
-                 "camera: 0 for the first USB camera, or an RTSP / HTTP URL"},
+                 "camera: 0 for the first USB camera, or an RTSP / HTTP URL"
+                 "  ·  Arbe radar: the path of a recording (the ROS 2 topic "
+                 "is set on the dashboard)"},
         {"key": "model", "label": "Model / product line",
          "hint": "optional, e.g. OS1-128 (filled in automatically after "
                  "the first connection to an Ouster sensor)"},
@@ -1713,6 +2027,12 @@ class OusterGuiApp:
             self._build_camera_stream_panel(left)
             self._build_log_panel(left)
             self._build_camera_viz_panel(right)
+        elif self.sensor_kind() == KIND_ARBE:
+            self._build_arbe_connection_panel(left)
+            self._build_arbe_config_panel(left)
+            self._build_arbe_stream_panel(left)
+            self._build_log_panel(left)
+            self._build_arbe_viz_panel(right)
         else:
             self._build_connection_panel(left)
             self._build_config_panel(left)
@@ -2050,6 +2370,495 @@ class OusterGuiApp:
         self._style_axis(self.cam_ax, "No image yet")
         self.cam_artist = None
         self.canvas.draw_idle()
+
+    # ----------------------------------------------------- arbe dashboard --
+    def _build_arbe_connection_panel(self, parent):
+        cfg_values = self.sensor["config"]
+        conn = ttk.LabelFrame(parent, text="  RADAR CONNECTION  ", padding=10)
+        conn.pack(fill=tk.X, pady=4)
+
+        ttk.Label(conn, text="Data source:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["source_type"] = tk.StringVar(
+            value=str(cfg_values.get("source_type", ARBE_SOURCES[0])))
+        ttk.Combobox(conn, textvariable=self.cfg_vars["source_type"],
+                     values=ARBE_SOURCES,
+                     state="readonly").pack(fill=tk.X, pady=3)
+
+        ttk.Label(conn, text="PointCloud2 topic:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["topic"] = tk.StringVar(
+            value=str(cfg_values.get("topic", "")))
+        ttk.Entry(conn, textvariable=self.cfg_vars["topic"]).pack(fill=tk.X,
+                                                                  pady=3)
+        ttk.Label(conn, text="e.g. /arbe/rviz/pointcloud - the topic the "
+                             "Arbe driver publishes detections on",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W)
+
+        row = ttk.Frame(conn, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Label(row, text="ROS_DOMAIN_ID:",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky=tk.W,
+                                             pady=1)
+        self.cfg_vars["domain_id"] = tk.StringVar(
+            value=str(cfg_values.get("domain_id", "0")))
+        ttk.Entry(row, textvariable=self.cfg_vars["domain_id"],
+                  width=8).grid(row=0, column=1, padx=6, pady=1)
+        ttk.Label(row, text="QoS:",
+                  style="Muted.TLabel").grid(row=1, column=0, sticky=tk.W,
+                                             pady=1)
+        self.cfg_vars["qos"] = tk.StringVar(
+            value=str(cfg_values.get("qos", ARBE_QOS[0])))
+        ttk.Combobox(row, textvariable=self.cfg_vars["qos"], values=ARBE_QOS,
+                     state="readonly", width=12).grid(row=1, column=1, padx=6,
+                                                      pady=1)
+
+        ttk.Label(conn, text="Driver node (for parameters):",
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(6, 0))
+        self.cfg_vars["node"] = tk.StringVar(
+            value=str(cfg_values.get("node", "")))
+        ttk.Entry(conn, textvariable=self.cfg_vars["node"]).pack(fill=tk.X,
+                                                                 pady=3)
+        # the sensor's address field doubles as the recording path
+        self.host_var = tk.StringVar(value=self.sensor.get("host", ""))
+        ttk.Label(conn, text="Recording file (used by the 'Recording file' "
+                             "source):", style="Muted.TLabel").pack(
+            anchor=tk.W, pady=(6, 0))
+        ttk.Entry(conn, textvariable=self.host_var).pack(fill=tk.X, pady=3)
+        ttk.Button(conn, text="Browse recording...",
+                   command=self.on_browse_radar_file).pack(fill=tk.X, pady=2)
+        ttk.Button(conn, text="Save connection to project",
+                   command=lambda: self.on_save_arbe_config(True)).pack(
+            fill=tk.X, pady=(2, 0))
+
+    def _build_arbe_config_panel(self, parent):
+        cfg_values = self.sensor["config"]
+        cfg = ttk.LabelFrame(parent, text="  RADAR PARAMETERS  ", padding=10)
+        cfg.pack(fill=tk.X, pady=4)
+        ttk.Label(cfg, text="One 'name: value' per line. Pull reads them "
+                            "from the driver with 'ros2 param dump', push "
+                            "writes each one with 'ros2 param set'.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 4))
+        self.param_text = scrolledtext.ScrolledText(
+            cfg, height=7, font=("monospace", 9), wrap=tk.NONE,
+            bg=Theme.FIELD, fg=Theme.FG, insertbackground=Theme.FG,
+            relief=tk.FLAT, borderwidth=0, highlightthickness=1,
+            highlightbackground=Theme.BORDER)
+        self.param_text.pack(fill=tk.X)
+        self.param_text.insert("1.0", str(cfg_values.get("parameters", "")))
+        ttk.Button(cfg, text="⤓  Pull from radar",
+                   command=self.on_pull_arbe).pack(fill=tk.X, pady=(8, 3))
+        ttk.Button(cfg, text="⤒  Push to radar", style="Accent.TButton",
+                   command=self.on_push_arbe).pack(fill=tk.X, pady=3)
+        ttk.Button(cfg, text="Save to project (no radar access)",
+                   command=lambda: self.on_save_arbe_config(True)).pack(
+            fill=tk.X, pady=3)
+
+        view = ttk.LabelFrame(parent, text="  VIEW  ", padding=10)
+        view.pack(fill=tk.X, pady=4)
+        ttk.Label(view, text="Colour points by:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["color_by"] = tk.StringVar(
+            value=str(cfg_values.get("color_by", "doppler")))
+        box = ttk.Combobox(view, textvariable=self.cfg_vars["color_by"],
+                           values=ARBE_COLOR_BY, state="readonly")
+        box.pack(fill=tk.X, pady=3)
+        box.bind("<<ComboboxSelected>>", lambda e: self._redraw_radar())
+        grid = ttk.Frame(view, style="Panel.TFrame")
+        grid.pack(fill=tk.X, pady=3)
+        ttk.Label(grid, text="Max range [m]:",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky=tk.W,
+                                             pady=1)
+        self.cfg_vars["max_range"] = tk.StringVar(
+            value=str(cfg_values.get("max_range", "150")))
+        ttk.Entry(grid, textvariable=self.cfg_vars["max_range"],
+                  width=8).grid(row=0, column=1, padx=6, pady=1)
+        ttk.Label(grid, text="Min SNR:",
+                  style="Muted.TLabel").grid(row=1, column=0, sticky=tk.W,
+                                             pady=1)
+        self.cfg_vars["min_snr"] = tk.StringVar(
+            value=str(cfg_values.get("min_snr", "")))
+        ttk.Entry(grid, textvariable=self.cfg_vars["min_snr"],
+                  width=8).grid(row=1, column=1, padx=6, pady=1)
+        ttk.Button(view, text="Apply view",
+                   command=self._redraw_radar).pack(fill=tk.X, pady=(6, 0))
+
+    def _build_arbe_stream_panel(self, parent):
+        live = ttk.LabelFrame(parent, text="  LIVE RADAR  ", padding=10)
+        live.pack(fill=tk.X, pady=4)
+        self.start_btn = ttk.Button(live, text="▶  Start Stream",
+                                    style="Accent.TButton",
+                                    command=self.on_start_radar)
+        self.start_btn.pack(fill=tk.X, pady=3)
+        self.stop_btn = ttk.Button(live, text="■  Stop Stream",
+                                   command=self.on_stop_stream,
+                                   state=tk.DISABLED)
+        self.stop_btn.pack(fill=tk.X, pady=3)
+        ttk.Button(live, text="Save current frame (.csv)...",
+                   command=self.on_save_radar_frame).pack(fill=tk.X, pady=3)
+        ttk.Button(live, text="List ROS 2 topics",
+                   command=self.on_list_ros_topics).pack(fill=tk.X, pady=3)
+        self.loop_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(live, text="Loop playback (repeat)",
+                        variable=self.loop_var,
+                        style="TCheckbutton").pack(anchor=tk.W, pady=(2, 0))
+
+    def _build_arbe_viz_panel(self, parent):
+        sensor = self.sensor
+        info = ttk.LabelFrame(parent, text="  RADAR FRAME  ", padding=8)
+        info.pack(fill=tk.X)
+        self.info_var = tk.StringVar(
+            value=f"{sensor.get('name', '')}  ·  "
+                  f"{sensor['config'].get('topic', '')}\n"
+                  "Not streaming - use 'Start Stream'.")
+        ttk.Label(info, textvariable=self.info_var, style="Info.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+
+        viz = ttk.LabelFrame(parent, text="  DETECTIONS (BIRD'S-EYE VIEW)  ",
+                             padding=6)
+        viz.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.fig = Figure(figsize=(8, 6), dpi=90, tight_layout=True,
+                          facecolor=Theme.PANEL)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=viz)
+        widget = self.canvas.get_tk_widget()
+        widget.configure(bg=Theme.PANEL, highlightthickness=0)
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.radar_ax = self.fig.add_subplot(111)
+        self.radar_scatter = None
+        self.radar_colorbar = None
+        self.last_radar = None
+        self._style_radar_axis()
+        self.canvas.draw_idle()
+
+    def _style_radar_axis(self):
+        ax = self.radar_ax
+        ax.set_facecolor(Theme.BG)
+        ax.tick_params(colors=Theme.MUTED, labelsize=8)
+        ax.set_xlabel("lateral y [m]", color=Theme.MUTED, fontsize=8)
+        ax.set_ylabel("forward x [m]", color=Theme.MUTED, fontsize=8)
+        ax.grid(True, color=Theme.BORDER, linewidth=0.5, alpha=0.6)
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+
+    # ------------------------------------------------------- arbe actions ---
+    def _collect_arbe_config(self):
+        values = {key: var.get().strip()
+                  for key, var in self.cfg_vars.items()}
+        if getattr(self, "param_text", None) is not None:
+            values["parameters"] = self.param_text.get("1.0", tk.END).strip()
+        for key, label in (("max_range", "Max range"), ("min_snr", "Min SNR"),
+                           ("domain_id", "ROS_DOMAIN_ID")):
+            text = values.get(key, "")
+            if not text:
+                continue
+            try:
+                float(text)
+            except ValueError:
+                messagebox.showerror("Invalid value",
+                                     f"'{label}' must be a number, or empty.")
+                return None
+        return values
+
+    def on_save_arbe_config(self, announce=False):
+        values = self._collect_arbe_config()
+        if values is None:
+            return None
+        self.sensor["config"].update(values)
+        self.sensor["host"] = self.host_var.get().strip()
+        self.store.save()
+        if announce:
+            self.log(f"Radar settings saved to project for "
+                     f"'{self.sensor.get('name')}' (radar not contacted).")
+        return values
+
+    def on_browse_radar_file(self):
+        path = filedialog.askopenfilename(
+            title="Open radar recording",
+            filetypes=[("Radar clouds", "*.npz *.npy *.csv *.pcd *.txt"),
+                       ("All files", "*")])
+        if path:
+            self.host_var.set(path)
+            self.cfg_vars["source_type"].set("Recording file")
+            self.on_save_arbe_config()
+
+    def on_start_radar(self):
+        if self.reader is not None:
+            self.log("Radar stream already running.")
+            return
+        values = self.on_save_arbe_config()
+        if values is None:
+            return
+        is_file = values["source_type"] == "Recording file"
+        source = self.host_var.get().strip() if is_file else values["topic"]
+        if not source:
+            messagebox.showerror(
+                "Start stream",
+                "Pick a recording file." if is_file
+                else "Enter the PointCloud2 topic to subscribe to.")
+            return
+        self.reader = ArbeReader(source, self.frame_queue, self.log,
+                                 is_file=is_file,
+                                 loop=is_file and self.loop_var.get(),
+                                 domain_id=values.get("domain_id", ""),
+                                 qos=values.get("qos", "best_effort"))
+        self.reader.start()
+        self.start_btn.configure(state=tk.DISABLED)
+        self.stop_btn.configure(state=tk.NORMAL)
+
+    def _ros2(self, *args, domain="", timeout=15):
+        """Run a ros2 CLI command; returns (ok, output).
+
+        Called from worker threads, so the domain id is passed in rather
+        than read off a Tk variable here.
+        """
+        env = dict(os.environ)
+        if str(domain).strip():
+            env["ROS_DOMAIN_ID"] = str(domain).strip()
+        try:
+            done = subprocess.run(["ros2", *args], capture_output=True,
+                                  text=True, timeout=timeout, env=env)
+        except FileNotFoundError:
+            return False, ("the 'ros2' command is not on PATH - source a "
+                           "ROS 2 environment before starting this app")
+        except subprocess.TimeoutExpired:
+            return False, f"'ros2 {' '.join(args)}' timed out"
+        if done.returncode != 0:
+            return False, (done.stderr or done.stdout or "").strip()
+        return True, done.stdout
+
+    def on_list_ros_topics(self):
+        self.log("Listing ROS 2 topics ...")
+        domain = self.cfg_vars["domain_id"].get().strip()
+
+        def work():
+            ok, out = self._ros2("topic", "list", domain=domain)
+            if not ok:
+                self.log(f"ERROR listing topics: {out}")
+                return
+            topics = [t for t in out.splitlines() if t.strip()]
+            self.log(f"{len(topics)} topic(s): " + ", ".join(topics[:40]))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_pull_arbe(self):
+        """Read the driver's parameters with 'ros2 param dump'."""
+        values = self.on_save_arbe_config()
+        if values is None:
+            return
+        node = values.get("node", "").strip()
+        if not node:
+            messagebox.showerror("Pull from radar",
+                                 "Enter the driver's ROS 2 node name, "
+                                 "e.g. /arbe_driver.")
+            return
+        self.log(f"Reading parameters from {node} ...")
+        domain = values.get("domain_id", "")
+
+        def work():
+            ok, out = self._ros2("param", "dump", node, domain=domain)
+            if not ok:
+                self.log(f"ERROR reading parameters: {out}")
+                return
+            lines = [ln.rstrip() for ln in out.splitlines()
+                     if ln.strip() and not ln.strip().startswith("#")]
+            self.frame_queue.put(("radar_params", "\n".join(lines)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_arbe_pull(self, text: str):
+        if getattr(self, "param_text", None) is not None:
+            self.param_text.delete("1.0", tk.END)
+            self.param_text.insert("1.0", text)
+        self.sensor["config"]["parameters"] = text
+        self.sensor["last_seen"] = now_stamp()
+        self.store.save()
+        self.log(f"Parameters pulled into the project "
+                 f"({len(text.splitlines())} line(s)).")
+
+    @staticmethod
+    def parse_param_lines(text: str) -> list:
+        """'name: value' / 'name=value' lines -> [(name, value)]."""
+        out = []
+        for raw in (text or "").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or line.endswith(":"):
+                continue                      # blank, comment or YAML header
+            for sep in (":", "="):
+                name, found, value = line.partition(sep)
+                if found:
+                    name, value = name.strip(), value.strip()
+                    if name and value:
+                        out.append((name, value))
+                    break
+        return out
+
+    def on_push_arbe(self):
+        """Write each parameter to the driver with 'ros2 param set'."""
+        values = self.on_save_arbe_config()
+        if values is None:
+            return
+        node = values.get("node", "").strip()
+        params = self.parse_param_lines(values.get("parameters", ""))
+        if not node:
+            messagebox.showerror("Push to radar",
+                                 "Enter the driver's ROS 2 node name, "
+                                 "e.g. /arbe_driver.")
+            return
+        if not params:
+            messagebox.showerror("Push to radar",
+                                 "No parameters to push - add lines like\n\n"
+                                 "    framerate: 10\n    tx_power: 3")
+            return
+        listing = "\n".join(f"  {n} = {v}" for n, v in params[:20])
+        if not messagebox.askyesno(
+                "Push parameters",
+                f"Write {len(params)} parameter(s) to {node}?\n\n{listing}"
+                + ("\n  ..." if len(params) > 20 else "")):
+            return
+        self.log(f"Pushing {len(params)} parameter(s) to {node} ...")
+        domain = values.get("domain_id", "")
+
+        def work():
+            failed = 0
+            for name, value in params:
+                ok, out = self._ros2("param", "set", node, name, value,
+                                     domain=domain)
+                if ok:
+                    self.log(f"  {name} = {value}  ->  "
+                             f"{out.strip() or 'set'}")
+                else:
+                    failed += 1
+                    self.log(f"  ERROR setting {name}: {out}")
+            if failed:
+                self.log(f"{len(params) - failed} parameter(s) set, "
+                         f"{failed} failed.")
+            else:
+                self.sensor["last_seen"] = now_stamp()
+                self.store.save()
+                self.log("All parameters set.")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_save_radar_frame(self):
+        points = self.last_radar
+        if not points:
+            messagebox.showinfo("Save frame",
+                                "No radar frame has been received yet.")
+            return
+        name = "".join(c if c.isalnum() or c in "-_" else "_"
+                       for c in (self.sensor or {}).get("name", "radar"))
+        path = filedialog.asksaveasfilename(
+            title="Save current frame", defaultextension=".csv",
+            initialfile=f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+            filetypes=[("CSV", "*.csv"), ("NumPy archive", "*.npz")])
+        if not path:
+            return
+        try:
+            keys = [k for k in ("x", "y", "z", "doppler", "snr", "power",
+                                "range") if k in points]
+            if path.lower().endswith(".npz"):
+                np.savez_compressed(path, **{k: points[k] for k in keys})
+            else:
+                table = np.column_stack([points[k] for k in keys])
+                np.savetxt(path, table, delimiter=",", header=",".join(keys),
+                           comments="", fmt="%.6g")
+            self.log(f"Frame saved ({len(points['x'])} points) -> {path}")
+        except Exception as e:
+            self.log(f"ERROR saving frame: {e}")
+            messagebox.showerror("Save frame", f"Could not save:\n{e}")
+
+    def _radar_view_limits(self):
+        def number(key, default=None):
+            var = self.cfg_vars.get(key)
+            text = var.get().strip() if var is not None else ""
+            try:
+                return float(text)
+            except ValueError:
+                return default
+        return number("max_range", 150.0), number("min_snr")
+
+    def _draw_radar(self, points: dict, index: int, stats: dict):
+        if self.canvas is None or getattr(self, "radar_ax", None) is None:
+            return
+        self.last_radar = points
+        self.last_radar_index = index
+        max_range, min_snr = self._radar_view_limits()
+        color_by = self.cfg_vars["color_by"].get()
+
+        x, y = points["x"], points["y"]
+        mask = np.ones(len(x), dtype=bool)
+        if max_range:
+            mask &= points["range"] <= max_range
+        if min_snr is not None and "snr" in points:
+            mask &= points["snr"] >= min_snr
+        x, y = x[mask], y[mask]
+        values = points.get(color_by)
+        if values is None or len(values) != len(mask):
+            values = points["range"]
+            shown_by = "range"
+        else:
+            shown_by = color_by
+        values = values[mask]
+        # doppler reads as approaching / receding, so centre it on zero
+        if shown_by == "doppler" and len(values):
+            span = float(np.max(np.abs(values))) or 1.0
+            cmap, vmin, vmax = "coolwarm", -span, span
+        else:
+            cmap, vmin, vmax = "viridis", None, None
+
+        self.radar_ax.clear()
+        self._style_radar_axis()
+        self.radar_scatter = self.radar_ax.scatter(
+            y, x, c=values, s=6, cmap=cmap, vmin=vmin, vmax=vmax,
+            linewidths=0)
+        limit = max_range or 150.0
+        # keep the view no wider than it needs to be, but never past the
+        # range limit, so the scene fills the panel
+        lateral = limit
+        if len(y):
+            lateral = min(limit, max(20.0, float(np.max(np.abs(y))) * 1.15))
+        self.radar_ax.set_xlim(lateral, -lateral)     # +y is to the left
+        self.radar_ax.set_ylim(-limit * 0.05, limit)
+        self.radar_ax.set_aspect("equal", adjustable="box")
+        self.radar_ax.set_title(
+            f"Frame {index}  ·  {len(x)} of {stats.get('points', 0)} points  "
+            f"·  colour = {shown_by}",
+            fontsize=9, color=Theme.FG, loc="left")
+        if self.radar_colorbar is not None:
+            try:
+                self.radar_colorbar.remove()
+            except Exception:
+                pass
+        self.radar_colorbar = self.fig.colorbar(
+            self.radar_scatter, ax=self.radar_ax, shrink=0.85)
+        self.radar_colorbar.ax.tick_params(colors=Theme.MUTED, labelsize=7)
+        self.radar_colorbar.outline.set_edgecolor(Theme.BORDER)
+        self.canvas.draw_idle()
+        self._show_radar_stats(index, stats, len(x))
+
+    def _redraw_radar(self):
+        if self.last_radar:
+            self._draw_radar(self.last_radar,
+                             getattr(self, "last_radar_index", 0),
+                             radar_stats(self.last_radar))
+
+    def _show_radar_stats(self, index, stats, shown):
+        if self.info_var is None:
+            return
+        lines = [f"Frame        : {index}",
+                 f"Detections   : {stats.get('points', 0)} "
+                 f"({shown} shown)"]
+        if "max_range" in stats:
+            lines.append(f"Max range    : {stats['max_range']:.1f} m")
+        if "doppler_min" in stats:
+            lines.append(f"Doppler      : {stats['doppler_min']:.2f} .. "
+                         f"{stats['doppler_max']:.2f} m/s")
+        if "snr_min" in stats:
+            lines.append(f"SNR          : {stats['snr_min']:.1f} .. "
+                         f"{stats['snr_max']:.1f}")
+        self.info_var.set("\n".join(lines))
 
     # ----------------------------------------------------- camera actions ---
     def _require_cv2(self) -> bool:
@@ -3250,6 +4059,10 @@ class OusterGuiApp:
                     self._finish_camera_pull(item[1])
                 elif kind == "camera_push":
                     self._finish_camera_push(item[1], item[2])
+                elif kind == "radar":
+                    self._draw_radar(item[1], item[2], item[3])
+                elif kind == "radar_params":
+                    self._finish_arbe_pull(item[1])
                 elif kind == "metadata":
                     self._show_metadata(item[1])
                 elif kind == "error":
@@ -3287,6 +4100,8 @@ class OusterGuiApp:
             try:
                 if self.sensor_kind() == KIND_CAMERA:
                     self.on_save_camera_config()
+                elif self.sensor_kind() == KIND_ARBE:
+                    self.on_save_arbe_config()
                 else:
                     self.on_save_config()
             except Exception:

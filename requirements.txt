@@ -6,6 +6,11 @@ matplotlib
 ouster-sdk>=0.11        # "Ouster lidar" sensors
 opencv-python           # "Camera" sensors (USB / RTSP / HTTP)
 
+# "Arbe radar" sensors read a live ROS 2 PointCloud2 topic and the driver's
+# parameters. ROS 2 is not installed from PyPI - source a ROS 2 environment
+# (rclpy, sensor_msgs and the ros2 CLI) before starting the app. Radar
+# recordings (.npz / .npy / .csv / .pcd) replay without ROS.
+
 # Optional - only needed for "Export to MCAP (Foxglove)"
 # mcap
 # mcap-protobuf-support

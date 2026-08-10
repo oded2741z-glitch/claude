@@ -15,6 +15,8 @@ Project  ->  Equipment  ->  Sensor  ->  Sensor dashboard
   * **Ouster lidar** - reached by hostname or IP through `ouster-sdk`.
   * **Camera** - a USB camera (`0`, `1`, `/dev/video0`) or a network
     camera (`rtsp://...`, `http://.../video.mjpg`) through OpenCV.
+  * **Arbe radar** - the 4D imaging radar's detections, taken from its
+    ROS 2 `PointCloud2` topic or from a recorded cloud.
 
 Everything is stored locally in `~/.ouster_projects.json`, so the tree and
 all per-sensor settings survive restarts and can be copied between
@@ -30,9 +32,19 @@ pip install opencv-python
 pip install mcap mcap-protobuf-support foxglove-schemas-protobuf protobuf
 ```
 
-Both `ouster-sdk` and `opencv-python` are optional: without one of them
-the app still runs, and only the matching sensor type reports that its
-package is missing.
+Arbe radar sensors need a ROS 2 environment on `PATH` (`rclpy`,
+`sensor_msgs` and the `ros2` CLI) only for their live topic and their
+parameters - recordings replay with no ROS installed at all. Start the app
+from a shell where you have already sourced ROS 2:
+
+```bash
+source /opt/ros/humble/setup.bash    # or your distro
+python3 ouster_gui.py
+```
+
+`ouster-sdk`, `opencv-python` and ROS 2 are all optional: without one of
+them the app still runs, and only the matching sensor type reports that
+its package is missing.
 
 On Debian/Ubuntu, Tkinter comes from the system packages:
 
@@ -169,6 +181,52 @@ keep whatever the camera is already using.
   capture thread that already owns the device, so it does not open the
   camera a second time; if no preview is running, one is started first.
 
+### Arbe radar dashboard
+
+Arbe's 4D imaging radar is integrated through the interfaces its driver
+exposes on the host, not through a proprietary library:
+
+* **ROS 2 topic** - the app subscribes to the driver's `PointCloud2`
+  (default `/arbe/rviz/pointcloud`) with `rclpy`, using best-effort or
+  reliable QoS and the `ROS_DOMAIN_ID` you set. `List ROS 2 topics` runs
+  `ros2 topic list` so you can find the right one.
+* **Recording file** - replays a recorded cloud: `.npz`, structured
+  `.npy`, `.csv` with a header row, or ascii `.pcd`. A `frame` column
+  splits the file into frames and they play back in order (with optional
+  looping), so the dashboard is fully usable with no radar and no ROS.
+
+The cloud is read field by field, so whatever the driver names things,
+`x`/`y`/`z`, `doppler` (also `velocity`, `radial_velocity`, `range_rate`),
+`snr` and `power` (also `intensity`, `rcs`) are recognized, and `range` is
+computed when it is not published.
+
+**Display** - a bird's-eye view with forward `x` up the screen and lateral
+`y` across it (positive to the left, as in the vehicle frame). Points are
+coloured by doppler on a diverging map - approaching and receding are
+immediately distinguishable - or by SNR, power, range or height. **Max
+range** and **Min SNR** filter the cloud, and the panel above the plot
+reports the detection count, maximum range, and the doppler and SNR spans
+of the current frame. **Save current frame** writes the visible frame to
+`.csv` or `.npz`.
+
+**Parameters** - the radar's own settings live in the driver's ROS 2
+parameters, so the app edits them as `name: value` lines:
+
+* **Pull from radar** runs `ros2 param dump <node>` and fills the box.
+* **Push to radar** runs `ros2 param set <node> <name> <value>` for every
+  line, after a confirmation listing them, and logs each result
+  individually so a rejected parameter is visible.
+
+Both accept `name: value` and `name=value`, and skip comments and the YAML
+header lines that `ros2 param dump` emits.
+
+> The ROS 2 topic and parameter paths were written against the standard
+> ROS 2 interfaces and are exercised here with synthetic `PointCloud2`
+> messages and a stubbed `ros2` CLI; they have not been run against a
+> physical Arbe unit. If your driver publishes on a different topic or
+> names its fields differently, only the topic string and the field
+> aliases need adjusting.
+
 ## Data file
 
 `~/.ouster_projects.json`:
@@ -229,6 +287,26 @@ keep whatever the camera is already using.
                 "saturation": "",
                 "gain": "",
                 "exposure": ""
+              },
+              "network": {"static_ip": "", "gateway": ""}
+            },
+            {
+              "id": "c93f5a2b7e18",
+              "name": "front radar",
+              "kind": "arbe",
+              "host": "/data/arbe/drive-07.npz",
+              "model": "Arbe Phoenix",
+              "last_seen": "",
+              "config": {
+                "source_type": "ROS 2 topic",
+                "topic": "/arbe/rviz/pointcloud",
+                "domain_id": "0",
+                "qos": "best_effort",
+                "node": "/arbe_driver",
+                "color_by": "doppler",
+                "max_range": "150",
+                "min_snr": "",
+                "parameters": "framerate: 10\ntx_power: 3"
               },
               "network": {"static_ip": "", "gateway": ""}
             }

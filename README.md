@@ -17,6 +17,8 @@ Project  ->  Equipment  ->  Sensor  ->  Sensor dashboard
     camera (`rtsp://...`, `http://.../video.mjpg`) through OpenCV.
   * **Arbe radar** - the 4D imaging radar's detections, taken from its
     ROS 2 `PointCloud2` topic or from a recorded cloud.
+  * **Inertial (IMU / INS)** - a serial unit streaming ASCII lines, a
+    ROS 2 `sensor_msgs/Imu` topic, or a recorded log.
 
 Everything is stored locally in `~/.ouster_projects.json`, so the tree and
 all per-sensor settings survive restarts and can be copied between
@@ -28,6 +30,8 @@ machines.
 pip install ouster-sdk numpy matplotlib
 # for camera sensors:
 pip install opencv-python
+# for serial inertial sensors:
+pip install pyserial
 # optional, only for "Export to MCAP":
 pip install mcap mcap-protobuf-support foxglove-schemas-protobuf protobuf
 ```
@@ -42,9 +46,16 @@ source /opt/ros/humble/setup.bash    # or your distro
 python3 ouster_gui.py
 ```
 
-`ouster-sdk`, `opencv-python` and ROS 2 are all optional: without one of
-them the app still runs, and only the matching sensor type reports that
-its package is missing.
+`ouster-sdk`, `opencv-python`, `pyserial` and ROS 2 are all optional:
+without one of them the app still runs, and only the matching sensor type
+reports that its package is missing.
+
+On Linux, reading a serial IMU usually needs your user in the `dialout`
+group:
+
+```bash
+sudo usermod -aG dialout "$USER"   # log out and back in
+```
 
 On Debian/Ubuntu, Tkinter comes from the system packages:
 
@@ -227,6 +238,53 @@ header lines that `ros2 param dump` emits.
 > names its fields differently, only the topic string and the field
 > aliases need adjusting.
 
+### Inertial (IMU / INS) dashboard
+
+Three sources, all producing the same sample:
+
+* **Serial port** - `/dev/ttyUSB0`, `COM4` and friends, at any of the
+  usual baud rates. Units stream ASCII lines, so a **column layout** says
+  what each column is: `t,ax,ay,az,gx,gy,gz`, using any of `t`, `ax`,
+  `ay`, `az`, `gx`, `gy`, `gz`, `mx`, `my`, `mz`, `roll`, `pitch`, `yaw`,
+  and `-` to skip a column. Plain CSV, whitespace-separated output and
+  NMEA-style sentences (`$VNYMR,...*6A` - talker word and checksum
+  dropped) all parse; lines that are not numeric data are skipped and
+  reported in the log.
+* **ROS 2 topic** - a `sensor_msgs/Imu` topic. Angular rates are converted
+  from rad/s to deg/s and the orientation quaternion to roll/pitch/yaw, so
+  it plots on the same axes as a serial unit.
+* **Recording file** - a `.csv` with a header row or a `.npz`, replayed at
+  the rate its `t` column implies, with optional looping.
+
+**Display** - stacked traces for acceleration, angular rate, orientation
+and magnetometer. Only the groups the device actually sends are drawn, and
+a group appears as soon as its first sample arrives. **Samples shown** sets
+the window length. The panel above lists the sample count, the measured
+rate in Hz and the latest value of every field.
+
+**Reading**
+
+* **Pull from device** - on a serial port, listens for two seconds, prints
+  the first raw lines to the log and *suggests a column layout* from the
+  number of numeric columns, filling the layout box. On ROS 2, it runs
+  `ros2 param dump` like the radar dashboard. Check a guessed layout
+  against the device's manual before trusting the plots.
+* **List serial ports** - enumerates the ports pyserial can see, with
+  their descriptions.
+* **Start Recording** - appends samples to a CSV as they arrive, with a
+  header naming the columns the device sends.
+
+**Writing**
+
+* **Push to device** - on a serial port, writes each command line to the
+  port with the configured line ending (CRLF/LF/CR/none) and logs the
+  device's reply, so a rejected command is visible - e.g. VectorNav's
+  `$VNWRG,07,100`. On ROS 2, each `name: value` line goes through
+  `ros2 param set`.
+
+The port can only be open once, so pull and push ask you to stop the
+stream first rather than fighting the reader for the device.
+
 ## Data file
 
 `~/.ouster_projects.json`:
@@ -307,6 +365,28 @@ header lines that `ros2 param dump` emits.
                 "max_range": "150",
                 "min_snr": "",
                 "parameters": "framerate: 10\ntx_power: 3"
+              },
+              "network": {"static_ip": "", "gateway": ""}
+            },
+            {
+              "id": "d05c8e1f6a34",
+              "name": "nav IMU",
+              "kind": "imu",
+              "host": "/dev/ttyUSB0",
+              "model": "VectorNav VN-100",
+              "last_seen": "",
+              "config": {
+                "source_type": "Serial port",
+                "port": "/dev/ttyUSB0",
+                "baud": "115200",
+                "line_ending": "CRLF",
+                "layout": "t,ax,ay,az,gx,gy,gz",
+                "topic": "/imu/data",
+                "domain_id": "0",
+                "qos": "best_effort",
+                "node": "/imu_driver",
+                "commands": "$VNWRG,07,100",
+                "window": "600"
               },
               "network": {"static_ip": "", "gateway": ""}
             }

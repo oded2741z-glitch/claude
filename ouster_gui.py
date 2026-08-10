@@ -9,10 +9,14 @@ hierarchy and lets you talk to each one:
 
   * Projects    - a site, a customer, a research program ...
   * Equipment   - the vehicle / mast / robot the sensors are mounted on
-  * Sensors     - one entry per physical device, of one of two types:
+  * Sensors     - one entry per physical device, of one of four types:
                     - Ouster lidar, reached by hostname / IP (ouster-sdk)
                     - Camera: USB (0, /dev/video0) or network
                       (rtsp://..., http://.../video.mjpg), through OpenCV
+                    - Arbe imaging radar: a ROS 2 PointCloud2 topic or a
+                      recorded cloud
+                    - Inertial (IMU / INS): an ASCII serial unit, a ROS 2
+                      sensor_msgs/Imu topic, or a recorded log
 
 Everything is stored locally in ~/.ouster_projects.json, so the tree, the
 per-sensor configuration and the per-sensor network settings survive
@@ -41,15 +45,21 @@ From a camera's dashboard you can:
     capture when a preview is open, and read back what the camera kept.
   * Record the live image to MP4 / AVI.
 
+From a radar's or an inertial sensor's dashboard you can read its live
+data (point cloud / acceleration, rate and orientation traces), record it,
+replay recordings, and write settings back - ROS 2 parameters for the
+radar, ROS parameters or serial commands for the inertial unit.
+
 Tested with ouster-sdk 1.0.0 (also compatible with the older
-`ouster.sdk.client` API < 1.0) and OpenCV 4.x / 5.x. Both packages are
-optional; only the matching sensor type needs them.
+`ouster.sdk.client` API < 1.0), OpenCV 4.x / 5.x and pyserial 3.5. Every
+backend is optional; only the matching sensor type needs it.
 
 Run:  python3 ouster_gui.py
 """
 
 import copy
 import json
+import math
 import os
 import queue
 import subprocess
@@ -64,7 +74,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.1.0"
+__version__ = "2.3.0"
 
 import numpy as np
 
@@ -120,6 +130,16 @@ try:
     HAVE_MCAP = True
 except Exception:
     HAVE_MCAP = False
+
+# --- pyserial (optional: only needed for serial IMU / INS sensors) -----------
+try:
+    import serial as pyserial
+    HAVE_SERIAL = True
+    SERIAL_IMPORT_ERROR = None
+except Exception as _e:
+    pyserial = None
+    HAVE_SERIAL = False
+    SERIAL_IMPORT_ERROR = _e
 
 # --- OpenCV (optional: only needed for the camera sensors) -------------------
 try:
@@ -305,14 +325,17 @@ EQUIPMENT_TYPES = ["Vehicle", "Drone / UAV", "Robot / AMR", "Mast / Tripod",
 KIND_OUSTER = "ouster"
 KIND_CAMERA = "camera"
 KIND_ARBE = "arbe"
+KIND_IMU = "imu"
 KIND_LABELS = {KIND_OUSTER: "Ouster lidar",
                KIND_CAMERA: "Camera",
-               KIND_ARBE: "Arbe radar"}
+               KIND_ARBE: "Arbe radar",
+               KIND_IMU: "Inertial (IMU / INS)"}
 KIND_KEYS = {label: key for key, label in KIND_LABELS.items()}
 KIND_ADDRESS_LABELS = {
     KIND_OUSTER: "Hostname / IP",
     KIND_CAMERA: "Camera source",
     KIND_ARBE: "ROS 2 node / recording",
+    KIND_IMU: "Serial port / recording",
 }
 
 CAMERA_BACKENDS = ["auto", "v4l2", "ffmpeg", "gstreamer", "dshow",
@@ -351,6 +374,27 @@ CAMERA_PROPS = [
     ("gain", "CAP_PROP_GAIN", "Gain"),
     ("exposure", "CAP_PROP_EXPOSURE", "Exposure"),
 ]
+
+# --- inertial sensors (IMU / INS) -------------------------------------------
+# Serial units stream ASCII lines; the layout says which column is what, so
+# one dashboard covers NMEA-style and plain CSV output alike.
+IMU_SOURCES = ["Serial port", "ROS 2 topic", "Recording file"]
+IMU_BAUDS = ["9600", "19200", "38400", "57600", "115200", "230400",
+             "460800", "921600"]
+IMU_LINE_ENDINGS = {"CRLF": "\r\n", "LF": "\n", "CR": "\r", "none": ""}
+IMU_COLUMNS = ["t", "ax", "ay", "az", "gx", "gy", "gz",
+               "mx", "my", "mz", "roll", "pitch", "yaw"]
+# (group title, y label, the columns drawn on that axis)
+IMU_PLOT_GROUPS = [
+    ("Acceleration", "m/s²", ("ax", "ay", "az")),
+    ("Angular rate", "deg/s", ("gx", "gy", "gz")),
+    ("Orientation", "deg", ("roll", "pitch", "yaw")),
+    ("Magnetometer", "µT", ("mx", "my", "mz")),
+]
+IMU_TRACE_COLORS = {"ax": "#ff6b6b", "ay": "#51cf66", "az": "#4dabf7",
+                    "gx": "#ff6b6b", "gy": "#51cf66", "gz": "#4dabf7",
+                    "roll": "#ff6b6b", "pitch": "#51cf66", "yaw": "#4dabf7",
+                    "mx": "#ff6b6b", "my": "#51cf66", "mz": "#4dabf7"}
 
 # (field name, plot title, colormap)
 FIELD_SPECS = [
@@ -408,10 +452,25 @@ DEFAULT_ARBE_CONFIG = {
     "min_snr": "",
     "parameters": "",             # "name: value" lines, pushed with ros2 param
 }
+# per-IMU settings
+DEFAULT_IMU_CONFIG = {
+    "source_type": IMU_SOURCES[0],
+    "port": "/dev/ttyUSB0",
+    "baud": "115200",
+    "line_ending": "CRLF",
+    "layout": "t,ax,ay,az,gx,gy,gz",
+    "topic": "/imu/data",
+    "domain_id": "0",
+    "qos": "best_effort",
+    "node": "/imu_driver",
+    "commands": "",          # sent line by line on push
+    "window": "600",         # samples kept on screen
+}
 DEFAULT_CONFIG_BY_KIND = {
     KIND_OUSTER: DEFAULT_SENSOR_CONFIG,
     KIND_CAMERA: DEFAULT_CAMERA_CONFIG,
     KIND_ARBE: DEFAULT_ARBE_CONFIG,
+    KIND_IMU: DEFAULT_IMU_CONFIG,
 }
 
 
@@ -1418,6 +1477,359 @@ class ArbeReader(threading.Thread):
                 pass
 
 
+def split_imu_line(line: str) -> list:
+    """Tokenize one ASCII line from an inertial unit.
+
+    Handles plain CSV, whitespace-separated output and NMEA-style
+    sentences ("$VNYMR,+000.1,...*6A"): the talker word and the checksum
+    are dropped, so only the payload columns are left.
+    """
+    text = str(line).strip()
+    if not text:
+        return []
+    if text.startswith(("$", "#", "!")):
+        text = text[1:]
+        star = text.rfind("*")
+        if star > 0:
+            text = text[:star]
+    text = text.replace(";", ",").replace("\t", ",")
+    parts = [p for chunk in text.split(",") for p in chunk.split()]
+    if parts and not _is_number(parts[0]):
+        parts = parts[1:]           # a leading sentence / talker id
+    return parts
+
+
+def _is_number(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_imu_line(line: str, layout) -> dict:
+    """Map one line's columns onto named IMU fields, or {} if it isn't data.
+
+    `layout` is the per-device column list, e.g. "t,ax,ay,az,gx,gy,gz";
+    a "-" column is skipped.
+    """
+    if isinstance(layout, str):
+        layout = [c.strip() for c in layout.split(",")]
+    parts = split_imu_line(line)
+    if not parts:
+        return {}
+    sample = {}
+    for name, text in zip(layout, parts):
+        if not name or name == "-":
+            continue
+        if not _is_number(text):
+            return {}               # a status line, not a data line
+        sample[name] = float(text)
+    return sample if sample else {}
+
+
+def suggest_imu_layout(lines) -> str:
+    """Guess a column layout from raw lines, for the 'Pull' button."""
+    columns = [split_imu_line(ln) for ln in lines]
+    counts = [len(parts) for parts in columns
+              if parts and all(_is_number(p) for p in parts)]
+    if not counts:
+        return ""
+    width = max(set(counts), key=counts.count)
+    guess = ["t", "ax", "ay", "az", "gx", "gy", "gz",
+             "mx", "my", "mz", "roll", "pitch", "yaw"]
+    if width <= 6:                  # no timestamp column
+        guess = guess[1:]
+    return ",".join((guess[i] if i < len(guess) else "-")
+                    for i in range(width))
+
+
+def quaternion_to_euler(x, y, z, w) -> tuple:
+    """(roll, pitch, yaw) in degrees from a ROS orientation quaternion."""
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+    sinp = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
+    pitch = math.asin(sinp)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return (math.degrees(roll), math.degrees(pitch), math.degrees(yaw))
+
+
+def imu_sample_from_ros(msg) -> dict:
+    """sensor_msgs/Imu -> the same flat dict the serial parser produces."""
+    sample = {}
+    accel = getattr(msg, "linear_acceleration", None)
+    if accel is not None:
+        sample.update(ax=float(accel.x), ay=float(accel.y),
+                      az=float(accel.z))
+    gyro = getattr(msg, "angular_velocity", None)
+    if gyro is not None:            # ROS publishes rad/s, the plot is deg/s
+        sample.update(gx=math.degrees(float(gyro.x)),
+                      gy=math.degrees(float(gyro.y)),
+                      gz=math.degrees(float(gyro.z)))
+    q = getattr(msg, "orientation", None)
+    if q is not None and any((q.x, q.y, q.z, q.w)):
+        roll, pitch, yaw = quaternion_to_euler(float(q.x), float(q.y),
+                                               float(q.z), float(q.w))
+        sample.update(roll=roll, pitch=pitch, yaw=yaw)
+    stamp = getattr(getattr(msg, "header", None), "stamp", None)
+    if stamp is not None:
+        sample["t"] = (float(getattr(stamp, "sec", 0))
+                       + float(getattr(stamp, "nanosec", 0)) / 1e9)
+    return sample
+
+
+def load_imu_recording(path: str) -> list:
+    """Read a recorded IMU log into a list of sample dicts."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".npz":
+        with np.load(path) as data:
+            columns = {k: np.asarray(data[k]).reshape(-1) for k in data.files}
+    elif ext in (".csv", ".txt", ".log"):
+        array = np.genfromtxt(path, delimiter=",", names=True)
+        if array.dtype.names is None:
+            raise ValueError("the CSV needs a header row naming the columns "
+                             "(t,ax,ay,az,gx,gy,gz ...)")
+        columns = {name: np.atleast_1d(array[name])
+                   for name in array.dtype.names}
+    else:
+        raise ValueError(f"unsupported recording format '{ext}' "
+                         "(use .csv or .npz)")
+    keep = {k: v for k, v in columns.items() if k in IMU_COLUMNS}
+    if not keep:
+        raise ValueError("no IMU columns found - expected some of "
+                         + ", ".join(IMU_COLUMNS))
+    length = min(len(v) for v in keep.values())
+    return [{k: float(v[i]) for k, v in keep.items()} for i in range(length)]
+
+
+class ImuReader(threading.Thread):
+    """Background thread that feeds inertial samples into a queue.
+
+    Three sources, all producing the same flat sample dict:
+
+      * "Serial port"    - ASCII lines through pyserial, split by the
+                           device's column layout
+      * "ROS 2 topic"    - sensor_msgs/Imu through rclpy
+      * "Recording file" - a .csv / .npz log, replayed at its own rate
+    """
+
+    BATCH_SECONDS = 0.05        # publish at most 20 batches per second
+
+    def __init__(self, config: dict, out_queue: queue.Queue, log_fn,
+                 loop: bool = False):
+        super().__init__(daemon=True)
+        self.config = dict(config)
+        self.out_queue = out_queue
+        self.log = log_fn
+        self.loop = loop
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._record_request = None     # a path to start, False to stop
+        self._recording = False
+        self._batch = []
+        self._last_flush = 0.0
+        self.count = 0
+
+    def stop(self):
+        self._stop_event.set()
+
+    def start_recording(self, path: str):
+        with self._lock:
+            self._record_request = path
+
+    def stop_recording(self):
+        with self._lock:
+            self._record_request = False
+
+    @property
+    def recording(self) -> bool:
+        return self._recording
+
+    # -- publishing ----------------------------------------------------------
+    def _emit(self, sample: dict, force=False):
+        if sample:
+            self.count += 1
+            self._batch.append(sample)
+        now = time.monotonic()
+        if not self._batch:
+            return
+        if not force and now - self._last_flush < self.BATCH_SECONDS:
+            return
+        batch, self._batch = self._batch, []
+        self._last_flush = now
+        pending = []
+        try:
+            while True:
+                old = self.out_queue.get_nowait()
+                if old[0] != "imu":
+                    pending.append(old)
+                else:
+                    batch = old[1] + batch      # keep dropped samples
+        except queue.Empty:
+            pass
+        for ev in pending:
+            self.out_queue.put(ev)
+        self.out_queue.put(("imu", batch, self.count))
+
+    def _service_recording(self, sample, writer):
+        with self._lock:
+            request, self._record_request = self._record_request, None
+        if request is False and writer is not None:
+            writer[0].close()
+            self._recording = False
+            self.log("IMU recording stopped.")
+            writer = None
+        elif isinstance(request, str) and writer is None:
+            try:
+                columns = [c for c in IMU_COLUMNS if c in sample]
+                handle = open(request, "w", encoding="utf-8")
+                handle.write(",".join(columns) + "\n")
+                writer = (handle, columns)
+                self._recording = True
+                self.log(f"IMU recording started -> {request} "
+                         f"({', '.join(columns)})")
+            except Exception as e:
+                writer = None
+                self._recording = False
+                self.log(f"ERROR starting IMU recording: {e}")
+        if writer is not None:
+            handle, columns = writer
+            handle.write(",".join(f"{sample.get(c, float('nan')):.6g}"
+                                  for c in columns) + "\n")
+        return writer
+
+    # -- thread body ---------------------------------------------------------
+    def run(self):
+        writer = None
+        try:
+            source = self.config.get("source_type", IMU_SOURCES[0])
+            if source == "Serial port":
+                writer = self._play_serial()
+            elif source == "ROS 2 topic":
+                writer = self._play_ros2()
+            else:
+                writer = self._play_file()
+            self.log("IMU stream ended.")
+        except Exception as e:
+            self.out_queue.put(("error", str(e)))
+        finally:
+            self._emit({}, force=True)
+            if isinstance(writer, tuple):
+                try:
+                    writer[0].close()
+                except Exception:
+                    pass
+            self._recording = False
+            self.out_queue.put(("stopped", None))
+
+    def _play_serial(self):
+        if not HAVE_SERIAL:
+            raise RuntimeError("pyserial is not installed - "
+                               "pip install pyserial")
+        port = self.config.get("port", "")
+        baud = int(self.config.get("baud") or 115200)
+        layout = self.config.get("layout", "")
+        self.log(f"Opening {port} at {baud} baud ...")
+        writer = None
+        skipped = 0
+        with pyserial.Serial(port, baud, timeout=0.2) as link:
+            self.out_queue.put(("imu_info", {"source": port, "baud": baud,
+                                             "layout": layout}))
+            self.log("Serial port open, reading ...")
+            while not self._stop_event.is_set():
+                try:
+                    raw = link.readline().decode("ascii", "replace")
+                except Exception as e:
+                    self.log(f"ERROR reading serial: {e}")
+                    break
+                if not raw.strip():
+                    self._emit({})           # flush whatever is pending
+                    continue
+                sample = parse_imu_line(raw, layout)
+                if not sample:
+                    skipped += 1
+                    if skipped in (1, 50, 500):
+                        self.log(f"Skipping non-data line: {raw.strip()[:80]}")
+                    continue
+                writer = self._service_recording(sample, writer)
+                self._emit(sample)
+        return writer
+
+    def _play_file(self):
+        path = self.config.get("port", "")
+        self.log(f"Loading IMU recording: {path} ...")
+        samples = load_imu_recording(path)
+        self.log(f"Loaded {len(samples)} sample(s).")
+        writer = None
+        # replay at the log's own rate when it carries timestamps
+        stamps = [s["t"] for s in samples if "t" in s]
+        step = 0.01
+        if len(stamps) > 1:
+            span = stamps[-1] - stamps[0]
+            if span > 0:
+                step = min(0.1, span / (len(stamps) - 1))
+        while not self._stop_event.is_set():
+            for sample in samples:
+                if self._stop_event.is_set():
+                    break
+                writer = self._service_recording(sample, writer)
+                self._emit(sample)
+                time.sleep(step)
+            if not self.loop:
+                break
+            self.log("Looping recording...")
+        return writer
+
+    def _play_ros2(self):
+        domain = str(self.config.get("domain_id", "")).strip()
+        if domain:
+            os.environ["ROS_DOMAIN_ID"] = domain
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from rclpy.qos import (QoSProfile, QoSReliabilityPolicy,
+                                   QoSHistoryPolicy)
+            from sensor_msgs.msg import Imu
+        except Exception as e:
+            raise RuntimeError(
+                "ROS 2 (rclpy + sensor_msgs) is not importable - source a "
+                f"ROS 2 environment before starting this app ({e})")
+
+        topic = self.config.get("topic", "")
+        self.log(f"Subscribing to {topic} ...")
+        rclpy.init(args=None)
+        node = Node("sensor_fleet_manager_imu")
+        profile = QoSProfile(
+            depth=50, history=QoSHistoryPolicy.KEEP_LAST,
+            reliability=(QoSReliabilityPolicy.BEST_EFFORT
+                         if self.config.get("qos") == "best_effort"
+                         else QoSReliabilityPolicy.RELIABLE))
+        state = {"writer": None}
+
+        def on_msg(msg):
+            sample = imu_sample_from_ros(msg)
+            if not sample:
+                return
+            state["writer"] = self._service_recording(sample,
+                                                      state["writer"])
+            self._emit(sample)
+
+        node.create_subscription(Imu, topic, on_msg, profile)
+        try:
+            while not self._stop_event.is_set():
+                rclpy.spin_once(node, timeout_sec=0.1)
+        finally:
+            node.destroy_node()
+            try:
+                rclpy.shutdown()
+            except Exception:
+                pass
+        return state["writer"]
+
+
 def enable_dark_title_bar(root: tk.Tk):
     """Ask Windows to draw this window's title bar dark (no-op elsewhere;
     on Linux the title bar color follows the desktop theme).
@@ -1501,6 +1913,11 @@ class OusterGuiApp:
         self.last_radar = None
         self.last_radar_index = 0
         self.param_text = None
+        self.imu_axes = None
+        self.imu_lines = {}
+        self.imu_buffer = {}
+        self.imu_shown = ()
+        self.imu_rate = None
 
         self._build_shell()
         self._poll_queue()
@@ -1515,6 +1932,10 @@ class OusterGuiApp:
             self.log("NOTE: OpenCV is not installed "
                      f"({CV2_IMPORT_ERROR}); camera sensors are read-only. "
                      "Install it with:  pip install opencv-python")
+        if not HAVE_SERIAL:
+            self.log("NOTE: pyserial is not installed "
+                     f"({SERIAL_IMPORT_ERROR}); serial inertial sensors are "
+                     "read-only. Install it with:  pip install pyserial")
 
         self.show_projects()
 
@@ -1594,6 +2015,10 @@ class OusterGuiApp:
         self.radar_colorbar = None
         self.last_radar = None
         self.param_text = None
+        self.imu_axes = None
+        self.imu_lines = {}
+        self.imu_buffer = {}
+        self.imu_shown = ()
         for child in self.body.winfo_children():
             child.destroy()
 
@@ -1857,6 +2282,12 @@ class OusterGuiApp:
                                                cfg.get("height")) if v)
                 if cfg.get("fps"):
                     summary += f" @ {cfg['fps']} fps"
+            elif sensor["kind"] == KIND_IMU:
+                source = cfg.get("source_type", "")
+                summary = (f"{cfg.get('baud', '')} baud"
+                           if source == "Serial port" else
+                           cfg.get("topic", "") if source == "ROS 2 topic"
+                           else "recording")
             elif sensor["kind"] == KIND_ARBE:
                 summary = (cfg.get("topic", "")
                            if cfg.get("source_type") == ARBE_SOURCES[0]
@@ -1874,9 +2305,9 @@ class OusterGuiApp:
 
         self._build_list_screen(
             f"Sensors · {equipment.get('name', '')}",
-            "Ouster lidars and cameras. Open one to read data from it or "
-            "push settings to it.",
-            [("name", "Sensor", 200), ("kind", "Type", 110),
+            "Lidars, cameras, radars and inertial units. Open one to read "
+            "data from it or push settings to it.",
+            [("name", "Sensor", 190), ("kind", "Type", 145),
              ("host", "Address / source", 220),
              ("model", "Model", 130), ("mode", "Saved settings", 140),
              ("last_seen", "Last contact", 140)],
@@ -2033,6 +2464,12 @@ class OusterGuiApp:
             self._build_arbe_stream_panel(left)
             self._build_log_panel(left)
             self._build_arbe_viz_panel(right)
+        elif self.sensor_kind() == KIND_IMU:
+            self._build_imu_connection_panel(left)
+            self._build_imu_config_panel(left)
+            self._build_imu_stream_panel(left)
+            self._build_log_panel(left)
+            self._build_imu_viz_panel(right)
         else:
             self._build_connection_panel(left)
             self._build_config_panel(left)
@@ -2370,6 +2807,573 @@ class OusterGuiApp:
         self._style_axis(self.cam_ax, "No image yet")
         self.cam_artist = None
         self.canvas.draw_idle()
+
+    # ------------------------------------------------------ imu dashboard --
+    def _build_imu_connection_panel(self, parent):
+        cfg_values = self.sensor["config"]
+        conn = ttk.LabelFrame(parent, text="  INERTIAL CONNECTION  ",
+                              padding=10)
+        conn.pack(fill=tk.X, pady=4)
+
+        ttk.Label(conn, text="Data source:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["source_type"] = tk.StringVar(
+            value=str(cfg_values.get("source_type", IMU_SOURCES[0])))
+        ttk.Combobox(conn, textvariable=self.cfg_vars["source_type"],
+                     values=IMU_SOURCES,
+                     state="readonly").pack(fill=tk.X, pady=3)
+
+        ttk.Label(conn, text="Serial port / recording path:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["port"] = tk.StringVar(
+            value=str(cfg_values.get("port", "")))
+        ttk.Entry(conn, textvariable=self.cfg_vars["port"]).pack(fill=tk.X,
+                                                                 pady=3)
+        ttk.Label(conn, text="e.g. /dev/ttyUSB0, COM4, or the path of a "
+                             ".csv / .npz log",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W)
+        row = ttk.Frame(conn, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Label(row, text="Baud:",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky=tk.W)
+        self.cfg_vars["baud"] = tk.StringVar(
+            value=str(cfg_values.get("baud", "115200")))
+        ttk.Combobox(row, textvariable=self.cfg_vars["baud"],
+                     values=IMU_BAUDS, width=10).grid(row=0, column=1, padx=6)
+        ttk.Label(row, text="Line ending:",
+                  style="Muted.TLabel").grid(row=1, column=0, sticky=tk.W,
+                                             pady=(3, 0))
+        self.cfg_vars["line_ending"] = tk.StringVar(
+            value=str(cfg_values.get("line_ending", "CRLF")))
+        ttk.Combobox(row, textvariable=self.cfg_vars["line_ending"],
+                     values=list(IMU_LINE_ENDINGS), state="readonly",
+                     width=10).grid(row=1, column=1, padx=6, pady=(3, 0))
+
+        ttk.Label(conn, text="ROS 2 topic (sensor_msgs/Imu):",
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(6, 0))
+        self.cfg_vars["topic"] = tk.StringVar(
+            value=str(cfg_values.get("topic", "")))
+        ttk.Entry(conn, textvariable=self.cfg_vars["topic"]).pack(fill=tk.X,
+                                                                  pady=3)
+        ros = ttk.Frame(conn, style="Panel.TFrame")
+        ros.pack(fill=tk.X, pady=2)
+        ttk.Label(ros, text="ROS_DOMAIN_ID:",
+                  style="Muted.TLabel").grid(row=0, column=0, sticky=tk.W)
+        self.cfg_vars["domain_id"] = tk.StringVar(
+            value=str(cfg_values.get("domain_id", "0")))
+        ttk.Entry(ros, textvariable=self.cfg_vars["domain_id"],
+                  width=8).grid(row=0, column=1, padx=6)
+        ttk.Label(ros, text="QoS:",
+                  style="Muted.TLabel").grid(row=1, column=0, sticky=tk.W,
+                                             pady=(3, 0))
+        self.cfg_vars["qos"] = tk.StringVar(
+            value=str(cfg_values.get("qos", ARBE_QOS[0])))
+        ttk.Combobox(ros, textvariable=self.cfg_vars["qos"], values=ARBE_QOS,
+                     state="readonly", width=12).grid(row=1, column=1, padx=6,
+                                                      pady=(3, 0))
+        ttk.Label(conn, text="Driver node (for ROS parameters):",
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(6, 0))
+        self.cfg_vars["node"] = tk.StringVar(
+            value=str(cfg_values.get("node", "")))
+        ttk.Entry(conn, textvariable=self.cfg_vars["node"]).pack(fill=tk.X,
+                                                                 pady=3)
+        brow = ttk.Frame(conn, style="Panel.TFrame")
+        brow.pack(fill=tk.X, pady=(4, 0))
+        ttk.Button(brow, text="Browse log...",
+                   command=self.on_browse_imu_file).pack(side=tk.LEFT,
+                                                         expand=True,
+                                                         fill=tk.X,
+                                                         padx=(0, 3))
+        ttk.Button(brow, text="List serial ports",
+                   command=self.on_list_serial_ports).pack(side=tk.LEFT,
+                                                           expand=True,
+                                                           fill=tk.X,
+                                                           padx=(3, 0))
+        ttk.Button(conn, text="Save connection to project",
+                   command=lambda: self.on_save_imu_config(True)).pack(
+            fill=tk.X, pady=(4, 0))
+        # the sensor record's address mirrors the port, like the other kinds
+        self.host_var = self.cfg_vars["port"]
+
+    def _build_imu_config_panel(self, parent):
+        cfg_values = self.sensor["config"]
+        cfg = ttk.LabelFrame(parent, text="  DATA LAYOUT & COMMANDS  ",
+                             padding=10)
+        cfg.pack(fill=tk.X, pady=4)
+        ttk.Label(cfg, text="Serial column layout:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.cfg_vars["layout"] = tk.StringVar(
+            value=str(cfg_values.get("layout", "")))
+        ttk.Entry(cfg, textvariable=self.cfg_vars["layout"]).pack(fill=tk.X,
+                                                                  pady=3)
+        ttk.Label(cfg, text="comma-separated, one name per column: "
+                            + ", ".join(IMU_COLUMNS)
+                            + "  ·  use '-' to skip a column",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W)
+        ttk.Label(cfg, text="Commands sent on push (one per line):",
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(6, 0))
+        self.param_text = scrolledtext.ScrolledText(
+            cfg, height=6, font=("monospace", 9), wrap=tk.NONE,
+            bg=Theme.FIELD, fg=Theme.FG, insertbackground=Theme.FG,
+            relief=tk.FLAT, borderwidth=0, highlightthickness=1,
+            highlightbackground=Theme.BORDER)
+        self.param_text.pack(fill=tk.X, pady=3)
+        self.param_text.insert("1.0", str(cfg_values.get("commands", "")))
+        ttk.Label(cfg, text="Serial: each line is written to the port with "
+                            "the chosen line ending, and the reply is "
+                            "logged. ROS 2: each 'name: value' line is "
+                            "written with 'ros2 param set'.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W)
+        ttk.Button(cfg, text="⤓  Pull from device",
+                   command=self.on_pull_imu).pack(fill=tk.X, pady=(8, 3))
+        ttk.Button(cfg, text="⤒  Push to device", style="Accent.TButton",
+                   command=self.on_push_imu).pack(fill=tk.X, pady=3)
+        ttk.Button(cfg, text="Save to project (no device access)",
+                   command=lambda: self.on_save_imu_config(True)).pack(
+            fill=tk.X, pady=3)
+
+    def _build_imu_stream_panel(self, parent):
+        cfg_values = self.sensor["config"]
+        live = ttk.LabelFrame(parent, text="  LIVE DATA  ", padding=10)
+        live.pack(fill=tk.X, pady=4)
+        self.start_btn = ttk.Button(live, text="▶  Start Stream",
+                                    style="Accent.TButton",
+                                    command=self.on_start_imu)
+        self.start_btn.pack(fill=tk.X, pady=3)
+        self.stop_btn = ttk.Button(live, text="■  Stop Stream",
+                                   command=self.on_stop_stream,
+                                   state=tk.DISABLED)
+        self.stop_btn.pack(fill=tk.X, pady=3)
+        self.record_btn = ttk.Button(live, text="●  Start Recording",
+                                     command=self.on_toggle_imu_record)
+        self.record_btn.pack(fill=tk.X, pady=3)
+        row = ttk.Frame(live, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Label(row, text="Samples shown:",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.cfg_vars["window"] = tk.StringVar(
+            value=str(cfg_values.get("window", "600")))
+        ttk.Entry(row, textvariable=self.cfg_vars["window"],
+                  width=8).pack(side=tk.LEFT, padx=6)
+        self.loop_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(live, text="Loop playback (repeat)",
+                        variable=self.loop_var,
+                        style="TCheckbutton").pack(anchor=tk.W, pady=(2, 0))
+
+    def _build_imu_viz_panel(self, parent):
+        sensor = self.sensor
+        info = ttk.LabelFrame(parent, text="  LATEST SAMPLE  ", padding=8)
+        info.pack(fill=tk.X)
+        self.info_var = tk.StringVar(
+            value=f"{sensor.get('name', '')}  ·  "
+                  f"{sensor['config'].get('port', '')}\n"
+                  "Not streaming - use 'Start Stream'.")
+        ttk.Label(info, textvariable=self.info_var, style="Info.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+
+        viz = ttk.LabelFrame(parent, text="  INERTIAL TRACES  ", padding=6)
+        viz.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.fig = Figure(figsize=(8, 6), dpi=90, tight_layout=True,
+                          facecolor=Theme.PANEL)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=viz)
+        widget = self.canvas.get_tk_widget()
+        widget.configure(bg=Theme.PANEL, highlightthickness=0)
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.imu_axes = {}
+        self.imu_lines = {}
+        self.imu_buffer = {}
+        self.imu_shown = ()
+        self.imu_rate = None
+        ax = self.fig.add_subplot(111)
+        self._style_imu_axis(ax, "Waiting for samples", "")
+        self.canvas.draw_idle()
+
+    def _style_imu_axis(self, ax, title, ylabel):
+        ax.set_facecolor(Theme.BG)
+        ax.set_title(title, fontsize=9, color=Theme.FG, loc="left")
+        ax.set_ylabel(ylabel, color=Theme.MUTED, fontsize=8)
+        ax.tick_params(colors=Theme.MUTED, labelsize=7)
+        ax.grid(True, color=Theme.BORDER, linewidth=0.5, alpha=0.6)
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+
+    # -------------------------------------------------------- imu actions ---
+    def _require_serial(self) -> bool:
+        if not HAVE_SERIAL:
+            messagebox.showerror(
+                "pyserial missing",
+                "Serial inertial sensors need the pyserial package "
+                f"({SERIAL_IMPORT_ERROR}).\n\n"
+                "Install it with:\n    pip install pyserial")
+            return False
+        return True
+
+    def _collect_imu_config(self):
+        values = {key: var.get().strip()
+                  for key, var in self.cfg_vars.items()}
+        if getattr(self, "param_text", None) is not None:
+            values["commands"] = self.param_text.get("1.0", tk.END).strip()
+        for key, label in (("baud", "Baud"), ("window", "Samples shown"),
+                           ("domain_id", "ROS_DOMAIN_ID")):
+            text = values.get(key, "")
+            if not text:
+                continue
+            try:
+                if int(float(text)) <= 0 and key != "domain_id":
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Invalid value",
+                                     f"'{label}' must be a positive number.")
+                return None
+        layout = [c.strip() for c in values.get("layout", "").split(",")
+                  if c.strip()]
+        unknown = [c for c in layout if c not in IMU_COLUMNS and c != "-"]
+        if unknown:
+            messagebox.showerror(
+                "Invalid layout",
+                "Unknown column name(s): " + ", ".join(unknown)
+                + "\n\nUse: " + ", ".join(IMU_COLUMNS) + " or '-' to skip.")
+            return None
+        return values
+
+    def on_save_imu_config(self, announce=False):
+        values = self._collect_imu_config()
+        if values is None:
+            return None
+        self.sensor["config"].update(values)
+        self.sensor["host"] = values.get("port", "")
+        self.store.save()
+        if announce:
+            self.log(f"Inertial settings saved to project for "
+                     f"'{self.sensor.get('name')}' (device not contacted).")
+        return values
+
+    def on_browse_imu_file(self):
+        path = filedialog.askopenfilename(
+            title="Open IMU log",
+            filetypes=[("IMU logs", "*.csv *.npz *.txt *.log"),
+                       ("All files", "*")])
+        if path:
+            self.cfg_vars["port"].set(path)
+            self.cfg_vars["source_type"].set("Recording file")
+            self.on_save_imu_config()
+
+    def on_list_serial_ports(self):
+        if not self._require_serial():
+            return
+        try:
+            from serial.tools import list_ports
+            ports = list(list_ports.comports())
+        except Exception as e:
+            self.log(f"ERROR listing serial ports: {e}")
+            return
+        if not ports:
+            self.log("No serial ports found.")
+            return
+        for port in ports:
+            self.log(f"  {port.device}  -  {port.description}")
+
+    def on_start_imu(self):
+        if self.reader is not None:
+            self.log("IMU stream already running.")
+            return
+        values = self.on_save_imu_config()
+        if values is None:
+            return
+        source = values.get("source_type", IMU_SOURCES[0])
+        if source == "Serial port" and not self._require_serial():
+            return
+        if source in ("Serial port", "Recording file") and \
+                not values.get("port"):
+            messagebox.showerror("Start stream",
+                                 "Enter the serial port or the log path.")
+            return
+        if source == "ROS 2 topic" and not values.get("topic"):
+            messagebox.showerror("Start stream",
+                                 "Enter the sensor_msgs/Imu topic.")
+            return
+        self.imu_buffer = {}
+        self.imu_shown = ()
+        self.imu_rate = None
+        self.reader = ImuReader(values, self.frame_queue, self.log,
+                                loop=self.loop_var.get())
+        self.reader.start()
+        self.start_btn.configure(state=tk.DISABLED)
+        self.stop_btn.configure(state=tk.NORMAL)
+
+    def on_toggle_imu_record(self):
+        reader = self.reader if isinstance(self.reader, ImuReader) else None
+        if reader is not None and reader.recording:
+            reader.stop_recording()
+            self.record_btn.configure(text="●  Start Recording")
+            return
+        if reader is None:
+            messagebox.showinfo("Recording",
+                                "Start the stream first - samples are "
+                                "written as they arrive.")
+            return
+        name = "".join(c if c.isalnum() or c in "-_" else "_"
+                       for c in (self.sensor or {}).get("name", "imu"))
+        path = filedialog.asksaveasfilename(
+            title="Save IMU log as", defaultextension=".csv",
+            initialfile=f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+            filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        reader.start_recording(path)
+        self.record_btn.configure(text="■  Stop Recording")
+
+    def on_pull_imu(self):
+        """Serial: sample raw lines and suggest a layout.
+        ROS 2: read the driver's parameters."""
+        values = self.on_save_imu_config()
+        if values is None:
+            return
+        if values.get("source_type") == "ROS 2 topic":
+            node = values.get("node", "").strip()
+            if not node:
+                messagebox.showerror("Pull from device",
+                                     "Enter the driver's ROS 2 node name.")
+                return
+            self.log(f"Reading parameters from {node} ...")
+            domain = values.get("domain_id", "")
+
+            def ros_work():
+                ok, out = self._ros2("param", "dump", node, domain=domain)
+                if not ok:
+                    self.log(f"ERROR reading parameters: {out}")
+                    return
+                lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
+                self.frame_queue.put(("imu_params", "\n".join(lines)))
+
+            threading.Thread(target=ros_work, daemon=True).start()
+            return
+
+        if not self._require_serial():
+            return
+        if self.reader is not None:
+            messagebox.showinfo("Pull from device",
+                                "Stop the stream first - the port can only "
+                                "be open once.")
+            return
+        port = values.get("port", "")
+        baud = int(values.get("baud") or 115200)
+        self.log(f"Listening to {port} for a couple of seconds ...")
+
+        def work():
+            lines = []
+            try:
+                with pyserial.Serial(port, baud, timeout=0.3) as link:
+                    deadline = time.time() + 2.0
+                    while time.time() < deadline and len(lines) < 40:
+                        raw = link.readline().decode("ascii", "replace")
+                        if raw.strip():
+                            lines.append(raw.strip())
+            except Exception as e:
+                self.log(f"ERROR reading from {port}: {e}")
+                return
+            if not lines:
+                self.log("No data received - check the baud rate and wiring.")
+                return
+            for raw in lines[:5]:
+                self.log(f"  {raw[:100]}")
+            suggestion = suggest_imu_layout(lines)
+            self.log(f"{len(lines)} line(s) read"
+                     + (f"; suggested layout: {suggestion}"
+                        if suggestion else "; could not guess a layout"))
+            if suggestion:
+                self.frame_queue.put(("imu_layout", suggestion))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_imu_pull(self, kind: str, text: str):
+        if kind == "layout":
+            self.cfg_vars["layout"].set(text)
+            self.sensor["config"]["layout"] = text
+            self.log(f"Layout set to '{text}' - check it against the "
+                     "device's manual before trusting the plots.")
+        else:
+            if getattr(self, "param_text", None) is not None:
+                self.param_text.delete("1.0", tk.END)
+                self.param_text.insert("1.0", text)
+            self.sensor["config"]["commands"] = text
+            self.log(f"Parameters pulled into the project "
+                     f"({len(text.splitlines())} line(s)).")
+        self.sensor["last_seen"] = now_stamp()
+        self.store.save()
+
+    def on_push_imu(self):
+        """Serial: write the command lines to the port.
+        ROS 2: 'ros2 param set' per line."""
+        values = self.on_save_imu_config()
+        if values is None:
+            return
+        commands = [ln.strip() for ln in
+                    values.get("commands", "").splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")]
+        if not commands:
+            messagebox.showerror("Push to device",
+                                 "No commands to send - add one per line.")
+            return
+
+        if values.get("source_type") == "ROS 2 topic":
+            node = values.get("node", "").strip()
+            params = self.parse_param_lines(values.get("commands", ""))
+            if not node or not params:
+                messagebox.showerror(
+                    "Push to device",
+                    "Enter the driver's ROS 2 node name and 'name: value' "
+                    "lines.")
+                return
+            if not messagebox.askyesno(
+                    "Push parameters",
+                    f"Write {len(params)} parameter(s) to {node}?\n\n"
+                    + "\n".join(f"  {n} = {v}" for n, v in params[:20])):
+                return
+            domain = values.get("domain_id", "")
+
+            def ros_work():
+                for name, value in params:
+                    ok, out = self._ros2("param", "set", node, name, value,
+                                         domain=domain)
+                    self.log(f"  {name} = {value}  ->  "
+                             + (out.strip() or "set" if ok
+                                else f"ERROR: {out}"))
+
+            self.log(f"Pushing {len(params)} parameter(s) to {node} ...")
+            threading.Thread(target=ros_work, daemon=True).start()
+            return
+
+        if not self._require_serial():
+            return
+        if self.reader is not None:
+            messagebox.showinfo("Push to device",
+                                "Stop the stream first - the port can only "
+                                "be open once.")
+            return
+        port = values.get("port", "")
+        baud = int(values.get("baud") or 115200)
+        ending = IMU_LINE_ENDINGS.get(values.get("line_ending", "CRLF"),
+                                      "\r\n")
+        if not messagebox.askyesno(
+                "Push commands",
+                f"Send {len(commands)} command(s) to {port} at {baud} baud?"
+                "\n\n" + "\n".join(f"  {c}" for c in commands[:20])
+                + ("\n  ..." if len(commands) > 20 else "")):
+            return
+        self.log(f"Sending {len(commands)} command(s) to {port} ...")
+
+        def work():
+            try:
+                with pyserial.Serial(port, baud, timeout=0.5) as link:
+                    for command in commands:
+                        link.write((command + ending).encode("ascii",
+                                                             "replace"))
+                        link.flush()
+                        time.sleep(0.15)
+                        reply = link.readline().decode("ascii",
+                                                       "replace").strip()
+                        self.log(f"  {command}  ->  "
+                                 + (reply[:100] if reply else "(no reply)"))
+                self.sensor["last_seen"] = now_stamp()
+                self.store.save()
+                self.log("All commands sent.")
+            except Exception as e:
+                self.log(f"ERROR sending commands: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # -------------------------------------------------------- imu drawing ---
+    def _imu_window(self) -> int:
+        var = self.cfg_vars.get("window")
+        try:
+            return max(20, int(float(var.get())))
+        except (AttributeError, ValueError):
+            return 600
+
+    def _draw_imu(self, samples: list, total: int):
+        if self.canvas is None or self.imu_axes is None:
+            return
+        window = self._imu_window()
+        for sample in samples:
+            for key, value in sample.items():
+                buffer = self.imu_buffer.get(key)
+                if buffer is None or buffer.maxlen != window:
+                    buffer = deque(buffer or (), maxlen=window)
+                    self.imu_buffer[key] = buffer
+                buffer.append(value)
+
+        groups = [g for g in IMU_PLOT_GROUPS
+                  if any(c in self.imu_buffer for c in g[2])]
+        shown = tuple(g[0] for g in groups)
+        if not groups:
+            return
+        if shown != self.imu_shown:
+            self._build_imu_axes(groups)
+            self.imu_shown = shown
+
+        times = list(self.imu_buffer.get("t", ()))
+        for title, _ylabel, columns in groups:
+            ax = self.imu_axes[title]
+            for column in columns:
+                values = list(self.imu_buffer.get(column, ()))
+                if not values:
+                    continue
+                if times and len(times) >= len(values):
+                    base = times[len(times) - len(values):]
+                    x = [t - base[0] for t in base]
+                else:
+                    x = list(range(len(values)))
+                line = self.imu_lines.get(column)
+                if line is not None:
+                    line.set_data(x, values)
+            ax.relim()
+            ax.autoscale_view()
+        self.canvas.draw_idle()
+        self._show_imu_stats(total, samples[-1] if samples else {})
+
+    def _build_imu_axes(self, groups):
+        self.fig.clear()
+        self.imu_axes = {}
+        self.imu_lines = {}
+        for i, (title, ylabel, columns) in enumerate(groups):
+            ax = self.fig.add_subplot(len(groups), 1, i + 1)
+            self._style_imu_axis(ax, title, ylabel)
+            for column in columns:
+                if column not in self.imu_buffer:
+                    continue
+                self.imu_lines[column], = ax.plot(
+                    [], [], linewidth=1.0, label=column,
+                    color=IMU_TRACE_COLORS.get(column, Theme.FG))
+            legend = ax.legend(loc="upper right", fontsize=7, ncol=3,
+                               facecolor=Theme.PANEL, edgecolor=Theme.BORDER)
+            for text in legend.get_texts():
+                text.set_color(Theme.FG)
+            self.imu_axes[title] = ax
+
+    def _show_imu_stats(self, total, latest):
+        if self.info_var is None:
+            return
+        times = list(self.imu_buffer.get("t", ()))
+        if len(times) > 1 and times[-1] > times[0]:
+            self.imu_rate = (len(times) - 1) / (times[-1] - times[0])
+        lines = [f"Samples      : {total}"
+                 + (f"   ({self.imu_rate:.1f} Hz)"
+                    if self.imu_rate else "")]
+        for title, _ylabel, columns in IMU_PLOT_GROUPS:
+            present = [c for c in columns if c in latest]
+            if not present:
+                continue
+            lines.append(f"{title:<13}: "
+                         + "  ".join(f"{c}={latest[c]:+8.3f}"
+                                     for c in present))
+        if self.reader is not None and getattr(self.reader, "recording",
+                                               False):
+            lines.append("● recording")
+        self.info_var.set("\n".join(lines))
 
     # ----------------------------------------------------- arbe dashboard --
     def _build_arbe_connection_panel(self, parent):
@@ -3699,7 +4703,8 @@ class OusterGuiApp:
             self.reader = None
             # a camera recording lives inside the capture thread
             button = getattr(self, "record_btn", None)
-            if button is not None and self.sensor_kind() == KIND_CAMERA:
+            if button is not None and self.sensor_kind() in (KIND_CAMERA,
+                                                             KIND_IMU):
                 try:
                     button.configure(text="●  Start Recording")
                 except tk.TclError:
@@ -4063,6 +5068,14 @@ class OusterGuiApp:
                     self._draw_radar(item[1], item[2], item[3])
                 elif kind == "radar_params":
                     self._finish_arbe_pull(item[1])
+                elif kind == "imu":
+                    self._draw_imu(item[1], item[2])
+                elif kind == "imu_info":
+                    self.log(f"Device: {item[1]}")
+                elif kind == "imu_layout":
+                    self._finish_imu_pull("layout", item[1])
+                elif kind == "imu_params":
+                    self._finish_imu_pull("params", item[1])
                 elif kind == "metadata":
                     self._show_metadata(item[1])
                 elif kind == "error":
@@ -4102,6 +5115,8 @@ class OusterGuiApp:
                     self.on_save_camera_config()
                 elif self.sensor_kind() == KIND_ARBE:
                     self.on_save_arbe_config()
+                elif self.sensor_kind() == KIND_IMU:
+                    self.on_save_imu_config()
                 else:
                     self.on_save_config()
             except Exception:

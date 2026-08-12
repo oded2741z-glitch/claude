@@ -12,7 +12,9 @@ hierarchy and lets you talk to each one:
   * Sensors     - one entry per physical device, of one of four types:
                     - Ouster lidar, reached by hostname / IP (ouster-sdk)
                     - Camera: USB (0, /dev/video0) or network
-                      (rtsp://..., http://.../video.mjpg), through OpenCV
+                      (rtsp://..., http://.../video.mjpg), through OpenCV,
+                      with the device's own IP / MTU / bitrate / GOP over
+                      ONVIF and extra live views for other monitors
                     - Arbe imaging radar: a ROS 2 PointCloud2 topic or a
                       recorded cloud
                     - Inertial (IMU / INS): an ASCII serial unit, a ROS 2
@@ -74,7 +76,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 import numpy as np
 
@@ -150,6 +152,16 @@ except Exception as _e:
     cv2 = None
     HAVE_CV2 = False
     CV2_IMPORT_ERROR = _e
+
+# --- ONVIF (optional: network-camera settings - IP, MTU, bitrate, GOP) -------
+try:
+    from onvif import ONVIFCamera as _OnvifClient
+    HAVE_ONVIF = True
+    ONVIF_IMPORT_ERROR = None
+except Exception as _e:
+    _OnvifClient = None
+    HAVE_ONVIF = False
+    ONVIF_IMPORT_ERROR = _e
 
 # --- matplotlib embedded in Tk ------------------------------------------------
 import matplotlib
@@ -363,6 +375,10 @@ RADAR_ALIASES = {
     "range": ("range", "r", "distance"),
 }
 CAMERA_FOURCCS = [UNCHANGED, "MJPG", "YUYV", "H264", "GREY", "RGB3"]
+# Network-camera settings live on the device, not in the local capture, and
+# ONVIF is the standard that covers exactly these four.
+ONVIF_ENCODINGS = [UNCHANGED, "H264", "H265", "JPEG"]
+DHCP = "dhcp"
 # (config key, OpenCV property name, label) - blank in the form = don't touch
 CAMERA_PROPS = [
     ("width", "CAP_PROP_FRAME_WIDTH", "Width"),
@@ -439,6 +455,15 @@ DEFAULT_CAMERA_CONFIG = {
     "saturation": "",
     "gain": "",
     "exposure": "",
+    # device-side settings, applied over ONVIF (network cameras only)
+    "onvif_port": "80",
+    "onvif_user": "admin",
+    "net_ip": "",            # "dhcp", or an address in CIDR form
+    "net_gateway": "",
+    "mtu": "",
+    "bitrate": "",           # kbit/s
+    "gop": "",               # frames between key frames
+    "encoding": UNCHANGED,
 }
 # per-radar settings
 DEFAULT_ARBE_CONFIG = {
@@ -695,6 +720,11 @@ class FormDialog(tk.Toplevel):
                 var = tk.StringVar(value=str(value))
                 widget = ttk.Combobox(body, textvariable=var,
                                       values=spec.get("values", []), width=42)
+                widget.pack(fill=tk.X, pady=2)
+                self._vars[key] = var
+            elif kind == "password":
+                var = tk.StringVar(value=str(value))
+                widget = ttk.Entry(body, textvariable=var, width=44, show="•")
                 widget.pack(fill=tk.X, pady=2)
                 self._vars[key] = var
             else:
@@ -976,6 +1006,206 @@ def fourcc_to_text(value) -> str:
         return ""
     text = "".join(chr((code >> (8 * i)) & 0xFF) for i in range(4))
     return text.strip().strip("\x00")
+
+
+class OnvifCamera:
+    """The ONVIF calls behind a network camera's IP / MTU / bitrate / GOP.
+
+    Only the handful of operations this app needs, wrapped so the SOAP
+    layer stays in one place: `factory` is the ONVIFCamera class, which
+    tests replace with a stand-in.
+    """
+
+    def __init__(self, host, port=80, user="", password="", factory=None):
+        if factory is None:
+            if not HAVE_ONVIF:
+                raise RuntimeError("the onvif-zeep package is not installed")
+            factory = _OnvifClient
+        # a source may be a URL; ONVIF talks to the host itself
+        host = str(host).strip()
+        for prefix in ("rtsp://", "http://", "https://"):
+            if host.startswith(prefix):
+                host = host[len(prefix):]
+                break
+        host = host.split("@")[-1].split("/")[0].split(":")[0]
+        self.host = host
+        self.camera = factory(host, int(port or 80), user, password)
+        self.device = self.camera.create_devicemgmt_service()
+        self.media = self.camera.create_media_service()
+
+    # -- video encoder --------------------------------------------------------
+    def encoder_config(self):
+        profiles = self.media.GetProfiles()
+        if not profiles:
+            raise RuntimeError("the camera reports no media profiles")
+        config = getattr(profiles[0], "VideoEncoderConfiguration", None)
+        if config is None:
+            raise RuntimeError("the camera's first profile has no video "
+                               "encoder configuration")
+        return config
+
+    @staticmethod
+    def _gov_section(config):
+        """The H264 / H265 / MPEG4 block that carries GovLength (the GOP)."""
+        for key in ("H264", "H265", "MPEG4"):
+            section = getattr(config, key, None)
+            if section is not None:
+                return section
+        return None
+
+    def network_interface(self):
+        interfaces = self.device.GetNetworkInterfaces() or []
+        for interface in interfaces:
+            if getattr(interface, "Enabled", True):
+                return interface
+        return interfaces[0] if interfaces else None
+
+    # -- read ------------------------------------------------------------------
+    def read_settings(self) -> dict:
+        out = {}
+        config = self.encoder_config()
+        encoding = getattr(config, "Encoding", None)
+        if encoding:
+            out["encoding"] = str(encoding)
+        resolution = getattr(config, "Resolution", None)
+        if resolution is not None:
+            if getattr(resolution, "Width", None):
+                out["width"] = str(int(resolution.Width))
+            if getattr(resolution, "Height", None):
+                out["height"] = str(int(resolution.Height))
+        rate = getattr(config, "RateControl", None)
+        if rate is not None:
+            if getattr(rate, "BitrateLimit", None):
+                out["bitrate"] = str(int(rate.BitrateLimit))
+            if getattr(rate, "FrameRateLimit", None):
+                out["fps"] = f"{float(rate.FrameRateLimit):g}"
+        section = self._gov_section(config)
+        if section is not None and getattr(section, "GovLength", None):
+            out["gop"] = str(int(section.GovLength))
+
+        interface = self.network_interface()
+        if interface is not None:
+            info = getattr(interface, "Info", None)
+            if info is not None and getattr(info, "MTU", None):
+                out["mtu"] = str(int(info.MTU))
+            out.update(self._read_ipv4(interface))
+        gateway = self._read_gateway()
+        if gateway:
+            out["net_gateway"] = gateway
+        return out
+
+    @staticmethod
+    def _read_ipv4(interface) -> dict:
+        ipv4 = getattr(interface, "IPv4", None)
+        config = getattr(ipv4, "Config", None) if ipv4 is not None else None
+        if config is None:
+            return {}
+        if getattr(config, "DHCP", False):
+            return {"net_ip": DHCP}
+        manual = getattr(config, "Manual", None) or []
+        for entry in manual:
+            address = getattr(entry, "Address", None)
+            if not address:
+                continue
+            prefix = getattr(entry, "PrefixLength", None)
+            return {"net_ip": f"{address}/{int(prefix)}" if prefix
+                    else str(address)}
+        return {}
+
+    def _read_gateway(self) -> str:
+        try:
+            gateway = self.device.GetNetworkDefaultGateway()
+        except Exception:
+            return ""
+        address = getattr(gateway, "IPv4Address", None)
+        if isinstance(address, (list, tuple)):
+            address = address[0] if address else None
+        return str(address) if address else ""
+
+    # -- write -----------------------------------------------------------------
+    def write_settings(self, values: dict) -> list:
+        """Apply the non-empty settings; returns a log line per operation."""
+        report = []
+        report.extend(self._write_encoder(values))
+        report.extend(self._write_network(values))
+        return report
+
+    def _write_encoder(self, values) -> list:
+        bitrate = str(values.get("bitrate", "")).strip()
+        gop = str(values.get("gop", "")).strip()
+        encoding = str(values.get("encoding", "")).strip()
+        if not (bitrate or gop or (encoding and encoding != UNCHANGED)):
+            return []
+        config = self.encoder_config()
+        changed = []
+        if encoding and encoding != UNCHANGED:
+            config.Encoding = encoding
+            changed.append(f"encoding={encoding}")
+        if bitrate:
+            rate = getattr(config, "RateControl", None)
+            if rate is None:
+                return ["the camera exposes no rate control, bitrate skipped"]
+            rate.BitrateLimit = int(float(bitrate))
+            changed.append(f"bitrate={bitrate} kbit/s")
+        if gop:
+            section = self._gov_section(config)
+            if section is None:
+                return changed + ["the camera exposes no GOP setting, "
+                                  "skipped"]
+            section.GovLength = int(float(gop))
+            changed.append(f"GOP={gop}")
+        request = self.media.create_type("SetVideoEncoderConfiguration")
+        request.Configuration = config
+        request.ForcePersistence = True
+        self.media.SetVideoEncoderConfiguration(request)
+        return [f"encoder: {', '.join(changed)}"]
+
+    def _write_network(self, values) -> list:
+        ip = str(values.get("net_ip", "")).strip()
+        mtu = str(values.get("mtu", "")).strip()
+        gateway = str(values.get("net_gateway", "")).strip()
+        report = []
+        if ip or mtu:
+            interface = self.network_interface()
+            if interface is None:
+                return ["the camera reports no network interface"]
+            settings = {"Enabled": True}
+            changed = []
+            if mtu:
+                settings["MTU"] = int(float(mtu))
+                changed.append(f"MTU={mtu}")
+            if ip:
+                settings["IPv4"] = self._ipv4_request(ip)
+                changed.append(f"IPv4={ip}")
+            self.device.SetNetworkInterfaces({
+                "InterfaceToken": getattr(interface, "token", None),
+                "NetworkInterface": settings})
+            report.append(f"network: {', '.join(changed)}")
+        if gateway:
+            self.device.SetNetworkDefaultGateway({"IPv4Address": [gateway]})
+            report.append(f"gateway: {gateway}")
+        return report
+
+    @staticmethod
+    def _ipv4_request(ip: str) -> dict:
+        if ip.lower() == DHCP:
+            return {"Enabled": True, "DHCP": True}
+        address, _, prefix = ip.partition("/")
+        return {"Enabled": True, "DHCP": False,
+                "Manual": [{"Address": address.strip(),
+                            "PrefixLength": int(prefix or 24)}]}
+
+
+def valid_cidr(text: str) -> bool:
+    """'192.168.1.64/24' or a bare IPv4 address."""
+    address, _, prefix = str(text).partition("/")
+    parts = address.strip().split(".")
+    if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255
+                                  for p in parts):
+        return False
+    if prefix and not (prefix.isdigit() and 0 <= int(prefix) <= 32):
+        return False
+    return True
 
 
 class CameraReader(threading.Thread):
@@ -1830,6 +2060,81 @@ class ImuReader(threading.Thread):
         return state["writer"]
 
 
+class CameraViewWindow:
+    """A detached live view of the camera, for a second monitor.
+
+    It draws from the same capture thread as the dashboard - opening one
+    does not touch the device again.
+    """
+
+    def __init__(self, app, title: str):
+        self.app = app
+        self.win = tk.Toplevel(app.root)
+        self.win.title(title)
+        self.win.geometry("960x600")
+        self.win.configure(bg=Theme.BG)
+        self.fig = Figure(figsize=(8, 5), dpi=90, tight_layout=True,
+                          facecolor=Theme.BG)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.win)
+        widget = self.canvas.get_tk_widget()
+        widget.configure(bg=Theme.BG, highlightthickness=0)
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_axis_off()
+        self.artist = None
+        self._fullscreen = False
+
+        bar = ttk.Frame(self.win, style="Panel.TFrame")
+        bar.pack(fill=tk.X, side=tk.BOTTOM)
+        self.status = tk.StringVar(value="waiting for frames...")
+        ttk.Label(bar, textvariable=self.status,
+                  style="Status.TLabel").pack(side=tk.LEFT)
+        ttk.Label(bar, text="F11 / double-click: full screen  ·  Esc: exit",
+                  style="Status.TLabel").pack(side=tk.RIGHT)
+
+        for sequence in ("<F11>", "<Double-Button-1>"):
+            self.win.bind(sequence, lambda e: self.toggle_fullscreen())
+        self.win.bind("<Escape>", lambda e: self.set_fullscreen(False))
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+    def toggle_fullscreen(self):
+        self.set_fullscreen(not self._fullscreen)
+
+    def set_fullscreen(self, value: bool):
+        self._fullscreen = bool(value)
+        try:
+            self.win.attributes("-fullscreen", self._fullscreen)
+        except tk.TclError:
+            pass
+
+    def show(self, rgb, caption: str):
+        try:
+            if self.artist is None or \
+                    self.artist.get_array().shape[:2] != rgb.shape[:2]:
+                self.ax.clear()
+                self.ax.set_axis_off()
+                self.artist = self.ax.imshow(rgb)
+            else:
+                self.artist.set_data(rgb)
+            self.status.set(caption)
+            self.canvas.draw_idle()
+        except tk.TclError:
+            self.close()
+
+    def close(self):
+        if self.win is None:
+            return
+        window, self.win = self.win, None
+        try:
+            self.app.view_windows.remove(self)
+        except (ValueError, AttributeError):
+            pass
+        try:
+            window.destroy()
+        except tk.TclError:
+            pass
+
+
 def enable_dark_title_bar(root: tk.Tk):
     """Ask Windows to draw this window's title bar dark (no-op elsewhere;
     on Linux the title bar color follows the desktop theme).
@@ -1918,6 +2223,9 @@ class OusterGuiApp:
         self.imu_buffer = {}
         self.imu_shown = ()
         self.imu_rate = None
+        self.view_windows = []          # detached camera views
+        self.last_camera_frame = None
+        self._onvif_passwords = {}      # sensor id -> password, this session
 
         self._build_shell()
         self._poll_queue()
@@ -1932,6 +2240,11 @@ class OusterGuiApp:
             self.log("NOTE: OpenCV is not installed "
                      f"({CV2_IMPORT_ERROR}); camera sensors are read-only. "
                      "Install it with:  pip install opencv-python")
+        if not HAVE_ONVIF:
+            self.log("NOTE: onvif-zeep is not installed "
+                     f"({ONVIF_IMPORT_ERROR}); network-camera settings "
+                     "(IP / MTU / bitrate / GOP) are read-only. Install it "
+                     "with:  pip install onvif-zeep")
         if not HAVE_SERIAL:
             self.log("NOTE: pyserial is not installed "
                      f"({SERIAL_IMPORT_ERROR}); serial inertial sensors are "
@@ -2019,6 +2332,8 @@ class OusterGuiApp:
         self.imu_lines = {}
         self.imu_buffer = {}
         self.imu_shown = ()
+        self._close_view_windows()
+        self.last_camera_frame = None
         for child in self.body.winfo_children():
             child.destroy()
 
@@ -2455,6 +2770,7 @@ class OusterGuiApp:
         if self.sensor_kind() == KIND_CAMERA:
             self._build_camera_connection_panel(left)
             self._build_camera_config_panel(left)
+            self._build_camera_device_panel(left)
             self._build_camera_stream_panel(left)
             self._build_log_panel(left)
             self._build_camera_viz_panel(right)
@@ -2760,6 +3076,56 @@ class OusterGuiApp:
                   style="Hint.TLabel", wraplength=300,
                   justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 0))
 
+    def _build_camera_device_panel(self, parent):
+        cfg_values = self.sensor["config"]
+        dev = ttk.LabelFrame(parent, text="  NETWORK CAMERA (ONVIF)  ",
+                             padding=10)
+        dev.pack(fill=tk.X, pady=4)
+        ttk.Label(dev, text="Settings that live on the camera itself, not "
+                            "in the local capture.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 4))
+
+        grid = ttk.Frame(dev, style="Panel.TFrame")
+        grid.pack(fill=tk.X)
+        rows = [("onvif_port", "ONVIF port:", 8),
+                ("onvif_user", "User:", 14),
+                ("net_ip", "IP / CIDR:", 18),
+                ("net_gateway", "Gateway:", 18),
+                ("mtu", "MTU:", 8),
+                ("bitrate", "Bitrate [kbit/s]:", 10),
+                ("gop", "GOP [frames]:", 8)]
+        for i, (key, label, width) in enumerate(rows):
+            ttk.Label(grid, text=label,
+                      style="Muted.TLabel").grid(row=i, column=0, sticky=tk.W,
+                                                 pady=1)
+            self.cfg_vars[key] = tk.StringVar(
+                value=str(cfg_values.get(key, "")))
+            ttk.Entry(grid, textvariable=self.cfg_vars[key],
+                      width=width).grid(row=i, column=1, padx=6, pady=1,
+                                        sticky=tk.W)
+        ttk.Label(dev, text="Encoding:",
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(4, 0))
+        self.cfg_vars["encoding"] = tk.StringVar(
+            value=str(cfg_values.get("encoding", UNCHANGED)))
+        ttk.Combobox(dev, textvariable=self.cfg_vars["encoding"],
+                     values=ONVIF_ENCODINGS,
+                     state="readonly").pack(fill=tk.X, pady=3)
+        ttk.Label(dev, text="IP / CIDR accepts 'dhcp' to switch back to "
+                            "DHCP. Leave a box empty to leave that setting "
+                            "alone. The password is asked for when needed "
+                            "and never written to the project file.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 0))
+        ttk.Button(dev, text="⤓  Pull from camera (ONVIF)",
+                   command=self.on_pull_onvif).pack(fill=tk.X, pady=(8, 3))
+        ttk.Button(dev, text="⤒  Push to camera (ONVIF)",
+                   style="Accent.TButton",
+                   command=self.on_push_onvif).pack(fill=tk.X, pady=3)
+        ttk.Button(dev, text="Forget stored password",
+                   command=self.on_forget_onvif_password).pack(fill=tk.X,
+                                                               pady=3)
+
     def _build_camera_stream_panel(self, parent):
         live = ttk.LabelFrame(parent, text="  LIVE VIEW / RECORDING  ",
                               padding=10)
@@ -2779,6 +3145,12 @@ class OusterGuiApp:
         self.record_btn.pack(fill=tk.X, pady=3)
         ttk.Button(live, text="▶  Play video file...",
                    command=self.on_open_video).pack(fill=tk.X, pady=3)
+        ttk.Button(live, text="🗗  Open on another screen",
+                   command=self.on_open_second_view).pack(fill=tk.X, pady=3)
+        ttk.Label(live, text="opens the same live image in its own window - "
+                             "drag it to a second monitor and press F11",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W)
         self.loop_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(live, text="Loop playback (repeat)",
                         variable=self.loop_var,
@@ -3897,6 +4269,37 @@ class OusterGuiApp:
                 "Invalid pixel format",
                 "FOURCC codes are exactly four characters, e.g. MJPG.")
             return None
+        # device-side (ONVIF) settings
+        for key, label, low, high in (("onvif_port", "ONVIF port", 1, 65535),
+                                      ("mtu", "MTU", 576, 9216),
+                                      ("bitrate", "Bitrate", 1, 200000),
+                                      ("gop", "GOP", 1, 1000)):
+            text = values.get(key, "")
+            if not text:
+                continue
+            try:
+                number = int(float(text))
+                if not low <= number <= high:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror(
+                    "Invalid camera setting",
+                    f"'{label}' must be a whole number between {low} and "
+                    f"{high}, or empty to leave it unchanged.")
+                return None
+        ip = values.get("net_ip", "")
+        if ip and ip.lower() != DHCP and not valid_cidr(ip):
+            messagebox.showerror(
+                "Invalid IP address",
+                "Use an address like 192.168.1.64/24, or 'dhcp' to let the "
+                "camera get its address automatically.")
+            return None
+        gateway = values.get("net_gateway", "")
+        if gateway and not valid_cidr(gateway):
+            messagebox.showerror("Invalid gateway",
+                                 "The gateway must be an IPv4 address, "
+                                 "e.g. 192.168.1.1.")
+            return None
         return values
 
     def on_save_camera_config(self, announce=False):
@@ -4176,12 +4579,32 @@ class OusterGuiApp:
         reader.start_recording(path)
         self.record_btn.configure(text="■  Stop Recording")
 
+    def on_open_second_view(self):
+        """Mirror the live image into its own window (second monitor)."""
+        name = (self.sensor or {}).get("name", "camera")
+        window = CameraViewWindow(
+            self, f"{name}  ·  view {len(self.view_windows) + 2}")
+        self.view_windows.append(window)
+        self.log(f"Opened an extra view window for '{name}' "
+                 f"({len(self.view_windows)} open). Drag it to another "
+                 "screen and press F11 for full screen.")
+        if self.last_camera_frame is not None:
+            window.show(*self.last_camera_frame)
+
+    def _close_view_windows(self):
+        for window in list(self.view_windows):
+            window.close()
+        self.view_windows = []
+
     def _draw_camera(self, rgb, index, recording=False):
-        if self.canvas is None or getattr(self, "cam_ax", None) is None:
-            return
         title = f"Frame {index}  ·  {rgb.shape[1]}x{rgb.shape[0]}"
         if recording:
             title += "   ● REC"
+        self.last_camera_frame = (rgb, title)
+        for window in list(self.view_windows):
+            window.show(rgb, title)
+        if self.canvas is None or getattr(self, "cam_ax", None) is None:
+            return
         if self.cam_artist is None or \
                 self.cam_artist.get_array().shape[:2] != rgb.shape[:2]:
             self.cam_ax.clear()
@@ -4190,6 +4613,134 @@ class OusterGuiApp:
             self.cam_artist.set_data(rgb)
         self._style_axis(self.cam_ax, title)
         self.canvas.draw_idle()
+
+    # ------------------------------------------------------- onvif actions ---
+    def _require_onvif(self) -> bool:
+        if not HAVE_ONVIF:
+            messagebox.showerror(
+                "onvif-zeep missing",
+                "Network-camera settings need the onvif-zeep package "
+                f"({ONVIF_IMPORT_ERROR}).\n\n"
+                "Install it with:\n    pip install onvif-zeep")
+            return False
+        return True
+
+    def _onvif_password(self, user: str):
+        """Ask for the camera password once per session; never stored."""
+        sensor_id = (self.sensor or {}).get("id", "")
+        if sensor_id in self._onvif_passwords:
+            return self._onvif_passwords[sensor_id]
+        dialog = FormDialog(
+            self.root, "Camera password",
+            [{"key": "password", "label": f"Password for '{user}' on "
+                                          f"{self._host()}",
+              "kind": "password",
+              "hint": "kept in memory for this session only"}],
+            ok_text="Connect")
+        if not dialog.result:
+            return None
+        password = dialog.result.get("password", "")
+        self._onvif_passwords[sensor_id] = password
+        return password
+
+    def on_forget_onvif_password(self):
+        sensor_id = (self.sensor or {}).get("id", "")
+        if self._onvif_passwords.pop(sensor_id, None) is None:
+            self.log("No password was being held for this camera.")
+        else:
+            self.log("Camera password forgotten.")
+
+    def _onvif_connect_args(self):
+        """(host, port, user, password) or None if the user cancelled."""
+        values = self.on_save_camera_config()
+        if values is None:
+            return None
+        host = self.host_var.get().strip()
+        if not host or host.isdigit():
+            messagebox.showerror(
+                "ONVIF",
+                "ONVIF settings apply to network cameras. Set the camera "
+                "source to its address or RTSP URL first.")
+            return None
+        user = values.get("onvif_user", "")
+        password = self._onvif_password(user)
+        if password is None:
+            return None
+        return host, values.get("onvif_port", "80"), user, password, values
+
+    def on_pull_onvif(self):
+        if not self._require_onvif():
+            return
+        args = self._onvif_connect_args()
+        if args is None:
+            return
+        host, port, user, password, _values = args
+        self.log(f"Reading settings from {host} over ONVIF ...")
+
+        def work():
+            try:
+                camera = OnvifCamera(host, port, user, password)
+                settings = camera.read_settings()
+            except Exception as e:
+                self.log(f"ERROR reading over ONVIF: {e}")
+                return
+            self.frame_queue.put(("onvif_props", settings))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_onvif_pull(self, settings: dict):
+        for key, value in settings.items():
+            var = self.cfg_vars.get(key)
+            if var is not None:
+                var.set(value)
+        self.sensor["config"].update(settings)
+        self.sensor["last_seen"] = now_stamp()
+        self.store.save()
+        self.log("ONVIF settings pulled into the project: "
+                 + ", ".join(f"{k}={v}" for k, v in sorted(settings.items())))
+
+    def on_push_onvif(self):
+        if not self._require_onvif():
+            return
+        args = self._onvif_connect_args()
+        if args is None:
+            return
+        host, port, user, password, values = args
+        wanted = {k: values.get(k, "") for k in
+                  ("net_ip", "net_gateway", "mtu", "bitrate", "gop",
+                   "encoding")}
+        listed = [f"  {k} = {v}" for k, v in wanted.items()
+                  if v and v != UNCHANGED]
+        if not listed:
+            messagebox.showerror("Push to camera (ONVIF)",
+                                 "Nothing to push - fill in at least one of "
+                                 "IP, gateway, MTU, bitrate, GOP or "
+                                 "encoding.")
+            return
+        warning = ("\n\nWARNING: changing the IP drops the current "
+                   "connection - reconnect on the new address."
+                   if wanted["net_ip"] else "")
+        if not messagebox.askyesno(
+                "Push to camera (ONVIF)",
+                f"Write these settings to {host}?\n\n"
+                + "\n".join(listed) + warning):
+            return
+        self.log(f"Pushing settings to {host} over ONVIF ...")
+
+        def work():
+            try:
+                camera = OnvifCamera(host, port, user, password)
+                report = camera.write_settings(wanted)
+            except Exception as e:
+                self.log(f"ERROR pushing over ONVIF: {e}")
+                return
+            for line in report or ["nothing was applied"]:
+                self.log(f"  {line}")
+            self.sensor["last_seen"] = now_stamp()
+            self.store.save()
+            self.log("ONVIF push complete.")
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------- sensor record I/O ----
     def on_save_host(self):
@@ -5064,6 +5615,8 @@ class OusterGuiApp:
                     self._finish_camera_pull(item[1])
                 elif kind == "camera_push":
                     self._finish_camera_push(item[1], item[2])
+                elif kind == "onvif_props":
+                    self._finish_onvif_pull(item[1])
                 elif kind == "radar":
                     self._draw_radar(item[1], item[2], item[3])
                 elif kind == "radar_params":
@@ -5123,6 +5676,7 @@ class OusterGuiApp:
                 pass
         self.store.save()
         self.on_stop_stream()
+        self._close_view_windows()
         for proc in (self.record_proc, self.viz_proc):
             if proc is not None:
                 try:

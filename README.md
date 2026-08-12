@@ -32,6 +32,8 @@ pip install ouster-sdk numpy matplotlib
 pip install opencv-python
 # for serial inertial sensors:
 pip install pyserial
+# for network-camera settings (IP, MTU, bitrate, GOP):
+pip install onvif-zeep
 # optional, only for "Export to MCAP":
 pip install mcap mcap-protobuf-support foxglove-schemas-protobuf protobuf
 ```
@@ -46,9 +48,10 @@ source /opt/ros/humble/setup.bash    # or your distro
 python3 ouster_gui.py
 ```
 
-`ouster-sdk`, `opencv-python`, `pyserial` and ROS 2 are all optional:
-without one of them the app still runs, and only the matching sensor type
-reports that its package is missing.
+`ouster-sdk`, `opencv-python`, `pyserial`, `onvif-zeep` and ROS 2 are all
+optional: without one of them the app still runs, and only the matching
+sensor type - or, for `onvif-zeep`, the network-camera panel - reports that
+its package is missing.
 
 On Linux, reading a serial IMU usually needs your user in the `dialout`
 group:
@@ -185,12 +188,53 @@ settings back, writes what the camera actually kept into the form and the
 project, and logs every value that did not stick. Leave a box empty to
 keep whatever the camera is already using.
 
+**Network camera settings (ONVIF)**
+
+The boxes above change the *local capture*. A network camera's own
+settings - address, MTU, bitrate and GOP - live on the device, and the
+**NETWORK CAMERA (ONVIF)** panel edits them over ONVIF, the standard that
+covers exactly those:
+
+| Setting | What it does | ONVIF operation |
+| --- | --- | --- |
+| **IP / CIDR** | `192.168.1.64/24`, or `dhcp` to go back to automatic | `SetNetworkInterfaces` |
+| **Gateway** | default IPv4 gateway | `SetNetworkDefaultGateway` |
+| **MTU** | 576-9216; raise it for jumbo frames on a dedicated link | `SetNetworkInterfaces` |
+| **Bitrate** | encoder ceiling in kbit/s | `SetVideoEncoderConfiguration` |
+| **GOP** | frames between key frames (`GovLength`) | `SetVideoEncoderConfiguration` |
+| **Encoding** | H264 / H265 / JPEG | `SetVideoEncoderConfiguration` |
+
+* **Pull from camera (ONVIF)** reads all of them - plus the encoder's
+  resolution and frame rate - into the form and the project.
+* **Push to camera (ONVIF)** writes only the boxes you filled in, after a
+  confirmation listing them, and logs one line per operation. Encoder
+  settings are sent with `ForcePersistence`, so they survive a reboot.
+  Changing the IP drops the connection; the confirmation says so.
+
+The **password is never written to the project file**. It is asked for the
+first time it is needed and kept in memory for that session only;
+**Forget stored password** clears it. The username, port and the settings
+themselves are stored.
+
+Set the camera source to the device's address or RTSP URL for this panel
+to work - a USB index like `0` has no ONVIF endpoint, and the app says so
+rather than trying.
+
 **Recording**
 
 * **Start Recording** - writes the live frames to MP4 (`mp4v`) or AVI
   (`MJPG`), chosen from the file extension. Recording happens inside the
   capture thread that already owns the device, so it does not open the
   camera a second time; if no preview is running, one is started first.
+
+**One camera on several screens**
+
+**Open on another screen** mirrors the live image into its own window.
+Drag it to a second monitor and press **F11** (or double-click) for full
+screen, **Esc** to leave it. Open it as many times as you have screens -
+every window draws from the same capture thread, so the camera is never
+opened twice, and each shows the frame number, size and a `● REC` marker
+while recording. The windows close when you leave the dashboard.
 
 ### Arbe radar dashboard
 
@@ -344,7 +388,15 @@ stream first rather than fighting the reader for the device.
                 "contrast": "",
                 "saturation": "",
                 "gain": "",
-                "exposure": ""
+                "exposure": "",
+                "onvif_port": "80",
+                "onvif_user": "admin",
+                "net_ip": "192.168.1.64/24",
+                "net_gateway": "192.168.1.1",
+                "mtu": "9000",
+                "bitrate": "8192",
+                "gop": "25",
+                "encoding": "H265"
               },
               "network": {"static_ip": "", "gateway": ""}
             },
@@ -413,5 +465,6 @@ project called **Imported**.
 
 * `ouster-sdk` >= 1.0 (`ouster.sdk.core`) and < 1.0 (`ouster.sdk.client`).
 * OpenCV 4.x / 5.x (`opencv-python`, or `opencv-python-headless`).
+* ONVIF Profile S cameras, through `onvif-zeep`.
 * Linux (developed on Ubuntu 24.04), macOS and Windows. On Windows the
   title bar is switched to dark mode where the OS supports it.

@@ -2,373 +2,366 @@ import socket
 import json
 import threading
 import time
-import subprocess
-import sys
-import os
-import tkinter as tk
-from tkinter import scrolledtext, messagebox
 import sounddevice as sd
 import numpy as np
+import os
+import sys
+from typing import Optional, Tuple, Dict, Any
 
-# --- Audio Settings ---
-SAMPLE_RATE = 16000
-CHANNELS = 1
-CHUNK_SIZE = 512
-DTYPE = 'int16'
+# --- System & Audio Settings ---
+SAMPLE_RATE: int = 16000
+CHANNELS: int = 1
+CHUNK_SIZE: int = 512
+DTYPE: str = 'int16'
+BUFFER_SIZE: int = 65535          # UDP חותך בשקט חבילות גדולות מהבאפר
+TIMEOUT_SECS: float = 3.0
+SETTINGS_FILE: str = "settings.txt"
 
-# --- Protocol ---
-AUDIO_MAGIC = b'\x01'        # קידומת לכל חבילת אודיו
-PUNCH_MSG = b'\x02PUNCH'     # חבילת ניקוב NAT
-RECV_BUFFER = 65535          # UDP חותך חבילות גדולות מהבאפר בשקט - לכן מקסימום
-PUNCH_DURATION = 2.0         # שניות של ניקוב לפני מעבר לאודיו
-PUNCH_INTERVAL = 0.1
-SIGNALLING_TIMEOUT = 15.0    # זמן מקסימלי להמתנה לעמית מהשרת
-AUDIO_SOCK_TIMEOUT = 0.5     # מאפשר ל-RX להתעורר ולבדוק אם ביקשו לעצור
+# --- P2P wire protocol (חייב להיות זהה ל-server.py) ---
+AUDIO_TAG: bytes = b'\x01'
+PUNCH_TAG: bytes = b'\x02'
+PUNCH_PACKET: bytes = PUNCH_TAG + b'PUNCH'
+P2P_TAGS: Tuple[bytes, bytes] = (AUDIO_TAG, PUNCH_TAG)
+
+PUNCH_DURATION: float = 2.0
+PUNCH_INTERVAL: float = 0.1
 
 
-class IntercomGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("P2P NAT Intercom")
-        self.root.geometry("460x480")
-        self.root.resizable(False, False)
+class IntercomCLI:
+    def __init__(self) -> None:
+        self.sock: Optional[socket.socket] = None
+        self.is_running: bool = False
+        self.audio_lock: threading.Lock = threading.Lock()
+        self._open_streams: int = 0       # מוגן ע"י audio_lock
 
-        # Connection variables
-        self.sock = None
-        self.is_running = False
-        self.rx_thread = None
-        self.tx_thread = None
-        self._lock = threading.Lock()   # מגן על is_running מול לחיצות/תרדים מקבילים
+        self.rx_thread: Optional[threading.Thread] = None
+        self.tx_thread: Optional[threading.Thread] = None
 
-        # Local server process variable
-        self.server_process = None
+        # Peer address handling
+        self.peer_lock: threading.Lock = threading.Lock()
+        self.assigned_peer: Optional[Tuple[str, int]] = None
+        self.locked_peer: Optional[Tuple[str, int]] = None
+        self.tx_peer: Optional[Tuple[str, int]] = None
 
-        self._create_widgets()
+        self.server_ip: str = "192.168.1.11"
+        self.server_port: int = 9999
+        self.my_id: str = "node_B"
 
-        # Safe close protocol
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.load_settings()
 
-    def _create_widgets(self):
-        # Local Server Frame
-        server_frame = tk.LabelFrame(self.root, text=" Local Signalling Server ", padx=10, pady=8)
-        server_frame.pack(fill="x", padx=15, pady=5)
+    def log(self, msg: str) -> None:
+        """Thread-safe standard output logging."""
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-        self.server_btn = tk.Button(server_frame, text="START LOCAL SERVER (server.py)",
-                                    font=("Arial", 9, "bold"), bg="#5bc0de", fg="white",
-                                    activebackground="#31b0d5", activeforeground="white",
-                                    width=38, pady=5, command=self.toggle_local_server)
-        self.server_btn.pack(pady=2)
-
-        # Connection Settings Frame
-        config_frame = tk.LabelFrame(self.root, text=" Connection Settings ", padx=10, pady=10)
-        config_frame.pack(fill="x", padx=15, pady=5)
-
-        tk.Label(config_frame, text="Server IP:").grid(row=0, column=0, sticky="w", pady=5)
-        self.server_ip_entry = tk.Entry(config_frame, width=18)
-        self.server_ip_entry.insert(0, "192.168.1.11")
-        self.server_ip_entry.grid(row=0, column=1, pady=5, padx=5)
-
-        tk.Label(config_frame, text="Port:").grid(row=0, column=2, sticky="w", pady=5)
-        self.server_port_entry = tk.Entry(config_frame, width=7)
-        self.server_port_entry.insert(0, "9999")
-        self.server_port_entry.grid(row=0, column=3, pady=5, padx=5)
-
-        tk.Label(config_frame, text="My ID:").grid(row=1, column=0, sticky="w", pady=5)
-        self.my_id_entry = tk.Entry(config_frame, width=18)
-        self.my_id_entry.insert(0, "node_A")
-        self.my_id_entry.grid(row=1, column=1, pady=5, padx=5)
-
-        # Connection Status
-        self.status_label = tk.Label(self.root, text="STATUS: DISCONNECTED", font=("Arial", 10, "bold"), fg="gray")
-        self.status_label.pack(pady=5)
-
-        # Intercom Toggle Button
-        self.toggle_btn = tk.Button(self.root, text="START INTERCOM", font=("Arial", 11, "bold"),
-                                    bg="#389379", fg="white", activebackground="#2d7762", activeforeground="white",
-                                    width=25, pady=8, command=self.toggle_intercom)
-        self.toggle_btn.pack(pady=5)
-
-        # Logs Window
-        log_frame = tk.LabelFrame(self.root, text=" System Logs ", padx=5, pady=5)
-        log_frame.pack(fill="both", expand=True, padx=15, pady=10)
-
-        self.log_area = scrolledtext.ScrolledText(log_frame, height=8, font=("Consolas", 9), state="disabled")
-        self.log_area.pack(fill="both", expand=True)
-
-    def log(self, msg):
-        """Thread-safe logging to the GUI text area"""
-        def append():
-            self.log_area.config(state="normal")
-            self.log_area.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
-            self.log_area.see("end")
-            self.log_area.config(state="disabled")
-        self.root.after(0, append)
-
-    def update_status(self, text, color):
-        """Thread-safe status update"""
-        def update():
-            self.status_label.config(text=f"STATUS: {text}", fg=color)
-        self.root.after(0, update)
-
-    # --- Local Server Management ---
-    def toggle_local_server(self):
-        if self.server_process is None or self.server_process.poll() is not None:
-            self.start_local_server()
-        else:
-            self.stop_local_server()
-
-    def start_local_server(self):
-        server_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")
-        if not os.path.exists(server_path):
-            messagebox.showerror("Error", f"Could not find 'server.py' in:\n{os.path.dirname(server_path)}")
-            return
-
-        try:
-            self.server_process = subprocess.Popen([sys.executable, server_path],
-                                                   stderr=subprocess.PIPE)
-            self._set_server_btn_running(True)
-            self.log("Local Signalling Server (server.py) STARTED.")
-            # השרת עלול למות מיד (פורט תפוס) - בודקים אחרי חצי שנייה
-            self.root.after(500, self._verify_server_alive)
-        except Exception as e:
-            self.server_process = None
-            self.log(f"Failed to start server: {e}")
-
-    def _verify_server_alive(self):
-        proc = self.server_process
-        if proc is None or proc.poll() is None:
-            return
-
-        err = b""
-        try:
-            err = proc.stderr.read() or b""
-        except Exception:
-            pass
-
-        detail = err.decode('utf-8', 'replace').strip().splitlines()
-        detail = detail[-1] if detail else f"exit code {proc.returncode}"
-        self.log(f"Local Signalling Server FAILED: {detail}")
-        self.server_process = None
-        self._set_server_btn_running(False)
-
-    def _set_server_btn_running(self, running):
-        if running:
-            self.server_btn.config(text="STOP LOCAL SERVER (server.py)",
-                                   bg="#f0ad4e", activebackground="#ec971f")
-        else:
-            self.server_btn.config(text="START LOCAL SERVER (server.py)",
-                                   bg="#5bc0de", activebackground="#31b0d5")
-
-    def stop_local_server(self):
-        proc = self.server_process
-        if proc is None or proc.poll() is not None:
-            self.server_process = None
-            return
-
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            # לא נענה ל-terminate - הורגים כדי לא להשאיר את הפורט תפוס
-            proc.kill()
-            proc.wait(timeout=2)
-
-        self.server_process = None
-        self._set_server_btn_running(False)
-        self.log("Local Signalling Server STOPPED.")
-
-    # --- Intercom Connection Management ---
-    def toggle_intercom(self):
-        if not self.is_running:
-            self.start_connection()
-        else:
-            self.stop_connection()
-
-    def start_connection(self):
-        server_ip = self.server_ip_entry.get().strip()
-        try:
-            server_port = int(self.server_port_entry.get().strip())
-        except ValueError:
-            messagebox.showerror("Error", "Port must be a number.")
-            return
-
-        my_id = self.my_id_entry.get().strip()
-        if not my_id:
-            messagebox.showerror("Error", "Please enter a valid ID.")
-            return
-
-        with self._lock:
-            if self.is_running:   # מגן מפני לחיצה כפולה מהירה
-                return
-            self.is_running = True
-
-        self.toggle_btn.config(text="DISCONNECT", bg="#d9534f", activebackground="#c9302c")
-        self.server_ip_entry.config(state="disabled")
-        self.server_port_entry.config(state="disabled")
-        self.my_id_entry.config(state="disabled")
-
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.settimeout(AUDIO_SOCK_TIMEOUT)
-
-        threading.Thread(target=self._connection_flow, args=(server_ip, server_port, my_id),
-                         daemon=True).start()
-
-    def _await_peer(self, server_ip, server_port, my_id):
-        """מחכה לתשובת השרת. מתעלם מחבילות שאינן פרטי עמית (PUNCH מוקדם וכו')"""
-        msg = json.dumps({"type": "register", "id": my_id}).encode('utf-8')
-        self.sock.sendto(msg, (server_ip, server_port))
-        last_register = time.time()
-        deadline = last_register + SIGNALLING_TIMEOUT
-
-        while self.is_running and time.time() < deadline:
+    def load_settings(self) -> None:
+        """Parses the JSON settings file safely and populates instance variables."""
+        if os.path.exists(SETTINGS_FILE):
             try:
-                data, _ = self.sock.recvfrom(RECV_BUFFER)
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    data: Dict[str, Any] = json.load(f)
+                    self.server_ip = str(data.get("ip", self.server_ip)).strip()
+                    self.server_port = int(data.get("port", self.server_port))
+                    self.my_id = str(data.get("my_id", self.my_id)).strip()
+                self.log(f"Loaded settings: IP={self.server_ip}, Port={self.server_port}, ID={self.my_id}")
+            except Exception as e:
+                self.log(f"Error loading {SETTINGS_FILE}: {e}. Using defaults.")
+        else:
+            self.log(f"{SETTINGS_FILE} not found. Creating default settings file.")
+            self.save_settings()
+
+    def save_settings(self) -> None:
+        """Serializes current configuration into a localized JSON config."""
+        data: Dict[str, str] = {
+            "ip": self.server_ip,
+            "port": str(self.server_port),
+            "my_id": self.my_id
+        }
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except OSError as e:
+            self.log(f"Error saving settings: {e}")
+
+    # ------------------------------------------------------------------
+    # Audio hardware
+    # ------------------------------------------------------------------
+    def _safe_refresh_hardware(self) -> None:
+        """Restarts the PortAudio bindings. Never runs while a stream is open."""
+        with self.audio_lock:
+            # אתחול PortAudio בזמן ש-stream פתוח בתרד אחר מקריס את התהליך ברמת ה-C
+            if self._open_streams > 0:
+                return
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception:
+                pass
+
+    def _stream_opened(self) -> None:
+        with self.audio_lock:
+            self._open_streams += 1
+
+    def _stream_closed(self) -> None:
+        with self.audio_lock:
+            self._open_streams -= 1
+
+    def _wait_for_audio_device(self) -> None:
+        """Blocks execution until BOTH audio input and output devices are connected."""
+        self.log("Waiting for headphones (Mic & Speaker) to be connected...")
+        while True:
+            try:
+                # Attempt to initialize both Output and Input streams
+                with sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE):
+                    pass
+                with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, blocksize=CHUNK_SIZE):
+                    pass
+
+                self.log("Audio devices (Mic & Speaker) detected! Initiating connection to Server...")
+                break
+            except Exception:
+                # Refresh hardware in case the device was just plugged in and unrecognized
+                self._safe_refresh_hardware()
+                time.sleep(2)
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+    def start(self) -> None:
+        """Main execution loop for the headless client."""
+        self.log(f"Starting Headless Client [{self.my_id}] -> Target: {self.server_ip}:{self.server_port}")
+        self.log("Press Ctrl+C to exit.")
+
+        while True:
+            try:
+                if not self.is_running:
+                    self.load_settings()
+                    self._wait_for_audio_device()
+                    self._connect_and_stream()
+                time.sleep(1)
+            except KeyboardInterrupt:
+                self.log("Exiting...")
+                self.stop()
+                sys.exit(0)
+            except Exception as e:
+                self.log(f"Hardware or Network Error: {e}")
+                self.stop()
+                time.sleep(3)
+
+    def _await_peer(self) -> Optional[Tuple[str, int]]:
+        """ממתין לפרטי העמית. מתעלם מכל חבילה שאינה תשובת סיגנלינג תקינה."""
+        msg: bytes = json.dumps({"id": self.my_id}).encode('utf-8')
+        while self.is_running and self.sock:
+            try:
+                self.sock.sendto(msg, (self.server_ip, self.server_port))
+            except (AttributeError, OSError):
+                return None
+
+            try:
+                data, _ = self.sock.recvfrom(BUFFER_SIZE)
             except socket.timeout:
-                # רישום חוזר - הודעת הרישום עצמה עלולה ללכת לאיבוד ב-UDP
-                if time.time() - last_register > 3.0:
-                    self.sock.sendto(msg, (server_ip, server_port))
-                    last_register = time.time()
                 continue
             except ConnectionResetError:
+                time.sleep(1)
                 continue
+            except (AttributeError, OSError):
+                return None
 
+            # חבילת אודיו מעמית שהקדים אותנו כבר לא מפילה את הרישום
             try:
                 info = json.loads(data.decode('utf-8'))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
-
-            if isinstance(info, dict) and "peer_ip" in info and "peer_port" in info:
-                return (info["peer_ip"], int(info["peer_port"]))
-
+            if not isinstance(info, dict) or "peer_ip" not in info or "peer_port" not in info:
+                continue
+            try:
+                return (str(info["peer_ip"]), int(info["peer_port"]))
+            except (TypeError, ValueError):
+                continue
         return None
 
-    def _connection_flow(self, server_ip, server_port, my_id):
-        try:
-            self.update_status("REGISTERING...", "#f0ad4e")
-            self.log(f"Registering as '{my_id}' on {server_ip}:{server_port}...")
+    def _connect_and_stream(self) -> None:
+        """Handles server registration, NAT hole punching, and threading activation."""
+        self.is_running = True
+        self._safe_refresh_hardware()
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.settimeout(1.0)
+        with self.peer_lock:
+            self.assigned_peer = None
+            self.locked_peer = None
+            self.tx_peer = None
 
-            self.update_status("WAITING FOR PEER...", "#f0ad4e")
+        try:
             self.log("Waiting for matching peer from server...")
 
-            peer_addr = self._await_peer(server_ip, server_port, my_id)
-            if peer_addr is None:
-                if self.is_running:
-                    self.log("Error: no peer assigned (signalling timed out).")
-                    self.stop_connection()
+            peer_addr = self._await_peer()
+            if not self.is_running or not peer_addr:
                 return
 
-            self.log(f"Peer Target Assigned -> IP: {peer_addr[0]}, Port: {peer_addr[1]}")
+            with self.peer_lock:
+                self.assigned_peer = peer_addr
+                self.tx_peer = peer_addr
 
-            self.update_status("PUNCHING NAT...", "#0275d8")
+            self.log(f"Peer Target Assigned -> IP: {peer_addr[0]}, Port: {peer_addr[1]}")
             self.log("Sending UDP Hole Punch packets...")
+
             punch_until = time.time() + PUNCH_DURATION
             while self.is_running and time.time() < punch_until:
-                self.sock.sendto(PUNCH_MSG, peer_addr)
+                try:
+                    self.sock.sendto(PUNCH_PACKET, peer_addr)
+                except (AttributeError, OSError):
+                    return
                 time.sleep(PUNCH_INTERVAL)
 
             if not self.is_running:
                 return
 
-            self.update_status("CONNECTED (P2P AUDIO)", "#5cb85c")
             self.log("NAT hole punched! Live audio streaming active.")
 
             self.rx_thread = threading.Thread(target=self._audio_receiver, daemon=True)
-            self.tx_thread = threading.Thread(target=self._audio_sender, args=(peer_addr,), daemon=True)
+            self.tx_thread = threading.Thread(target=self._audio_sender, daemon=True)
 
             self.rx_thread.start()
             self.tx_thread.start()
 
-        except Exception as e:
-            if self.is_running:
-                self.log(f"Connection error: {e}")
-                self.stop_connection()
+            # Wait until one of the threads dies (e.g., due to headphones disconnecting)
+            while self.is_running and self.rx_thread.is_alive() and self.tx_thread.is_alive():
+                time.sleep(1)
 
-    def _audio_receiver(self):
+            if self.is_running:
+                self.log("Audio stream interrupted by hardware state change. Reconnecting...")
+
+        except Exception as e:
+            self.log(f"Connection or Hardware error: {e}")
+            time.sleep(2)
+        finally:
+            # Guarantee state reset and socket cleanup
+            self.stop()
+
+    # ------------------------------------------------------------------
+    # Audio streaming
+    # ------------------------------------------------------------------
+    def _peer_audio(self, addr: Tuple[str, int], data: bytes) -> Optional[bytes]:
+        """מאמת שהחבילה הגיעה מהעמית ומחזיר payload רק לחבילות אודיו."""
+        tag, payload = data[:1], data[1:]
+        if tag not in P2P_TAGS:
+            return None  # JSON מהשרת או זבל - לעולם לא מתנגן
+
+        with self.peer_lock:
+            if self.locked_peer is None:
+                # ננעלים על הכתובת של החבילה המתויגת הראשונה, גם אם ה-NAT
+                # הקצה פורט שונה מזה שהשרת דיווח
+                self.locked_peer = addr
+                self.tx_peer = addr
+                if addr != self.assigned_peer:
+                    self.log(f"Peer reached us from {addr[0]}:{addr[1]} "
+                             f"(assigned {self.assigned_peer}). Locking on.")
+            elif addr != self.locked_peer:
+                return None  # מונע הזרקת אודיו מכל מקור אחר ברשת
+
+        if tag != AUDIO_TAG or not payload:
+            return None
+        if len(payload) % (2 * CHANNELS) != 0:
+            return None  # חבילה קטומה
+        return payload
+
+    def _audio_receiver(self) -> None:
+        """Dedicated thread for receiving and playing live P2P audio data."""
+        last_data_time: float = time.time()
         try:
             with sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE) as stream:
-                while self.is_running:
-                    try:
-                        data, _ = self.sock.recvfrom(RECV_BUFFER)
-                    except socket.timeout:
-                        continue
-                    except ConnectionResetError:
-                        # Ignore WinError 10054 (temporary drop)
-                        continue
-                    except OSError:
-                        break  # הסוקט נסגר - יציאה נקייה
+                self._stream_opened()
+                try:
+                    while self.is_running:
+                        sock = self.sock
+                        if sock is None:
+                            break
+                        try:
+                            data, addr = sock.recvfrom(BUFFER_SIZE)
+                        except socket.timeout:
+                            if time.time() - last_data_time > TIMEOUT_SECS:
+                                self.log("Peer disconnected (3 seconds timeout).")
+                                self.is_running = False
+                                break
+                            continue
+                        except ConnectionResetError:
+                            self.log("Peer disconnected unexpectedly.")
+                            self.is_running = False
+                            break
+                        except (AttributeError, OSError):
+                            break  # הסוקט נסגר - יציאה נקייה
 
-                    # רק חבילות עם קידומת אודיו מנוגנות (PUNCH/JSON מסוננים)
-                    payload = data[1:]
-                    if data[:1] != AUDIO_MAGIC or not payload:
-                        continue
-                    if len(payload) % (2 * CHANNELS) != 0:
-                        continue  # חבילה קטומה - מנגנים אותה יגרום לרעש/קריסה
-
-                    audio_data = np.frombuffer(payload, dtype=np.int16)
-                    stream.write(audio_data.reshape(-1, CHANNELS))
-        except Exception as e:
+                        last_data_time = time.time()
+                        payload = self._peer_audio(addr, data)
+                        if payload is not None:
+                            stream.write(np.frombuffer(payload, dtype=np.int16).reshape(-1, CHANNELS))
+                finally:
+                    self._stream_closed()
+        except Exception:
             if self.is_running:
-                self.log(f"Audio RX Error: {e}")
+                self.log("Output device error (Headphones disconnected).")
 
-    def _audio_sender(self, peer_addr):
+    def _audio_sender(self) -> None:
+        """Dedicated thread for capturing and transmitting local microphone audio."""
         try:
-            with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE,
-                                blocksize=CHUNK_SIZE) as stream:
-                while self.is_running:
-                    data, _ = stream.read(CHUNK_SIZE)
-                    try:
-                        self.sock.sendto(AUDIO_MAGIC + data.tobytes(), peer_addr)
-                    except ConnectionResetError:
-                        continue
-                    except OSError:
-                        break  # הסוקט נסגר - יציאה נקייה
-        except Exception as e:
+            with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, blocksize=CHUNK_SIZE) as stream:
+                self._stream_opened()
+                try:
+                    while self.is_running:
+                        data, _ = stream.read(CHUNK_SIZE)
+                        sock, peer = self.sock, self.tx_peer
+                        if sock is None or peer is None:
+                            break
+                        try:
+                            sock.sendto(AUDIO_TAG + data.tobytes(), peer)
+                        except ConnectionResetError:
+                            continue
+                        except (AttributeError, OSError):
+                            break  # הסוקט נסגר - יציאה נקייה
+                finally:
+                    self._stream_closed()
+        except Exception:
             if self.is_running:
-                self.log(f"Audio TX Error: {e}")
+                self.log("Input device disconnected.")
 
-    def stop_connection(self):
-        with self._lock:
-            if not self.is_running:
-                return
-            self.is_running = False
+    def stop(self) -> None:
+        """Safely shuts down sockets and resets state flags."""
+        was_connected = self.is_running
+        self.is_running = False
 
-        # קודם מחכים שהתרדים יסיימו, ורק אז סוגרים את הסוקט.
-        # סגירה מתחת לרגליים של recvfrom/sendto משאירה את כרטיס הקול תקוע.
+        # דיווח ניתוק לשרת לפני שסוגרים, כדי שישחרר את הסלוט מיד
+        if self.sock:
+            try:
+                disconnect_msg = json.dumps({"id": self.my_id, "status": "disconnected"}).encode('utf-8')
+                self.sock.sendto(disconnect_msg, (self.server_ip, self.server_port))
+            except OSError:
+                pass
+
+        # ממתינים לתרדי האודיו לפני סגירת הסוקט. סגירה מתחת לרגליהם משאירה
+        # את כרטיס הקול תפוס ומייצרת חריגות מטעות.
         current = threading.current_thread()
         for t in (self.rx_thread, self.tx_thread):
             if t is not None and t.is_alive() and t is not current:
-                t.join(timeout=2.0)
+                t.join(timeout=2.5)
         self.rx_thread = None
         self.tx_thread = None
 
         if self.sock:
             try:
                 self.sock.close()
-            except Exception:
+            except OSError:
                 pass
-            self.sock = None
+            finally:
+                self.sock = None
 
-        def reset_gui():
-            try:
-                self.toggle_btn.config(text="START INTERCOM", bg="#389379", activebackground="#2d7762")
-                self.server_ip_entry.config(state="normal")
-                self.server_port_entry.config(state="normal")
-                self.my_id_entry.config(state="normal")
-                self.status_label.config(text="STATUS: DISCONNECTED", fg="gray")
-                self.log("Intercom stopped.")
-            except tk.TclError:
-                pass  # החלון נסגר לפני שה-callback רץ
+        with self.peer_lock:
+            self.assigned_peer = None
+            self.locked_peer = None
+            self.tx_peer = None
 
-        self.root.after(0, reset_gui)
-
-    def on_close(self):
-        """Ensure clean exit by closing connections and local server"""
-        self.stop_connection()
-        self.stop_local_server()
-        self.root.destroy()
+        if was_connected:
+            self.log("Intercom connection closed. Waiting for reconnect...")
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = IntercomGUI(root)
-    root.mainloop()
+    cli = IntercomCLI()
+    cli.start()

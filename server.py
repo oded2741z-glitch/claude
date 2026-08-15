@@ -1,4 +1,5 @@
 import socket
+import contextlib
 import json
 import threading
 import time
@@ -34,6 +35,8 @@ MATCH_RETRIES: int = 5            # UDP לא אמין - שולחים את פרט
 MATCH_RETRY_DELAY: float = 0.05
 PUNCH_DURATION: float = 2.0
 PUNCH_INTERVAL: float = 0.1
+HW_REFRESH_GAP: float = 5.0       # מרווח מזערי בין אתחולי PortAudio
+STREAM_CLOSE_WAIT: float = 5.0    # סגירת stream על התקן שנשלף עלולה להיתקע
 
 # --- Dashboard ---
 UI_TICK_MS: int = 200             # קצב רענון המחוונים
@@ -553,25 +556,37 @@ class IntercomGUI:
         if not self.is_running:
             return
         with self.audio_lock:
-            # אתחול PortAudio בזמן ש-stream פתוח בתרד אחר מקריס את התהליך ברמת ה-C
+            # אתחול PortAudio בזמן ש-stream פתוח מקריס את התהליך ברמת ה-C,
+            # בלי traceback. המונה מוחזק על פני כל חיי ה-stream (ראה _counted_stream).
             if self._open_streams > 0:
                 return
+            # אתחול גלובלי חוזר בזמן שההתקן מתחבר/מתנתק הוא בעצמו גורם קריסה
             current_time = time.time()
-            if current_time - self.last_refresh_time > TIMEOUT_SECS:
-                try:
-                    sd._terminate()
-                    sd._initialize()
-                except Exception:
-                    pass
-                self.last_refresh_time = current_time
+            if current_time - self.last_refresh_time < HW_REFRESH_GAP:
+                return
+            self.last_refresh_time = current_time
+            try:
+                sd._terminate()
+                sd._initialize()
+            except Exception:
+                pass
 
-    def _stream_opened(self) -> None:
+    @contextlib.contextmanager
+    def _counted_stream(self, factory):
+        """Opens a stream while holding the open-stream counter for its whole lifetime.
+
+        The counter must cover the close as well: closing a stream on a device
+        that was just unplugged can block, and a refresh during that window
+        would terminate PortAudio underneath a live stream.
+        """
         with self.audio_lock:
             self._open_streams += 1
-
-    def _stream_closed(self) -> None:
-        with self.audio_lock:
-            self._open_streams -= 1
+        try:
+            with factory() as stream:
+                yield stream
+        finally:
+            with self.audio_lock:
+                self._open_streams -= 1
 
     # ------------------------------------------------------------------
     # Intercom connection
@@ -731,45 +746,43 @@ class IntercomGUI:
         while self.is_running:
             restart_needed = False
             try:
-                with sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE) as stream:
-                    self._stream_opened()
-                    try:
-                        while self.is_running:
-                            sock = self.sock
-                            if sock is None:
-                                break
-                            try:
-                                data, addr = sock.recvfrom(BUFFER_SIZE)
-                            except socket.timeout:
-                                if time.time() - last_data_time > TIMEOUT_SECS:
-                                    if self.is_running:
-                                        self.log("Peer disconnected (3 seconds timeout).")
-                                        self.root.after(0, self.stop_connection)
-                                    return
-                                continue
-                            except ConnectionResetError:
+                with self._counted_stream(
+                        lambda: sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                                                dtype=DTYPE)) as stream:
+                    while self.is_running:
+                        sock = self.sock
+                        if sock is None:
+                            break
+                        try:
+                            data, addr = sock.recvfrom(BUFFER_SIZE)
+                        except socket.timeout:
+                            if time.time() - last_data_time > TIMEOUT_SECS:
                                 if self.is_running:
-                                    self.log("Peer disconnected unexpectedly.")
+                                    self.log("Peer disconnected (3 seconds timeout).")
                                     self.root.after(0, self.stop_connection)
                                 return
-                            except (AttributeError, OSError):
-                                return  # הסוקט נסגר - יציאה נקייה, בלי הודעת חומרה מטעה
+                            continue
+                        except ConnectionResetError:
+                            if self.is_running:
+                                self.log("Peer disconnected unexpectedly.")
+                                self.root.after(0, self.stop_connection)
+                            return
+                        except (AttributeError, OSError):
+                            return  # הסוקט נסגר - יציאה נקייה, בלי הודעת חומרה מטעה
 
-                            last_data_time = time.time()
-                            payload = self._peer_audio(addr, data)
-                            if payload is None:
-                                continue
-                            block = np.frombuffer(payload, dtype=np.int16)
-                            self._last_rx = last_data_time
-                            try:
-                                stream.write(block.reshape(-1, CHANNELS))
-                            except sd.PortAudioError:
-                                if self.is_running:
-                                    self.log("Output device error. Reconnecting...", "red")
-                                restart_needed = True
-                                break
-                    finally:
-                        self._stream_closed()
+                        last_data_time = time.time()
+                        payload = self._peer_audio(addr, data)
+                        if payload is None:
+                            continue
+                        block = np.frombuffer(payload, dtype=np.int16)
+                        self._last_rx = last_data_time
+                        try:
+                            stream.write(block.reshape(-1, CHANNELS))
+                        except sd.PortAudioError:
+                            if self.is_running:
+                                self.log("Output device error. Reconnecting...", "red")
+                            restart_needed = True
+                            break
             except sd.PortAudioError:
                 restart_needed = True
 
@@ -782,29 +795,27 @@ class IntercomGUI:
         while self.is_running:
             restart_needed = False
             try:
-                with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, blocksize=CHUNK_SIZE) as stream:
-                    self._stream_opened()
-                    try:
-                        while self.is_running:
-                            try:
-                                data, _ = stream.read(CHUNK_SIZE)
-                            except sd.PortAudioError:
-                                if self.is_running:
-                                    self.log("Input device disconnected. Reconnecting...", "red")
-                                restart_needed = True
-                                break
+                with self._counted_stream(
+                        lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE,
+                                               blocksize=CHUNK_SIZE)) as stream:
+                    while self.is_running:
+                        try:
+                            data, _ = stream.read(CHUNK_SIZE)
+                        except sd.PortAudioError:
+                            if self.is_running:
+                                self.log("Input device disconnected. Reconnecting...", "red")
+                            restart_needed = True
+                            break
 
-                            sock, peer = self.sock, self.tx_peer
-                            if sock is None or peer is None:
-                                return
-                            try:
-                                sock.sendto(AUDIO_TAG + data.tobytes(), peer)
-                            except ConnectionResetError:
-                                continue
-                            except (AttributeError, OSError):
-                                return  # הסוקט נסגר - יציאה נקייה
-                    finally:
-                        self._stream_closed()
+                        sock, peer = self.sock, self.tx_peer
+                        if sock is None or peer is None:
+                            return
+                        try:
+                            sock.sendto(AUDIO_TAG + data.tobytes(), peer)
+                        except ConnectionResetError:
+                            continue
+                        except (AttributeError, OSError):
+                            return  # הסוקט נסגר - יציאה נקייה
             except sd.PortAudioError:
                 restart_needed = True
 
@@ -832,7 +843,9 @@ class IntercomGUI:
         current = threading.current_thread()
         for t in (self.rx_thread, self.tx_thread):
             if t is not None and t.is_alive() and t is not current:
-                t.join(timeout=2.5)
+                t.join(timeout=STREAM_CLOSE_WAIT)
+                if t.is_alive():
+                    self.log("Audio thread still closing the device; will not touch PortAudio.", "yellow")
         self.rx_thread = None
         self.tx_thread = None
 

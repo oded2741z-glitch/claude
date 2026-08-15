@@ -112,9 +112,9 @@ class IntercomGUI:
         self._call_started: float = 0.0
         self._server_port: int = 0
         self._server_error: str = ""
-        self._hp_client: str = ""          # הלקוח האחרון שדיווח על מצב אוזניות
-        self._hp_connected: bool = False
-        self._hp_time: float = 0.0
+        # מצב אוזניות של לקוחות מרוחקים בלבד: id -> (connected, since)
+        self._hp_lock: threading.Lock = threading.Lock()
+        self._remote_clients: Dict[str, Tuple[bool, float]] = {}
 
         self.server_thread: Optional[threading.Thread] = None
         self.server_stop_event: threading.Event = threading.Event()
@@ -293,20 +293,42 @@ class IntercomGUI:
             state = "no audio from peer" if self._call_started else "punching NAT..."
             self._set_row("CLIENT", Theme.WAITING, f"{peer[0]}:{peer[1]}  ·  {state}")
 
+    def _mark_headphones(self, client_id: str, connected: bool) -> bool:
+        """Records a REMOTE client's headphone state. True on a real change."""
+        if not client_id or client_id == self.my_id:
+            return False  # המצב שלנו לא מעניין - השורה נועדה להראות את הצד השני
+        with self._hp_lock:
+            previous = self._remote_clients.get(client_id)
+            if previous is not None and previous[0] == connected:
+                return False  # אותו מצב - לא מאפסים את חותמת הזמן
+            self._remote_clients[client_id] = (connected, time.time())
+        return True
+
     def _refresh_headphones_row(self) -> None:
-        if not self._hp_client:
-            self._set_row("HEADPHONES", Theme.LED_OFF, "no client reported yet")
+        with self._hp_lock:
+            entries = sorted(self._remote_clients.items(), key=lambda kv: kv[1][1], reverse=True)
+        if not entries:
+            self._set_row("HEADPHONES", Theme.LED_OFF, "waiting for a client to report...")
             return
-        stamp = time.strftime('%H:%M:%S', time.localtime(self._hp_time))
-        if self._hp_connected:
-            self._set_row("HEADPHONES", Theme.CONNECTED, f"{self._hp_client} connected  ·  {stamp}")
+
+        client_id, (connected, since) = entries[0]
+        stamp = time.strftime('%H:%M:%S', time.localtime(since))
+        extra = f"   (+{len(entries) - 1} more)" if len(entries) > 1 else ""
+        if connected:
+            # הרמז שבגללו השורה קיימת: הצד השני מוכן, אפשר לפתוח שיחה
+            hint = "   ->  press START INTERCOM" if not self.is_running else ""
+            self._set_row("HEADPHONES", Theme.CONNECTED,
+                          f"{client_id} connected  ·  {stamp}{extra}{hint}")
         else:
-            self._set_row("HEADPHONES", Theme.QUIT, f"{self._hp_client} disconnected  ·  {stamp}", Theme.QUIT)
+            self._set_row("HEADPHONES", Theme.QUIT,
+                          f"{client_id} disconnected  ·  {stamp}{extra}", Theme.QUIT)
 
     def _ui_tick(self) -> None:
         """Single periodic redraw. Worker threads only write plain values."""
         now = time.time()
         try:
+            # קריאה מתרד ה-UI, כדי שנדע את ה-ID שלנו עוד לפני לחיצה על START
+            self.my_id = self.my_id_entry.get().strip()
             self._refresh_server_row()
             self._refresh_client_row(now)
             self._refresh_headphones_row()
@@ -455,10 +477,11 @@ class IntercomGUI:
             return
         client_id = client_id.strip()
 
-        # קבלת דיווח ניתוק מהלקוח
+        # קבלת דיווח ניתוק מהלקוח. חייב להירשם גם אם הלקוח כבר לא ב-clients:
+        # אחרי הצמדה הרשימה מתאפסת, וזה בדיוק המקרה של ניתוק באמצע שיחה.
         if msg.get("status") == "disconnected":
-            if clients.pop(client_id, None) is not None:
-                self._hp_client, self._hp_connected, self._hp_time = client_id, False, time.time()
+            clients.pop(client_id, None)
+            if self._mark_headphones(client_id, False):
                 self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
             return
 
@@ -466,8 +489,7 @@ class IntercomGUI:
         self._purge_stale(clients, now)
 
         # דיווח התחברות מהלקוח
-        if client_id not in clients:
-            self._hp_client, self._hp_connected, self._hp_time = client_id, True, time.time()
+        if self._mark_headphones(client_id, True) or client_id not in clients:
             self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
         clients[client_id] = (addr, now)
 

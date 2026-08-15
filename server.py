@@ -1,14 +1,14 @@
 import socket
 import json
-import math
 import threading
 import time
 import ipaddress
 import tkinter as tk
-from tkinter import scrolledtext, messagebox
+from tkinter import messagebox
 import sounddevice as sd
 import numpy as np
 import os
+from collections import deque
 from typing import Optional, Tuple, Dict, Any
 
 # --- Constants & Settings ---
@@ -36,11 +36,8 @@ PUNCH_DURATION: float = 2.0
 PUNCH_INTERVAL: float = 0.1
 
 # --- Dashboard ---
-UI_TICK_MS: int = 60              # קצב רענון המחוונים
-LEVEL_FLOOR: float = -60.0        # dBFS שנחשב "שקט"
-LEVEL_FALL_DB: float = 2.0        # נפילת המחט בכל tick, כדי שהפס לא יקפוץ
-DATA_IDLE: float = 0.4            # אין חבילות מעבר לזה -> המחוון דועך
-PEER_IDLE: float = 1.5            # אין אודיו מעבר לזה -> נורית העמית כבר לא ירוקה
+UI_TICK_MS: int = 200             # קצב רענון המחוונים
+PEER_IDLE: float = 1.5            # אין אודיו מעבר לזה -> נורית הקליינט כבר לא ירוקה
 
 
 class Theme:
@@ -59,10 +56,6 @@ class Theme:
     WAITING: str = "#f0ad4e"
     PUNCHING: str = "#0275d8"
     LED_OFF: str = "#3a3a3a"
-    METER_BG: str = "#1e1e1e"
-    METER_OK: str = "#00ff00"
-    METER_MID: str = "#FFFF00"
-    METER_HOT: str = "#FF0000"
 
     FONT_TITLE: Tuple[str, int, str] = ("Consolas", 11, "bold")
     FONT_LABEL: Tuple[str, int, str] = ("Arial", 10, "bold")
@@ -113,19 +106,15 @@ class IntercomGUI:
         self.my_id: str = ""
         self.peer_id: str = ""
 
-        # Dashboard state (נכתב מתרדי האודיו, נקרא מתרד ה-UI)
-        self.details_shown: bool = False
-        self._tx_db: float = LEVEL_FLOOR
-        self._rx_db: float = LEVEL_FLOOR
-        self._tx_shown: float = LEVEL_FLOOR
-        self._rx_shown: float = LEVEL_FLOOR
-        self._last_tx: float = 0.0
+        # Dashboard state (נכתב מתרדי הרקע, נקרא מתרד ה-UI)
+        self._events: deque = deque(maxlen=200)
         self._last_rx: float = 0.0
-        self._mic_open: bool = False
-        self._spk_open: bool = False
-        self._mic_error: bool = False
-        self._spk_error: bool = False
         self._call_started: float = 0.0
+        self._server_port: int = 0
+        self._server_error: str = ""
+        self._hp_client: str = ""          # הלקוח האחרון שדיווח על מצב אוזניות
+        self._hp_connected: bool = False
+        self._hp_time: float = 0.0
 
         self.server_thread: Optional[threading.Thread] = None
         self.server_stop_event: threading.Event = threading.Event()
@@ -231,188 +220,96 @@ class IntercomGUI:
         tk.Label(self.root, text="oT", font=("Arial", 9, "bold"), bg=Theme.BG, fg=Theme.DIVIDER).pack(side="bottom", anchor="e", padx=10, pady=5)
 
     def _create_dashboard(self) -> None:
-        """Indicator lights, live VU meters and a peer card, in place of the log."""
+        """Three status rows: signalling server, client link, client headphones."""
         dash = tk.Frame(self.root, bg=Theme.BG)
         dash.pack(fill="both", expand=True, padx=15, pady=(5, 5))
 
-        # --- indicator lights ---
-        led_row = tk.Frame(dash, bg=Theme.BG)
-        led_row.pack(fill="x", pady=(0, 6))
-        self.leds: Dict[str, Tuple[tk.Canvas, int]] = {}
-        for name in ("SERVER", "PEER", "MIC", "SPK"):
-            cell = tk.Frame(led_row, bg=Theme.BG)
-            cell.pack(side="left", expand=True)
-            canvas = tk.Canvas(cell, width=14, height=14, bg=Theme.BG, highlightthickness=0)
+        self.rows: Dict[str, Tuple[tk.Canvas, int, tk.Label]] = {}
+        for key, title in (("SERVER", "SERVER CONNECTION"),
+                           ("CLIENT", "CLIENT CONNECTION"),
+                           ("HEADPHONES", "CLIENT HEADPHONES")):
+            card = tk.Frame(dash, bg=Theme.LOG_BG, padx=10, pady=8)
+            card.pack(fill="x", pady=4)
+
+            head = tk.Frame(card, bg=Theme.LOG_BG)
+            head.pack(fill="x")
+            canvas = tk.Canvas(head, width=16, height=16, bg=Theme.LOG_BG, highlightthickness=0)
             canvas.pack(side="left")
-            dot = canvas.create_oval(2, 2, 12, 12, fill=Theme.LED_OFF, outline="")
-            tk.Label(cell, text=name, bg=Theme.BG, fg=Theme.FG,
-                     font=Theme.FONT_ENTRY).pack(side="left", padx=(4, 0))
-            self.leds[name] = (canvas, dot)
+            dot = canvas.create_oval(3, 3, 14, 14, fill=Theme.LED_OFF, outline="")
+            tk.Label(head, text=title, bg=Theme.LOG_BG, fg=Theme.FG,
+                     font=Theme.FONT_LABEL).pack(side="left", padx=(6, 0))
 
-        # --- peer card ---
-        self.peer_lbl = tk.Label(dash, text="no peer", anchor="center", bg=Theme.LOG_BG, fg=Theme.DISCONNECTED,
-                                 font=Theme.FONT_LOG, pady=6)
-        self.peer_lbl.pack(fill="x", pady=(0, 8))
-
-        # --- VU meters ---
-        self.meters: Dict[str, Tuple[tk.Canvas, int, tk.Label]] = {}
-        for name in ("MIC", "SPK"):
-            row = tk.Frame(dash, bg=Theme.BG)
-            row.pack(fill="x", pady=2)
-            tk.Label(row, text=name, width=4, anchor="w", bg=Theme.BG, fg=Theme.FG,
-                     font=Theme.FONT_ENTRY).pack(side="left")
-            bar = tk.Canvas(row, height=12, bg=Theme.METER_BG, highlightthickness=1,
-                            highlightbackground=Theme.DIVIDER)
-            bar.pack(side="left", fill="x", expand=True, padx=6)
-            fill = bar.create_rectangle(0, 0, 0, 12, fill=Theme.METER_OK, outline="")
-            value = tk.Label(row, text="-- dB", width=7, anchor="e", bg=Theme.BG, fg=Theme.DISCONNECTED,
-                             font=Theme.FONT_ENTRY)
-            value.pack(side="left")
-            self.meters[name] = (bar, fill, value)
-
-        # --- last event + details toggle ---
-        self.event_lbl = tk.Label(dash, text="", anchor="w", bg=Theme.BG, fg=Theme.DISCONNECTED,
-                                  font=Theme.FONT_LOG)
-        self.event_lbl.pack(fill="x", pady=(8, 0))
-
-        self.details_btn = tk.Button(dash, text="DETAILS ▼", font=("Arial", 8, "bold"), bg=Theme.BTN_BG,
-                                     fg=Theme.FG, relief="flat", width=12, command=self.toggle_details,
-                                     activebackground=Theme.DIVIDER, activeforeground=Theme.FG)
-        self.details_btn.pack(anchor="e", pady=(4, 0))
-
-        # הלוג המלא נשאר קיים - רק לא ארוז, עד שלוחצים DETAILS
-        self.log_frame = tk.Frame(dash, bg=Theme.BG)
-        self.log_area = scrolledtext.ScrolledText(self.log_frame, height=7, font=Theme.FONT_LOG, bg=Theme.LOG_BG,
-                                                  fg=Theme.LOG_FG, insertbackground=Theme.FG, relief="flat",
-                                                  highlightthickness=1, highlightbackground=Theme.DIVIDER,
-                                                  state="disabled")
-        self.log_area.pack(fill="both", expand=True)
-
-        # Configure color tags for logs
-        self.log_area.tag_config("white", foreground="#FFFFFF")
-        self.log_area.tag_config("red", foreground="#FF0000")
-        self.log_area.tag_config("green", foreground="#00FF00")
-        self.log_area.tag_config("yellow", foreground="#FFFF00")
-        self.log_area.tag_config("purple", foreground="#a020f0")
-
-    def toggle_details(self) -> None:
-        if self.details_shown:
-            self.log_frame.pack_forget()
-            self.details_btn.config(text="DETAILS ▼")
-        else:
-            self.log_frame.pack(fill="both", expand=True, pady=(6, 0))
-            self.details_btn.config(text="DETAILS ▲")
-        self.details_shown = not self.details_shown
+            detail = tk.Label(card, text="-", anchor="w", bg=Theme.LOG_BG, fg=Theme.DISCONNECTED,
+                              font=Theme.FONT_LOG)
+            detail.pack(fill="x", padx=(22, 0), pady=(2, 0))
+            self.rows[key] = (canvas, dot, detail)
 
     def show_help(self) -> None:
         messagebox.showinfo("Help", HELP_TEXT)
 
-    EVENT_COLORS: Dict[str, str] = {"white": "#CCCCCC", "red": Theme.QUIT, "green": Theme.CONNECTED,
-                                    "yellow": Theme.WAITING, "purple": "#a020f0"}
-
     def log(self, msg: str, color_tag: str = "white") -> None:
-        """Thread-safe UI logging injection with color support."""
-        def append() -> None:
-            try:
-                self.log_area.config(state="normal")
-                self.log_area.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n", color_tag)
-                self.log_area.see("end")
-                self.log_area.config(state="disabled")
-                # השורה האחרונה נשארת גלויה על הלוח גם כשהלוג המלא מוסתר
-                mark = "▲" if color_tag in ("red", "yellow") else "•"
-                self.event_lbl.config(text=f"{mark} {time.strftime('%H:%M:%S')}  {msg}",
-                                      fg=self.EVENT_COLORS.get(color_tag, Theme.FG))
-            except tk.TclError:
-                pass  # החלון נסגר לפני שה-callback רץ
-        self.root.after(0, append)
+        """Events go to stdout only - the dashboard carries the state itself."""
+        line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+        print(line, flush=True)
+        self._events.append(line)
 
     # ------------------------------------------------------------------
     # Dashboard refresh
     # ------------------------------------------------------------------
-    @staticmethod
-    def _level_db(samples: Any) -> float:
-        """RMS of an int16 block, as dBFS clamped to [LEVEL_FLOOR, 0]."""
-        if samples.size == 0:
-            return LEVEL_FLOOR
-        f = samples.astype(np.float32)
-        rms = float(np.sqrt(np.mean(f * f)))
-        if rms <= 0.0:
-            return LEVEL_FLOOR
-        return max(LEVEL_FLOOR, min(0.0, 20.0 * math.log10(rms / 32768.0)))
-
-    @staticmethod
-    def _meter_color(db: float) -> str:
-        if db >= -3.0:
-            return Theme.METER_HOT
-        if db >= -12.0:
-            return Theme.METER_MID
-        return Theme.METER_OK
-
-    def _set_led(self, name: str, color: str) -> None:
-        canvas, dot = self.leds[name]
+    def _set_row(self, key: str, color: str, text: str, text_color: Optional[str] = None) -> None:
+        canvas, dot, detail = self.rows[key]
         canvas.itemconfig(dot, fill=color)
+        detail.config(text=text, fg=text_color or (Theme.FG if color != Theme.LED_OFF else Theme.DISCONNECTED))
 
-    def _refresh_leds(self, now: float) -> None:
+    def _refresh_server_row(self) -> None:
         server_up = self.server_thread is not None and self.server_thread.is_alive()
-        self._set_led("SERVER", Theme.CONNECTED if server_up else Theme.LED_OFF)
-
-        if not self.is_running:
-            peer_color = Theme.LED_OFF
-        elif self.locked_peer and now - self._last_rx < PEER_IDLE:
-            peer_color = Theme.CONNECTED
-        else:
-            peer_color = Theme.WAITING
-        self._set_led("PEER", peer_color)
-
-        for name, is_open, error, last in (("MIC", self._mic_open, self._mic_error, self._last_tx),
-                                           ("SPK", self._spk_open, self._spk_error, self._last_rx)):
-            if error:
-                color = Theme.QUIT
-            elif not is_open:
-                color = Theme.LED_OFF
-            elif now - last < DATA_IDLE:
-                color = Theme.CONNECTED
+        if server_up:
+            self._set_row("SERVER", Theme.CONNECTED, f"internal server listening on port {self._server_port}")
+        elif self._server_error:
+            self._set_row("SERVER", Theme.QUIT, self._server_error, Theme.QUIT)
+        elif self.is_running and self.signalling_addr:
+            # לא מארחים שרת, אבל רשומים מול שרת חיצוני
+            host, port = self.signalling_addr
+            if self.assigned_peer:
+                self._set_row("SERVER", Theme.CONNECTED, f"registered with {host}:{port}")
             else:
-                color = Theme.WAITING      # ההתקן פתוח אבל לא זורם בו אודיו
-            self._set_led(name, color)
+                self._set_row("SERVER", Theme.WAITING, f"registering with {host}:{port}...")
+        else:
+            self._set_row("SERVER", Theme.LED_OFF, "stopped")
 
-    def _refresh_meters(self, now: float) -> None:
-        for name, target, last in (("MIC", self._tx_db, self._last_tx),
-                                   ("SPK", self._rx_db, self._last_rx)):
-            if now - last > DATA_IDLE:
-                target = LEVEL_FLOOR
-            attr = "_tx_shown" if name == "MIC" else "_rx_shown"
-            shown = max(target, getattr(self, attr) - LEVEL_FALL_DB)
-            setattr(self, attr, shown)
-
-            bar, fill, value = self.meters[name]
-            width = bar.winfo_width()
-            if width <= 1:
-                continue  # החלון עדיין לא צויר
-            ratio = (shown - LEVEL_FLOOR) / (0.0 - LEVEL_FLOOR)
-            bar.coords(fill, 0, 0, int(width * max(0.0, min(1.0, ratio))), 12)
-            bar.itemconfig(fill, fill=self._meter_color(shown))
-            value.config(text="-- dB" if shown <= LEVEL_FLOOR else f"{shown:.0f} dB",
-                         fg=Theme.DISCONNECTED if shown <= LEVEL_FLOOR else Theme.FG)
-
-    def _refresh_peer_card(self, now: float) -> None:
+    def _refresh_client_row(self, now: float) -> None:
         with self.peer_lock:
-            peer = self.locked_peer or self.assigned_peer
-        if not self.is_running or peer is None:
-            self.peer_lbl.config(text="no peer", fg=Theme.DISCONNECTED)
+            peer, locked = self.assigned_peer, self.locked_peer
+        if not self.is_running:
+            self._set_row("CLIENT", Theme.LED_OFF, "not connected")
+        elif peer is None:
+            self._set_row("CLIENT", Theme.WAITING, "waiting for a peer...")
+        elif locked and now - self._last_rx < PEER_IDLE:
+            elapsed = int(now - self._call_started) if self._call_started else 0
+            name = self.peer_id or "peer"
+            self._set_row("CLIENT", Theme.CONNECTED,
+                          f"{name}  ·  {locked[0]}:{locked[1]}  ·  {elapsed // 60:02d}:{elapsed % 60:02d}")
+        else:
+            state = "no audio from peer" if self._call_started else "punching NAT..."
+            self._set_row("CLIENT", Theme.WAITING, f"{peer[0]}:{peer[1]}  ·  {state}")
+
+    def _refresh_headphones_row(self) -> None:
+        if not self._hp_client:
+            self._set_row("HEADPHONES", Theme.LED_OFF, "no client reported yet")
             return
-        name = self.peer_id or "peer"
-        elapsed = int(now - self._call_started) if self._call_started else 0
-        self.peer_lbl.config(text=f"{name}  ·  {peer[0]}:{peer[1]}  ·  {elapsed // 60:02d}:{elapsed % 60:02d}",
-                             fg=Theme.CONNECTED if self.locked_peer else Theme.WAITING)
+        stamp = time.strftime('%H:%M:%S', time.localtime(self._hp_time))
+        if self._hp_connected:
+            self._set_row("HEADPHONES", Theme.CONNECTED, f"{self._hp_client} connected  ·  {stamp}")
+        else:
+            self._set_row("HEADPHONES", Theme.QUIT, f"{self._hp_client} disconnected  ·  {stamp}", Theme.QUIT)
 
     def _ui_tick(self) -> None:
-        """Single periodic redraw. Audio threads only write plain floats/flags."""
+        """Single periodic redraw. Worker threads only write plain values."""
         now = time.time()
         try:
-            self._refresh_leds(now)
-            self._refresh_meters(now)
-            self._refresh_peer_card(now)
+            self._refresh_server_row()
+            self._refresh_client_row(now)
+            self._refresh_headphones_row()
             self.root.after(UI_TICK_MS, self._ui_tick)
         except tk.TclError:
             return  # החלון נסגר
@@ -488,6 +385,8 @@ class IntercomGUI:
 
         self.server_stop_event.clear()
         self._rewrite_warned = False
+        self._server_port = server_port
+        self._server_error = ""
         # הכפתור מתעדכן רק אחרי ש-bind באמת הצליח
         self.server_btn.config(text="STARTING SERVER...", bg=Theme.BTN_BG, fg=Theme.FG)
         self.server_thread = threading.Thread(target=self._run_internal_server,
@@ -559,6 +458,7 @@ class IntercomGUI:
         # קבלת דיווח ניתוק מהלקוח
         if msg.get("status") == "disconnected":
             if clients.pop(client_id, None) is not None:
+                self._hp_client, self._hp_connected, self._hp_time = client_id, False, time.time()
                 self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
             return
 
@@ -567,6 +467,7 @@ class IntercomGUI:
 
         # דיווח התחברות מהלקוח
         if client_id not in clients:
+            self._hp_client, self._hp_connected, self._hp_time = client_id, True, time.time()
             self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
         clients[client_id] = (addr, now)
 
@@ -593,6 +494,7 @@ class IntercomGUI:
             server_sock.bind(('0.0.0.0', port))
             server_sock.settimeout(1.0)
         except OSError as e:
+            self._server_error = f"bind failed on port {port}: {e.strerror or e}"
             self.log(f"[Server] Bind Error: {e}", "red")
             self.root.after(0, self._mark_server_stopped)
             return
@@ -681,7 +583,7 @@ class IntercomGUI:
         self.my_id = my_id
         self.peer_id = ""
         self._call_started = 0.0
-        self._mic_error = self._spk_error = False
+        self._last_rx = 0.0
         self.signalling_addr = (server_ip, server_port)
         with self.peer_lock:
             self.assigned_peer = None
@@ -809,7 +711,6 @@ class IntercomGUI:
             try:
                 with sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE) as stream:
                     self._stream_opened()
-                    self._spk_open, self._spk_error = True, False
                     try:
                         while self.is_running:
                             sock = self.sock
@@ -837,21 +738,17 @@ class IntercomGUI:
                             if payload is None:
                                 continue
                             block = np.frombuffer(payload, dtype=np.int16)
-                            self._rx_db = self._level_db(block)
                             self._last_rx = last_data_time
                             try:
                                 stream.write(block.reshape(-1, CHANNELS))
                             except sd.PortAudioError:
                                 if self.is_running:
                                     self.log("Output device error. Reconnecting...", "red")
-                                self._spk_error = True
                                 restart_needed = True
                                 break
                     finally:
                         self._stream_closed()
-                        self._spk_open = False
             except sd.PortAudioError:
-                self._spk_error = True
                 restart_needed = True
 
             if not restart_needed or not self.is_running:
@@ -865,7 +762,6 @@ class IntercomGUI:
             try:
                 with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE, blocksize=CHUNK_SIZE) as stream:
                     self._stream_opened()
-                    self._mic_open, self._mic_error = True, False
                     try:
                         while self.is_running:
                             try:
@@ -873,12 +769,9 @@ class IntercomGUI:
                             except sd.PortAudioError:
                                 if self.is_running:
                                     self.log("Input device disconnected. Reconnecting...", "red")
-                                self._mic_error = True
                                 restart_needed = True
                                 break
 
-                            self._tx_db = self._level_db(data)
-                            self._last_tx = time.time()
                             sock, peer = self.sock, self.tx_peer
                             if sock is None or peer is None:
                                 return
@@ -890,9 +783,7 @@ class IntercomGUI:
                                 return  # הסוקט נסגר - יציאה נקייה
                     finally:
                         self._stream_closed()
-                        self._mic_open = False
             except sd.PortAudioError:
-                self._mic_error = True
                 restart_needed = True
 
             if not restart_needed or not self.is_running:
@@ -939,9 +830,7 @@ class IntercomGUI:
         # החזרת הלוח למצב מנותק (ה-tick ידאג לצייר)
         self.peer_id = ""
         self._call_started = 0.0
-        self._tx_db = self._rx_db = LEVEL_FLOOR
-        self._mic_open = self._spk_open = False
-        self._mic_error = self._spk_error = False
+        self._last_rx = 0.0
 
         def reset_gui() -> None:
             try:

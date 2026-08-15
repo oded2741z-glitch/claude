@@ -46,6 +46,7 @@ class IntercomCLI:
         self.server_ip: str = "192.168.1.11"
         self.server_port: int = 9999
         self.my_id: str = "node_B"
+        self.peer_id: str = ""
 
         self.load_settings()
 
@@ -174,9 +175,12 @@ class IntercomCLI:
             if not isinstance(info, dict) or "peer_ip" not in info or "peer_port" not in info:
                 continue
             try:
-                return (str(info["peer_ip"]), int(info["peer_port"]))
+                peer = (str(info["peer_ip"]), int(info["peer_port"]))
             except (TypeError, ValueError):
                 continue
+            peer_id = info.get("peer_id")
+            self.peer_id = peer_id.strip() if isinstance(peer_id, str) else ""
+            return peer
         return None
 
     def _connect_and_stream(self) -> None:
@@ -201,7 +205,8 @@ class IntercomCLI:
                 self.assigned_peer = peer_addr
                 self.tx_peer = peer_addr
 
-            self.log(f"Peer Target Assigned -> IP: {peer_addr[0]}, Port: {peer_addr[1]}")
+            who = f" ({self.peer_id})" if self.peer_id else ""
+            self.log(f"Peer Target Assigned{who} -> IP: {peer_addr[0]}, Port: {peer_addr[1]}")
             self.log("Sending UDP Hole Punch packets...")
 
             punch_until = time.time() + PUNCH_DURATION
@@ -357,6 +362,7 @@ class IntercomCLI:
             self.assigned_peer = None
             self.locked_peer = None
             self.tx_peer = None
+        self.peer_id = ""
 
         if was_connected:
             self.log("Intercom connection closed. Waiting for reconnect...")

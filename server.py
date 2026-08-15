@@ -148,7 +148,7 @@ class IntercomGUI:
         title_bar.bind("<ButtonPress-1>", self.start_move)
         title_bar.bind("<B1-Motion>", self.do_move)
 
-        title_lbl = tk.Label(title_bar, text="Code Injection - Intercom Server", font=Theme.FONT_TITLE,
+        title_lbl = tk.Label(title_bar, text="Intercom Server", font=Theme.FONT_TITLE,
                              bg=Theme.BG, fg=Theme.ACCENT)
         title_lbl.pack(side="left", padx=10)
         title_lbl.bind("<ButtonPress-1>", self.start_move)

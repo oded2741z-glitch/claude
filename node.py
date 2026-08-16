@@ -267,6 +267,8 @@ class IntercomNode:
         first = self.control.poll()
         if first:
             self.cfg.update(first)
+        if self.switch is not None:
+            self.switch.ensure_word("on" if self._want("intercom") else "off")
 
         log(f"Starting headless node [{self.cfg.get('my_id')}] role={self.role.upper()} "
             f"-> signalling {self._server_addr()[0]}:{self._server_addr()[1]}")

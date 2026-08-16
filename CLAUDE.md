@@ -118,10 +118,13 @@ node supervisor and `run()`'s own `finally` call it.
 what changed: `ext_ip`/`local_mode` are pushed onto the live server object, a
 port change restarts the server, an id/target change reopens the call.
 
-Two files feed the same `cfg` dict: the control file and an optional
-**switch file** (`switch_<ROLE>.txt`) whose entire content is one word —
-`on`/`off`/`quit`. Both are polled every tick and merged, so **whichever
-changed last wins**; there is no precedence rule to keep in mind. It exists
+Two files feed the same `cfg` dict: the control file and the **switch file**
+(`switch_<ROLE>.txt`) whose entire content is one word — `on`/`off`/`quit`.
+Both are polled every tick and merged, so **whichever changed last wins**;
+there is no precedence rule to keep in mind. The switch file is created
+seeded with the node's current `intercom` value, never a fixed `on`: at
+startup it is the last thing applied, so a fixed seed would silently override
+`intercom = off` in the control file. It exists
 because the external program should not have to rewrite a whole settings file
 (and risk dropping `server_ip` or `port`) just to toggle the call.
 

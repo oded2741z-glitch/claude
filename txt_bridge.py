@@ -153,6 +153,20 @@ class ControlFile:
         except OSError as e:
             log(f"Could not create {self.path}: {e}")
 
+    def ensure_word(self, word: str) -> None:
+        """Creates the switch file holding the state the node is already in.
+
+        נזרע בערך הנוכחי ולא ב-"on" קבוע: בהפעלה קובץ המתג הוא האחרון
+        שמוחל, אז קובץ שנוצר עם ערך אחר היה מבטל את intercom שבקובץ הבקרה.
+        """
+        if os.path.exists(self.path):
+            return
+        try:
+            write_text_atomic(self.path, word + "\n")
+            log(f"Created switch file: {self.path} (write on / off / quit into it)")
+        except OSError as e:
+            log(f"Could not create {self.path}: {e}")
+
     def poll(self) -> Optional[Dict[str, str]]:
         """Returns the new configuration if it changed, otherwise None."""
         try:

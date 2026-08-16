@@ -52,7 +52,7 @@ command    = quit        # shut the node down
 
 Rewriting the whole control file just to flip ON/OFF is awkward, and a program
 that rewrites it can lose `server_ip` or `port` by accident. So a node also
-reads an optional **switch file** whose entire content is a single word:
+reads a **switch file** whose entire content is a single word:
 
 ```bash
 echo off  > switch_A.txt      # closes the call
@@ -60,10 +60,11 @@ echo on   > switch_A.txt      # opens it
 echo quit > switch_A.txt      # shuts the node down
 ```
 
-`on`/`off`/`start`/`stop`/`1`/`0`/`true`/`false` all work. The file is read
-only if it exists, the other settings are never touched, and whichever of the
-two files changed last is the one that takes effect. Use `--switch <path>` to
-put it elsewhere, `--no-switch` to ignore it.
+The node creates this file on first start, next to the control file, holding
+whatever state it is already in. `on`/`off`/`start`/`stop`/`1`/`0`/`true`/`false`
+all work. The other settings are never touched, and whichever of the two files
+changed last is the one that takes effect. Use `--switch <path>` to put it
+elsewhere, `--no-switch` to ignore it.
 
 ### Reading the state
 

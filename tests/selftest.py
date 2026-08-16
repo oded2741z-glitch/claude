@@ -123,6 +123,8 @@ def main() -> int:
         and read_status(status_b).get("state") == "live", 25))
 
     print("4. the one-word switch file")
+    check("the switch file was created, seeded with the current state",
+          os.path.exists(switch_a) and open(switch_a, encoding="utf-8").read().strip() == "on")
     txt_bridge.write_text_atomic(switch_a, "off\n")
     check("a bare 'off' closes the call", wait_until(
         lambda: read_status(status_a).get("state") == "idle", 15))

@@ -55,11 +55,40 @@ def as_int(value: str, default: int) -> int:
         return default
 
 
+QUIT_WORDS = {"quit", "exit", "shutdown"}
+
+
+def parse_switch_word(text: str) -> Optional[Dict[str, str]]:
+    """A whole file that is just `on`, `off` or `quit`.
+
+    זה מה שמאפשר לתוכנה החיצונית לכתוב מילה אחת במקום לשכתב את כל
+    קובץ ההגדרות - שכתוב מלא עלול לאבד server_ip או port בטעות.
+    """
+    lines = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    if len(lines) != 1:
+        return None
+    word = lines[0].lower()
+    if word in TRUE_WORDS:
+        return {"intercom": "on"}
+    if word in FALSE_WORDS:
+        return {"intercom": "off"}
+    if word in QUIT_WORDS:
+        return {"command": word}
+    return None
+
+
 def parse_config_text(text: str) -> Optional[Dict[str, str]]:
-    """Parses JSON or `key = value` text. None means 'unusable, try again later'."""
+    """Parses JSON, `key = value` text, or a bare on/off/quit switch word.
+
+    None means 'unusable, try again later'.
+    """
     text = text.strip()
     if not text:
         return None
+
+    if "=" not in text and ":" not in text and not text.startswith("{"):
+        return parse_switch_word(text)
 
     if text.startswith("{"):
         try:
@@ -87,10 +116,15 @@ def parse_config_text(text: str) -> Optional[Dict[str, str]]:
 
 
 class ControlFile:
-    """Polls the control file and reports the configuration when it changes."""
+    """Polls a control file and reports the configuration when it changes.
 
-    def __init__(self, path: str) -> None:
+    `optional=True` is for the one-word switch file, which is only read when
+    the other program chose to create it - its absence is not worth a log line.
+    """
+
+    def __init__(self, path: str, optional: bool = False) -> None:
         self.path: str = path
+        self.optional: bool = optional
         self._signature: Optional[Tuple[float, int]] = None
         self._config: Dict[str, str] = {}
         self._missing_logged: bool = False
@@ -107,6 +141,9 @@ class ControlFile:
             "# Intercom control file - edit from any program, changes apply live.",
             "# intercom = on | off      open or close the call",
             "# command  = quit          shut the node down",
+            "#",
+            "# To toggle the call without rewriting this file, put a single word",
+            "# (on / off / quit) in the switch file next to it - see --switch.",
             "",
         ]
         lines += [f"{k} = {v}" for k, v in defaults.items()]
@@ -121,9 +158,10 @@ class ControlFile:
         try:
             stat = os.stat(self.path)
         except OSError:
-            if not self._missing_logged:
+            if not self._missing_logged and not self.optional:
                 self._missing_logged = True
                 log(f"Control file {self.path} is missing; keeping current settings.")
+            self._signature = None   # קובץ שנמחק ונוצר מחדש ייקרא שוב
             return None
         self._missing_logged = False
 

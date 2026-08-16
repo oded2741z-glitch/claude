@@ -118,12 +118,19 @@ node supervisor and `run()`'s own `finally` call it.
 what changed: `ext_ip`/`local_mode` are pushed onto the live server object, a
 port change restarts the server, an id/target change reopens the call.
 
+Two files feed the same `cfg` dict: the control file and an optional
+**switch file** (`switch_<ROLE>.txt`) whose entire content is one word —
+`on`/`off`/`quit`. Both are polled every tick and merged, so **whichever
+changed last wins**; there is no precedence rule to keep in mind. It exists
+because the external program should not have to rewrite a whole settings file
+(and risk dropping `server_ip` or `port`) just to toggle the call.
+
 Rules that must survive any edit here:
 
 - **The main loop never blocks.** Device availability is checked with the non-blocking `AUDIO.devices_ready()`, not `wait_for_devices()`, so the control file stays responsive on a machine with no headphones plugged in. The call itself runs on its own thread with a per-call stop event.
 - **A control file that fails to parse is ignored, and its (mtime, size) signature is not cached** — the other program may be halfway through writing, so the file is simply re-read next tick and the last good config stays in force.
 - **Status writes are atomic** (temp file + `os.replace`) and skipped when nothing changed, and the key set is fixed so a reader never sees a key disappear.
-- `parse_config_text` accepts `key = value`, `key: value` and JSON, and maps aliases (`ip` → `server_ip`), which is what keeps the old GUI's `settings_A.txt` / `settings.txt` working as control files.
+- `parse_config_text` accepts `key = value`, `key: value`, JSON, and a bare switch word, and maps aliases (`ip` → `server_ip`), which is what keeps the old GUI's `settings_A.txt` / `settings.txt` working as control files.
 
 ## Language conventions
 

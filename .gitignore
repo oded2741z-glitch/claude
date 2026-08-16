@@ -4,6 +4,8 @@ __pycache__/
 # Runtime files created by the nodes on the machine they run on
 control_A.txt
 control_B.txt
+switch_A.txt
+switch_B.txt
 status_A.txt
 status_B.txt
 settings.txt

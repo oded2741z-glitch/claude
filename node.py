@@ -56,15 +56,19 @@ ROLE_DEFAULTS: Dict[str, Dict[str, str]] = {
 # הקבצים שגרסת ה-GUI כתבה - נמשיך לקרוא אותם אם הם כבר קיימים
 LEGACY_CONTROL: Dict[str, str] = {"a": "settings_A.txt", "b": "settings.txt"}
 DEFAULT_CONTROL: Dict[str, str] = {"a": "control_A.txt", "b": "control_B.txt"}
+DEFAULT_SWITCH: Dict[str, str] = {"a": "switch_A.txt", "b": "switch_B.txt"}
 DEFAULT_STATUS: Dict[str, str] = {"a": "status_A.txt", "b": "status_B.txt"}
 
 
 class IntercomNode:
     def __init__(self, role: str, control_path: str, status_path: str,
-                 defaults: Dict[str, str]) -> None:
+                 defaults: Dict[str, str], switch_path: str = "") -> None:
         self.role: str = role
         self.cfg: Dict[str, str] = dict(defaults)
         self.control: ControlFile = ControlFile(control_path)
+        # קובץ מתג אופציונלי: כל תוכנו מילה אחת, on / off / quit
+        self.switch: Optional[ControlFile] = (
+            ControlFile(switch_path, optional=True) if switch_path else None)
         self.status: StatusFile = StatusFile(status_path) if status_path else None
 
         self.stop_event: threading.Event = threading.Event()
@@ -267,6 +271,7 @@ class IntercomNode:
         log(f"Starting headless node [{self.cfg.get('my_id')}] role={self.role.upper()} "
             f"-> signalling {self._server_addr()[0]}:{self._server_addr()[1]}")
         log(f"Control file: {self.control.path}"
+            + (f" | Switch file: {self.switch.path}" if self.switch else "")
             + (f" | Status file: {self.status.path}" if self.status else ""))
         log("Press Ctrl+C to exit.")
 
@@ -275,11 +280,13 @@ class IntercomNode:
 
         while not self.stop_event.is_set():
             try:
-                changes = self.control.poll()
-                if changes:
-                    self._apply(changes)
-                    if self.stop_event.is_set():
-                        break
+                # שני המקורות נקראים בכל סבב, והשינוי האחרון הוא הקובע
+                for source in (self.control, self.switch):
+                    changes = source.poll() if source is not None else None
+                    if changes:
+                        self._apply(changes)
+                if self.stop_event.is_set():
+                    break
                 self._supervise_call()
                 self._write_status()
             except Exception as e:
@@ -327,6 +334,9 @@ def parse_args(default_role: str = "b") -> argparse.Namespace:
     p.add_argument("--role", choices=("a", "b"), default=default_role,
                    help="a = signalling server + peer (computer A), b = peer only (computer B)")
     p.add_argument("--control", help="control file to read (default control_<ROLE>.txt)")
+    p.add_argument("--switch", help="one-word on/off/quit file (default switch_<ROLE>.txt); "
+                                    "read only when it exists")
+    p.add_argument("--no-switch", action="store_true", help="ignore the switch file")
     p.add_argument("--status", help="status file to write (default status_<ROLE>.txt)")
     p.add_argument("--no-status", action="store_true", help="do not write a status file")
     p.add_argument("--id", dest="my_id", help="this node's id (must differ from the peer's)")
@@ -368,8 +378,9 @@ def main(default_role: str = "b") -> None:
 
     control_path = _resolve_path(args.control, args.role, DEFAULT_CONTROL, LEGACY_CONTROL)
     status_path = "" if args.no_status else _resolve_path(args.status, args.role, DEFAULT_STATUS)
+    switch_path = "" if args.no_switch else _resolve_path(args.switch, args.role, DEFAULT_SWITCH)
 
-    node = IntercomNode(args.role, control_path, status_path, defaults)
+    node = IntercomNode(args.role, control_path, status_path, defaults, switch_path)
 
     def handle_signal(signum, _frame) -> None:
         log(f"Received signal {signum}; exiting.")

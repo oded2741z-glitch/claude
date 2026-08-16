@@ -522,11 +522,40 @@ def as_int(value: str, default: int) -> int:
         return default
 
 
+QUIT_WORDS = {"quit", "exit", "shutdown"}
+
+
+def parse_switch_word(text: str) -> Optional[Dict[str, str]]:
+    """A whole file that is just `on`, `off` or `quit`.
+
+    זה מה שמאפשר לתוכנה החיצונית לכתוב מילה אחת במקום לשכתב את כל
+    קובץ ההגדרות - שכתוב מלא עלול לאבד server_ip או port בטעות.
+    """
+    lines = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    if len(lines) != 1:
+        return None
+    word = lines[0].lower()
+    if word in TRUE_WORDS:
+        return {"intercom": "on"}
+    if word in FALSE_WORDS:
+        return {"intercom": "off"}
+    if word in QUIT_WORDS:
+        return {"command": word}
+    return None
+
+
 def parse_config_text(text: str) -> Optional[Dict[str, str]]:
-    """Parses JSON or `key = value` text. None means 'unusable, try again later'."""
+    """Parses JSON, `key = value` text, or a bare on/off/quit switch word.
+
+    None means 'unusable, try again later'.
+    """
     text = text.strip()
     if not text:
         return None
+
+    if "=" not in text and ":" not in text and not text.startswith("{"):
+        return parse_switch_word(text)
 
     if text.startswith("{"):
         try:
@@ -554,10 +583,15 @@ def parse_config_text(text: str) -> Optional[Dict[str, str]]:
 
 
 class ControlFile:
-    """Polls the control file and reports the configuration when it changes."""
+    """Polls a control file and reports the configuration when it changes.
 
-    def __init__(self, path: str) -> None:
+    `optional=True` is for the one-word switch file, which is only read when
+    the other program chose to create it - its absence is not worth a log line.
+    """
+
+    def __init__(self, path: str, optional: bool = False) -> None:
         self.path: str = path
+        self.optional: bool = optional
         self._signature: Optional[Tuple[float, int]] = None
         self._config: Dict[str, str] = {}
         self._missing_logged: bool = False
@@ -574,6 +608,9 @@ class ControlFile:
             "# Intercom control file - edit from any program, changes apply live.",
             "# intercom = on | off      open or close the call",
             "# command  = quit          shut the node down",
+            "#",
+            "# To toggle the call without rewriting this file, put a single word",
+            "# (on / off / quit) in the switch file next to it - see --switch.",
             "",
         ]
         lines += [f"{k} = {v}" for k, v in defaults.items()]
@@ -588,9 +625,10 @@ class ControlFile:
         try:
             stat = os.stat(self.path)
         except OSError:
-            if not self._missing_logged:
+            if not self._missing_logged and not self.optional:
                 self._missing_logged = True
                 log(f"Control file {self.path} is missing; keeping current settings.")
+            self._signature = None   # קובץ שנמחק ונוצר מחדש ייקרא שוב
             return None
         self._missing_logged = False
 
@@ -903,15 +941,19 @@ ROLE_DEFAULTS: Dict[str, Dict[str, str]] = {
 # הקבצים שגרסת ה-GUI כתבה - נמשיך לקרוא אותם אם הם כבר קיימים
 LEGACY_CONTROL: Dict[str, str] = {"a": "settings_A.txt", "b": "settings.txt"}
 DEFAULT_CONTROL: Dict[str, str] = {"a": "control_A.txt", "b": "control_B.txt"}
+DEFAULT_SWITCH: Dict[str, str] = {"a": "switch_A.txt", "b": "switch_B.txt"}
 DEFAULT_STATUS: Dict[str, str] = {"a": "status_A.txt", "b": "status_B.txt"}
 
 
 class IntercomNode:
     def __init__(self, role: str, control_path: str, status_path: str,
-                 defaults: Dict[str, str]) -> None:
+                 defaults: Dict[str, str], switch_path: str = "") -> None:
         self.role: str = role
         self.cfg: Dict[str, str] = dict(defaults)
         self.control: ControlFile = ControlFile(control_path)
+        # קובץ מתג אופציונלי: כל תוכנו מילה אחת, on / off / quit
+        self.switch: Optional[ControlFile] = (
+            ControlFile(switch_path, optional=True) if switch_path else None)
         self.status: StatusFile = StatusFile(status_path) if status_path else None
 
         self.stop_event: threading.Event = threading.Event()
@@ -1114,6 +1156,7 @@ class IntercomNode:
         log(f"Starting headless node [{self.cfg.get('my_id')}] role={self.role.upper()} "
             f"-> signalling {self._server_addr()[0]}:{self._server_addr()[1]}")
         log(f"Control file: {self.control.path}"
+            + (f" | Switch file: {self.switch.path}" if self.switch else "")
             + (f" | Status file: {self.status.path}" if self.status else ""))
         log("Press Ctrl+C to exit.")
 
@@ -1122,11 +1165,13 @@ class IntercomNode:
 
         while not self.stop_event.is_set():
             try:
-                changes = self.control.poll()
-                if changes:
-                    self._apply(changes)
-                    if self.stop_event.is_set():
-                        break
+                # שני המקורות נקראים בכל סבב, והשינוי האחרון הוא הקובע
+                for source in (self.control, self.switch):
+                    changes = source.poll() if source is not None else None
+                    if changes:
+                        self._apply(changes)
+                if self.stop_event.is_set():
+                    break
                 self._supervise_call()
                 self._write_status()
             except Exception as e:
@@ -1174,6 +1219,9 @@ def parse_args(default_role: str = "b") -> argparse.Namespace:
     p.add_argument("--role", choices=("a", "b"), default=default_role,
                    help="a = signalling server + peer (computer A), b = peer only (computer B)")
     p.add_argument("--control", help="control file to read (default control_<ROLE>.txt)")
+    p.add_argument("--switch", help="one-word on/off/quit file (default switch_<ROLE>.txt); "
+                                    "read only when it exists")
+    p.add_argument("--no-switch", action="store_true", help="ignore the switch file")
     p.add_argument("--status", help="status file to write (default status_<ROLE>.txt)")
     p.add_argument("--no-status", action="store_true", help="do not write a status file")
     p.add_argument("--id", dest="my_id", help="this node's id (must differ from the peer's)")
@@ -1215,8 +1263,9 @@ def main(default_role: str = "b") -> None:
 
     control_path = _resolve_path(args.control, args.role, DEFAULT_CONTROL, LEGACY_CONTROL)
     status_path = "" if args.no_status else _resolve_path(args.status, args.role, DEFAULT_STATUS)
+    switch_path = "" if args.no_switch else _resolve_path(args.switch, args.role, DEFAULT_SWITCH)
 
-    node = IntercomNode(args.role, control_path, status_path, defaults)
+    node = IntercomNode(args.role, control_path, status_path, defaults, switch_path)
 
     def handle_signal(signum, _frame) -> None:
         log(f"Received signal {signum}; exiting.")

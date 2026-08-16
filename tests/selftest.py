@@ -5,10 +5,12 @@
 Runs a real signalling server and two real nodes over real UDP sockets on
 localhost, with the audio devices replaced by fake ones, and checks that:
 
-  1. the two nodes get matched and audio actually reaches both sides;
+  1. the two nodes get matched, audio reaches both sides, and the status
+     file reports the far side's state;
   2. `intercom = off` in the control file closes the call;
   3. `intercom = on` reopens it;
-  4. the status file reports the far side's state;
+  4. a bare `off` / `on` in the switch file does the same without touching
+     the other settings;
   5. unplugging the audio device ends the call and replugging recovers it;
   6. `command = quit` shuts a node down.
 
@@ -76,7 +78,8 @@ def main() -> int:
 
     ctrl_a, ctrl_b = "control_A.txt", "control_B.txt"
     status_a, status_b = "status_A.txt", "status_B.txt"
-    for stale in (ctrl_a, ctrl_b, status_a, status_b):
+    switch_a = "switch_A.txt"
+    for stale in (ctrl_a, ctrl_b, status_a, status_b, switch_a):
         if os.path.exists(stale):
             os.remove(stale)
 
@@ -84,7 +87,7 @@ def main() -> int:
     write_control(ctrl_a, my_id="node_A", signalling="on", **common)
     write_control(ctrl_b, my_id="node_B", signalling="off", **common)
 
-    node_a = IntercomNode("a", ctrl_a, status_a, {})
+    node_a = IntercomNode("a", ctrl_a, status_a, {}, switch_a)
     node_b = IntercomNode("b", ctrl_b, status_b, {})
     threads = [threading.Thread(target=n.run, daemon=True) for n in (node_a, node_b)]
 
@@ -119,7 +122,18 @@ def main() -> int:
         lambda: read_status(status_a).get("state") == "live"
         and read_status(status_b).get("state") == "live", 25))
 
-    print("4. unplugging the audio device")
+    print("4. the one-word switch file")
+    txt_bridge.write_text_atomic(switch_a, "off\n")
+    check("a bare 'off' closes the call", wait_until(
+        lambda: read_status(status_a).get("state") == "idle", 15))
+    check("the other settings survived the switch",
+          node_a.cfg.get("server_ip") == "127.0.0.1" and node_a.cfg.get("my_id") == "node_A")
+    txt_bridge.write_text_atomic(switch_a, "on\n")
+    check("a bare 'on' reopens it", wait_until(
+        lambda: read_status(status_a).get("state") == "live"
+        and read_status(status_b).get("state") == "live", 25))
+
+    print("5. unplugging the audio device")
     fake_sounddevice.set_available(False)
     check("call drops when the device disappears", wait_until(
         lambda: read_status(status_a).get("state") != "live", 20))
@@ -128,7 +142,7 @@ def main() -> int:
         lambda: read_status(status_a).get("state") == "live"
         and read_status(status_b).get("state") == "live", 30))
 
-    print("5. command = quit")
+    print("6. command = quit")
     write_control(ctrl_b, my_id="node_B", signalling="off", server_ip="127.0.0.1",
                   port=PORT, local_mode="on", intercom="on", command="quit")
     check("node B exits", wait_until(lambda: not threads[1].is_alive(), 20))

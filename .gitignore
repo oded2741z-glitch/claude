@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# Runtime files created by the nodes on the machine they run on
+control_A.txt
+control_B.txt
+status_A.txt
+status_B.txt
+settings.txt
+settings_A.txt
+tests/_selftest_run/

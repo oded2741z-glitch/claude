@@ -69,6 +69,26 @@ def read_status(path: str) -> dict:
         return {}
 
 
+def check_logging_without_console() -> None:
+    """A service run has no console: sys.stdout is None under pythonw.exe."""
+    import intercom_core
+    log_path = os.path.join(WORKDIR, "node.log")
+    intercom_core.set_log_file(log_path)
+    real_stdout, sys.stdout = sys.stdout, None
+    try:
+        intercom_core.log("console-less log line")
+        crashed = False
+    except Exception:
+        crashed = True
+    finally:
+        sys.stdout = real_stdout
+        intercom_core.set_log_file("")
+    check("logging survives having no console", not crashed)
+    check("the log line reached the log file",
+          os.path.exists(log_path)
+          and "console-less log line" in open(log_path, encoding="utf-8").read())
+
+
 def main() -> int:
     print("0. single-file bundles")
     check("intercom_A.py / intercom_B.py match the modules", build_single_file.check())
@@ -86,6 +106,8 @@ def main() -> int:
     common = {"server_ip": "127.0.0.1", "port": PORT, "local_mode": "on", "intercom": "on"}
     write_control(ctrl_a, my_id="node_A", signalling="on", **common)
     write_control(ctrl_b, my_id="node_B", signalling="off", **common)
+
+    check_logging_without_console()
 
     node_a = IntercomNode("a", ctrl_a, status_a, {}, switch_a)
     node_b = IntercomNode("b", ctrl_b, status_b, {})

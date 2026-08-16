@@ -56,18 +56,40 @@ STATE_LIVE: str = "live"
 
 
 _LOG_LOCK: threading.Lock = threading.Lock()
+_LOG_FILE: str = ""
+
+
+def set_log_file(path: str) -> None:
+    """Also append every log line to this file. For runs with no console."""
+    global _LOG_FILE
+    _LOG_FILE = path
 
 
 def log(msg: str) -> None:
-    """Single logging path for every process: timestamped line on stdout.
+    """Single logging path for every process: one timestamped line.
 
     Written as one call under a lock - `print` emits the text and the newline
     separately, so lines from the audio, socket and server threads interleave.
+
+    לוגים לעולם לא מפילים את הנוד: תחת pythonw.exe אין קונסולה ו-sys.stdout
+    הוא None, ושירות עלול לרוץ בלי הרשאת כתיבה לקובץ הלוג.
     """
     line = f"[{time.strftime('%H:%M:%S')}] {msg}\n"
     with _LOG_LOCK:
-        sys.stdout.write(line)
-        sys.stdout.flush()
+        stream = sys.stdout
+        if stream is not None:
+            try:
+                stream.write(line)
+                stream.flush()
+            except (OSError, ValueError):
+                pass
+        if _LOG_FILE:
+            try:
+                # נפתח בכל שורה כדי לשרוד מחיקה או רוטציה של הקובץ
+                with open(_LOG_FILE, "a", encoding="utf-8") as f:
+                    f.write(line)
+            except OSError:
+                pass
 
 
 def parse_json_dict(data: bytes) -> Optional[Dict]:

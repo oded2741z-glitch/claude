@@ -24,7 +24,7 @@ import threading
 import time
 from typing import Dict, Optional
 
-from intercom_core import AUDIO, IntercomPeer, log
+from intercom_core import AUDIO, IntercomPeer, log, set_log_file
 from signalling import SignallingServer
 from txt_bridge import ControlFile, StatusFile, as_bool, as_int
 
@@ -341,6 +341,8 @@ def parse_args(default_role: str = "b") -> argparse.Namespace:
     p.add_argument("--no-switch", action="store_true", help="ignore the switch file")
     p.add_argument("--status", help="status file to write (default status_<ROLE>.txt)")
     p.add_argument("--no-status", action="store_true", help="do not write a status file")
+    p.add_argument("--log-file", help="append the log here too; use it when running as a "
+                                      "service, where there is no console to read")
     p.add_argument("--id", dest="my_id", help="this node's id (must differ from the peer's)")
     p.add_argument("--server-ip", help="signalling server address")
     p.add_argument("--port", type=int, help="signalling server port")
@@ -357,6 +359,8 @@ def parse_args(default_role: str = "b") -> argparse.Namespace:
 def main(default_role: str = "b") -> None:
     """`default_role` is what the single-file builds pin down (see build_single_file.py)."""
     args = parse_args(default_role)
+    if args.log_file:
+        set_log_file(args.log_file)
     defaults = dict(ROLE_DEFAULTS[args.role])
     if args.role == "a":
         # הרישום העצמי חייב לצאת דרך כרטיס הרשת, אחרת B יקבל 127.0.0.1

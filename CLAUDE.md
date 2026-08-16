@@ -15,7 +15,16 @@ action the old GUI had behind a button is now a line in a TXT file.
 | `intercom_core.py` | wire protocol, `AudioGuard`, `IntercomPeer` (one call, start to finish) |
 | `signalling.py` | `SignallingServer`: UDP rendezvous, matches two peers, never carries audio |
 | `txt_bridge.py` | `ControlFile` / `StatusFile` — the TXT bridge |
+| `intercom_A.py`, `intercom_B.py` | **generated, never edit by hand** — one self-contained file per machine, which is what actually gets deployed |
+| `build_single_file.py` | regenerates those two |
 | `legacy_gui/` | the original Tkinter `server.py` + `clint.py`. **Reference only, not deployed** — do not fix bugs there, and do not import from it |
+
+**Edit the modules, then run `python build_single_file.py`.** The bundles are
+committed because the two target machines get one file each, but they are pure
+output: the builder concatenates the real module source, dropping only the
+cross-module imports and `if __name__` guards, so there is never a second
+implementation to keep in sync. `selftest.py` fails when they are stale, and
+`build_single_file.py --check` is that same check on its own.
 
 The signalling server is a rendezvous point only. **Audio never passes through
 it** — it hands each side the other's `(ip, port)` and drops out of the path.
@@ -26,6 +35,7 @@ it** — it hands each side the other's `(ip, port)` and drops out of the path.
 pip install sounddevice numpy      # plus PortAudio on the OS: apt install libportaudio2
 python node.py --role a            # computer A: signalling server + peer
 python node.py --role b --server-ip <A>   # computer B: peer only
+python build_single_file.py        # regenerate intercom_A.py / intercom_B.py
 python tests/selftest.py           # end-to-end, no sound card needed; exit 0 = pass
 ```
 

@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import fake_sounddevice                      # noqa: E402
 fake_sounddevice.install()                   # must precede the app imports
 
+import build_single_file                     # noqa: E402
 import txt_bridge                            # noqa: E402
 from node import IntercomNode                # noqa: E402
 
@@ -67,6 +68,9 @@ def read_status(path: str) -> dict:
 
 
 def main() -> int:
+    print("0. single-file bundles")
+    check("intercom_A.py / intercom_B.py match the modules", build_single_file.check())
+
     os.makedirs(WORKDIR, exist_ok=True)
     os.chdir(WORKDIR)
 

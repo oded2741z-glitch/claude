@@ -13,21 +13,25 @@ pip install sounddevice numpy
 
 ## Run
 
-**Computer A** — hosts the signalling server and takes part in the call
-(headphones):
+Copy **one file** to each machine — that is all each side needs:
+
+| Machine | File | Command |
+|---|---|---|
+| A — signalling server + peer (headphones) | `intercom_A.py` | `python intercom_A.py` |
+| B — peer only (speakers + microphone) | `intercom_B.py` | `python intercom_B.py --server-ip <A>` |
+
+Each node writes a `control_<ROLE>.txt` template on first start and a
+`status_<ROLE>.txt` next to it, in the directory it is run from. Ids must
+differ between the two machines.
+
+`intercom_A.py` and `intercom_B.py` are built from the modules in this repo by
+`python build_single_file.py`. To work on the code, run the modules directly
+instead — same program, same flags:
 
 ```bash
 python node.py --role a
-```
-
-**Computer B** — client only (speakers + microphone):
-
-```bash
 python node.py --role b --server-ip <computer A's address>
 ```
-
-Each node writes a `control_<ROLE>.txt` template on first start and a
-`status_<ROLE>.txt` next to it. Ids must differ between the two machines.
 
 ## Controlling a node from another program
 
@@ -74,6 +78,8 @@ python tests/selftest.py
 
 | File | Role |
 |---|---|
+| `intercom_A.py`, `intercom_B.py` | **generated** standalone builds — what you deploy |
+| `build_single_file.py` | rebuilds those two from the modules below |
 | `node.py` | the only entry point: role A (server + peer) or role B (peer) |
 | `intercom_core.py` | wire protocol, PortAudio guards, the peer/call loop |
 | `signalling.py` | UDP rendezvous server — matches two peers, never carries audio |

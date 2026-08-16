@@ -322,9 +322,9 @@ def _resolve_path(explicit: Optional[str], role: str, table: Dict[str, str],
     return default
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(default_role: str = "b") -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Headless P2P intercom node (no GUI).")
-    p.add_argument("--role", choices=("a", "b"), default="b",
+    p.add_argument("--role", choices=("a", "b"), default=default_role,
                    help="a = signalling server + peer (computer A), b = peer only (computer B)")
     p.add_argument("--control", help="control file to read (default control_<ROLE>.txt)")
     p.add_argument("--status", help="status file to write (default status_<ROLE>.txt)")
@@ -342,8 +342,9 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def main(default_role: str = "b") -> None:
+    """`default_role` is what the single-file builds pin down (see build_single_file.py)."""
+    args = parse_args(default_role)
     defaults = dict(ROLE_DEFAULTS[args.role])
     if args.role == "a":
         # הרישום העצמי חייב לצאת דרך כרטיס הרשת, אחרת B יקבל 127.0.0.1

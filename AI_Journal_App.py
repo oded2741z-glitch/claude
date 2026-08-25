@@ -10,9 +10,68 @@ import pygame
 from datetime import datetime
 from PIL import Image, ImageTk
 import speech_recognition as sr
+import calendar
+import re
+import shutil
+import tempfile
 
-CONFIG_FILE = "config.json"
-HISTORY_FILE = "journal_history.json"
+APP_DIR_NAME = "AI_Journal"
+
+
+def user_data_dir():
+    """Per-user data directory, so the journal does not depend on the working directory."""
+    try:
+        if sys.platform == "win32":
+            base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        elif sys.platform == "darwin":
+            base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+        path = os.path.join(base, APP_DIR_NAME)
+        os.makedirs(path, exist_ok=True)
+        return path
+    except Exception:
+        return os.path.abspath(".")
+
+
+DATA_DIR = user_data_dir()
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+HISTORY_FILE = os.path.join(DATA_DIR, "journal_history.json")
+
+HEBREW_CHARS = re.compile(r"[\u0590-\u05FF]")
+
+
+def migrate_legacy_files():
+    """Bring over config/history that older versions left in the working directory."""
+    for name in ("config.json", "journal_history.json"):
+        legacy = os.path.abspath(name)
+        target = os.path.join(DATA_DIR, name)
+        if os.path.exists(legacy) and not os.path.exists(target):
+            try:
+                shutil.copy2(legacy, target)
+            except Exception:
+                pass
+
+
+def write_json_atomic(path, data):
+    """Write through a temp file so a failed write cannot truncate the existing one."""
+    directory = os.path.dirname(path) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp_", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+migrate_legacy_files()
 
 # --- GLOBAL FONT SETTING ---
 MAIN_FONT = "Georgia"
@@ -32,6 +91,7 @@ class AIJournalHardcoded:
         self.api_key = self.config_data.get("api_key", "")
         self.user_name = self.config_data.get("user_name", "My")
         self.user_password = self.config_data.get("password", "")
+        self.language = self.config_data.get("language", "he")
 
         self.current_mood = ""
         now = datetime.now()
@@ -53,6 +113,9 @@ class AIJournalHardcoded:
 
         self.build_main_app()
         self.build_cover_screen()
+
+        if self.history_load_failed:
+            self.set_status("⚠ History file unreadable — saving is paused to protect it")
         
         month_idx = self.month_names_short.index(self.current_month)
         day_idx = int(self.current_day) - 1
@@ -161,6 +224,9 @@ class AIJournalHardcoded:
 
         tk.Button(self.top_bar, text="✕", bg="#F9F9F8", fg="#A0A0A0", relief="flat", borderwidth=0, font=(MAIN_FONT, 12, FONT_STYLE), command=self.return_to_cover).pack(side="right", padx=10)
         tk.Button(self.top_bar, text="⚙ Settings", bg="#F9F9F8", fg="#A0A0A0", relief="flat", borderwidth=0, font=(MAIN_FONT, 11, FONT_STYLE), command=self.show_help_settings).pack(side="right", padx=5)
+
+        self.status_lbl = tk.Label(self.top_bar, text="", bg="#F9F9F8", fg="#cc0000", font=(MAIN_FONT, 10, FONT_STYLE))
+        self.status_lbl.pack(side="right", padx=10)
 
         self.main_title_lbl = tk.Label(self.top_bar, text=f"{self.user_name}'s {self.current_year} Journal", bg="#F9F9F8", fg="#505050", font=(MAIN_FONT, 18, FONT_STYLE))
         self.main_title_lbl.pack(side="left", padx=300, expand=True)
@@ -348,8 +414,8 @@ class AIJournalHardcoded:
                 # Listen to the user (timeout if nobody speaks for 5s, max phrase length 15s)
                 audio = recognizer.listen(source, timeout=5, phrase_time_limit=15)
             
-            # Use Google's free Web Speech API (Default language is English)
-            text = recognizer.recognize_google(audio)
+            # Google's free Web Speech API, in the language chosen in Settings
+            text = recognizer.recognize_google(audio, language=self.dictation_locale())
             self.root.after(0, self.insert_dictation, text)
             
         except sr.WaitTimeoutError:
@@ -359,6 +425,9 @@ class AIJournalHardcoded:
         except Exception as e:
             print("Dictation error:", e)
             self.root.after(0, self.reset_dictate_btn)
+
+    def dictation_locale(self):
+        return "he-IL" if self.language == "he" else "en-US"
 
     def insert_dictation(self, text):
         current_text = self.thoughts_area.get("1.0", tk.END).strip()
@@ -377,16 +446,16 @@ class AIJournalHardcoded:
     # DATA SAVING & LOADING LOGIC
     # ==========================================
     def load_journal_data(self):
+        self.history_load_failed = False
         if os.path.exists(HISTORY_FILE):
             try:
                 with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    if isinstance(data, dict):
-                        return data
-                    else:
-                        return {}
+                if isinstance(data, dict):
+                    return data
+                self.history_load_failed = True
             except Exception:
-                pass
+                self.history_load_failed = True
         return {}
 
     def get_current_date_key(self):
@@ -397,7 +466,15 @@ class AIJournalHardcoded:
             self.root.after_cancel(self.auto_save_timer)
         self.auto_save_timer = self.root.after(2000, self.save_current_day_data)
 
+    def set_status(self, message):
+        if hasattr(self, "status_lbl") and self.status_lbl.winfo_exists():
+            self.status_lbl.config(text=message)
+
     def save_current_day_data(self):
+        if self.history_load_failed:
+            self.set_status("⚠ History file unreadable — saving is paused to protect it")
+            return
+
         date_key = self.get_current_date_key()
         
         water_count = sum(1 for lbl in self.water_cups if lbl.cget("text") == "●")
@@ -426,10 +503,10 @@ class AIJournalHardcoded:
         self.journal_data[date_key] = data
         
         try:
-            with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.journal_data, f, ensure_ascii=False, indent=4)
-        except Exception:
-            pass
+            write_json_atomic(HISTORY_FILE, self.journal_data)
+            self.set_status("")
+        except Exception as e:
+            self.set_status(f"⚠ Save failed: {str(e)[:60]}")
 
     def load_day_data(self):
         date_key = self.get_current_date_key()
@@ -510,6 +587,27 @@ class AIJournalHardcoded:
                 lbl.config(bg="#F9F9F8", fg="#505050")
             self.current_weekday = ""
 
+    def days_in_current_month(self):
+        month_num = self.month_names_short.index(self.current_month) + 1
+        return calendar.monthrange(self.current_year, month_num)[1]
+
+    def refresh_day_labels(self):
+        """Show only the days this month has, and pull the selection back inside it."""
+        last_day = self.days_in_current_month()
+        for lbl in self.day_labels:
+            lbl.pack_forget()
+        for lbl in self.day_labels[:last_day]:
+            lbl.pack(side="left", padx=3)
+
+        if int(self.current_day) > last_day:
+            self.current_day = str(last_day)
+            if hasattr(self, 'day_display_lbl'):
+                self.day_display_lbl.config(text=self.current_day)
+
+        for lbl in self.day_labels:
+            lbl.config(bg="#F9F9F8", fg="#A0A0A0")
+        self.day_labels[int(self.current_day) - 1].config(bg="#FFA0A0", fg="#FFFFFF")
+
     def toggle_water(self, index):
         lbl = self.water_cups[index]
         if lbl.cget("text") == "○":
@@ -537,7 +635,10 @@ class AIJournalHardcoded:
         full_names = {"JAN": "January", "FEB": "February", "MAR": "March", "APR": "April", "MAY": "May", "JUN": "June", "JUL": "July", "AUG": "August", "SEP": "September", "OCT": "October", "NOV": "November", "DEC": "December"}
         if hasattr(self, 'month_display_lbl'):
             self.month_display_lbl.config(text=full_names[month])
-            
+
+        self.refresh_day_labels()
+
+
         if auto_update:
             self.update_weekday_highlight()
             self.load_day_data()
@@ -560,18 +661,24 @@ class AIJournalHardcoded:
     # LOGIC (API, TTS, CONFIG)
     # ==========================================
     def load_config(self):
-        if os.path.exists(CONFIG_FILE):
+        if not os.path.exists(CONFIG_FILE):
+            return {}
+        # utf-8 first, then the locale encoding for files written by older versions
+        for encoding in ("utf-8", None):
             try:
-                with open(CONFIG_FILE, 'r') as f:
+                with open(CONFIG_FILE, 'r', encoding=encoding) as f:
                     return json.load(f)
+            except UnicodeError:
+                continue
             except Exception:
                 return {}
         return {}
 
-    def save_config(self, api_key, user_name, user_password):
+    def save_config(self, api_key, user_name, user_password, language):
         self.api_key = api_key
         self.user_name = user_name
         self.user_password = user_password
+        self.language = language
         self.main_title_lbl.config(text=f"{self.user_name}'s {self.current_year} Journal")
         
         if hasattr(self, 'cover_frame') and self.cover_frame.winfo_exists():
@@ -579,15 +686,16 @@ class AIJournalHardcoded:
             self.build_cover_screen()
             
         try:
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump({"api_key": api_key, "user_name": user_name, "password": user_password}, f)
-        except Exception:
-            pass
+            write_json_atomic(CONFIG_FILE, {"api_key": api_key, "user_name": user_name,
+                                            "password": user_password, "language": language})
+            self.set_status("")
+        except Exception as e:
+            self.set_status(f"⚠ Settings not saved: {str(e)[:60]}")
 
     def show_help_settings(self):
         settings_win = tk.Toplevel(self.root)
         settings_win.overrideredirect(True)
-        settings_win.geometry("400x310")
+        settings_win.geometry("400x370")
         settings_win.configure(bg="#FFFFFF")
         
         frame = tk.Frame(settings_win, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -611,12 +719,20 @@ class AIJournalHardcoded:
         api_entry = tk.Entry(frame, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, font=(MAIN_FONT, 11, FONT_STYLE))
         api_entry.place(x=20, y=191, width=360, height=28)
         api_entry.insert(0, self.api_key)
-        
+
+        tk.Label(frame, text="Dictation Language:", bg="#FFFFFF", fg="#505050", font=(MAIN_FONT, 11, FONT_STYLE)).place(x=20, y=224)
+        lang_names = {"he": "Hebrew (he-IL)", "en": "English (en-US)"}
+        lang_var = tk.StringVar(value=lang_names.get(self.language, lang_names["en"]))
+        lang_menu = tk.OptionMenu(frame, lang_var, *lang_names.values())
+        lang_menu.config(bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, highlightthickness=0, font=(MAIN_FONT, 11, FONT_STYLE))
+        lang_menu.place(x=20, y=247, width=360, height=28)
+
         def save_and_close():
-            self.save_config(api_entry.get().strip(), name_entry.get().strip(), pass_entry.get().strip())
+            language = next((code for code, name in lang_names.items() if name == lang_var.get()), "en")
+            self.save_config(api_entry.get().strip(), name_entry.get().strip(), pass_entry.get().strip(), language)
             settings_win.destroy()
 
-        tk.Button(frame, text="Save Settings", bg="#323232", fg="#FFFFFF", relief="flat", font=(MAIN_FONT, 11, FONT_STYLE), command=save_and_close).place(x=20, y=245, width=150, height=35)
+        tk.Button(frame, text="Save Settings", bg="#323232", fg="#FFFFFF", relief="flat", font=(MAIN_FONT, 11, FONT_STYLE), command=save_and_close).place(x=20, y=300, width=150, height=35)
 
     def read_aloud(self):
         text = self.reflection_area.get("1.0", tk.END).strip()
@@ -627,7 +743,8 @@ class AIJournalHardcoded:
 
     def speak_text(self, text):
         try:
-            tts = gTTS(text=text, lang='en', slow=False)
+            lang = "he" if HEBREW_CHARS.search(text) else "en"
+            tts = gTTS(text=text, lang=lang, slow=False)
             fp = io.BytesIO()
             tts.write_to_fp(fp)
             fp.seek(0)

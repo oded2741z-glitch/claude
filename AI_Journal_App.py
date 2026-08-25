@@ -1,4 +1,5 @@
 import tkinter as tk
+import tkinter.font as tkfont
 import threading
 import json
 import os
@@ -10,11 +11,16 @@ import pygame
 from datetime import datetime
 from PIL import Image, ImageTk
 import speech_recognition as sr
+import base64
 import calendar
 import shutil
 import tempfile
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 APP_DIR_NAME = "AI_Journal"
+MAX_TODO_ITEMS = 10
 
 
 def user_data_dir():
@@ -36,6 +42,15 @@ def user_data_dir():
 DATA_DIR = user_data_dir()
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 HISTORY_FILE = os.path.join(DATA_DIR, "journal_history.json")
+
+KDF_ITERATIONS = 480000
+
+
+def derive_key(password, salt):
+    """Fernet key from the cover-screen password. Deliberately slow to brute-force."""
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=KDF_ITERATIONS)
+    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
+
 
 def migrate_legacy_files():
     """Bring over config/history that older versions left in the working directory."""
@@ -82,11 +97,21 @@ class AIJournalHardcoded:
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
 
+        self.todo_font = tkfont.Font(family=MAIN_FONT, size=11, slant="italic")
+        self.todo_font_done = tkfont.Font(family=MAIN_FONT, size=11, slant="italic", overstrike=1)
+
         pygame.mixer.init()
         self.config_data = self.load_config()
         self.api_key = self.config_data.get("api_key", "")
         self.user_name = self.config_data.get("user_name", "My")
-        self.user_password = self.config_data.get("password", "")
+        # The password is never stored: config keeps a salt and a check token, and the
+        # journal itself is encrypted with a key derived from the password. The plaintext
+        # password only lives in memory, and only while the journal is unlocked.
+        self.password_salt = self.config_data.get("password_salt", "")
+        self.password_check = self.config_data.get("password_check", "")
+        self.password_enabled = bool(self.password_salt and self.password_check)
+        self.user_password = ""
+        self.fernet = None
 
         self.current_mood = ""
         now = datetime.now()
@@ -98,6 +123,7 @@ class AIJournalHardcoded:
         self.current_weekday = "" 
         
         self.journal_data = self.load_journal_data()
+        self.migrate_legacy_password()
         self.auto_save_timer = None
         self.dragged = False
         
@@ -148,7 +174,7 @@ class AIJournalHardcoded:
         
         self.canvas.create_text(500, 120, text=cover_text, font=font_setting, fill="#C5A059")
         
-        if self.user_password:
+        if self.password_enabled:
             self.pass_input_frame = tk.Frame(self.cover_frame, bg="#FFFFFF", highlightbackground="#C5A059", highlightthickness=1)
             self.pass_entry = tk.Entry(self.pass_input_frame, bg="#FFFFFF", fg="#333333", relief="flat", font=(MAIN_FONT, 12), show="*", width=18)
             self.pass_entry.pack(side="left", padx=5, pady=5)
@@ -173,17 +199,27 @@ class AIJournalHardcoded:
 
     def verify_password(self):
         entered_pass = self.pass_entry.get()
-        if entered_pass == self.user_password:
-            self.cover_frame.destroy()
-            self.main_frame.pack(fill="both", expand=True)
-            self.update_weekday_highlight()
-            self.load_day_data()
-        else:
+        try:
+            key = derive_key(entered_pass, base64.urlsafe_b64decode(self.password_salt))
+            Fernet(key).decrypt(self.password_check.encode("utf-8"))
+        except Exception:
             if self.error_text_id:
                 self.canvas.itemconfig(self.error_text_id, text="Incorrect password, try again.")
+            return
+
+        self.user_password = entered_pass
+        self.fernet = Fernet(key)
+        self.journal_data = self.load_journal_data()
+
+        self.cover_frame.destroy()
+        self.main_frame.pack(fill="both", expand=True)
+        self.update_weekday_highlight()
+        self.load_day_data()
+        if self.history_load_failed:
+            self.set_status("⚠ History file unreadable — saving is paused to protect it")
 
     def open_journal(self, event):
-        if not self.dragged and not self.user_password:
+        if not self.dragged and not self.password_enabled:
             self.cover_frame.destroy()
             self.main_frame.pack(fill="both", expand=True)
             self.update_weekday_highlight()
@@ -196,6 +232,11 @@ class AIJournalHardcoded:
             self.root.after_cancel(self.auto_save_timer)
             self.auto_save_timer = None
         
+        if self.password_enabled:
+            self.fernet = None
+            self.user_password = ""
+            self.journal_data = {}
+
         self.main_frame.pack_forget()
         self.build_cover_screen()
 
@@ -269,7 +310,6 @@ class AIJournalHardcoded:
         tk.Label(todo_header, text="To-Do List", bg="#F9F9F8", fg="#888888", font=(MAIN_FONT, 10, FONT_STYLE)).pack(side="left")
         
         tk.Button(todo_header, text="+", bg="#F9F9F8", fg="#888888", relief="flat", font=("Arial", 14, "bold"), cursor="hand2", command=self.add_todo_item).pack(side="left", padx=(10, 2))
-        tk.Button(todo_header, text="−", bg="#F9F9F8", fg="#888888", relief="flat", font=("Arial", 14, "bold"), cursor="hand2", command=self.remove_todo_item).pack(side="left")
         
         self.todo_box = tk.Frame(self.left_panel, bg="#FFFFFF", highlightbackground="#E0E0E0", highlightthickness=1)
         self.todo_box.pack(fill="x", pady=2)
@@ -360,37 +400,58 @@ class AIJournalHardcoded:
     # TO-DO LIST LOGIC
     # ==========================================
     def add_todo_item(self, task_text="", is_done=False, trigger_save=True):
-        if len(self.todo_items) >= 10:  
+        if len(self.todo_items) >= MAX_TODO_ITEMS:
+            self.set_status(f"⚠ To-do list is full ({MAX_TODO_ITEMS} items)")
             return
-            
+
         row_frame = tk.Frame(self.todo_box, bg="#FFFFFF")
         row_frame.pack(fill="x", padx=5, pady=2)
-        
-        var = tk.BooleanVar(value=is_done)
-        cb = tk.Checkbutton(row_frame, variable=var, bg="#FFFFFF", activebackground="#FFFFFF", 
-                            selectcolor="#FFFFFF", command=self.schedule_auto_save)
+
+        item = {"var": tk.BooleanVar(value=is_done), "frame": row_frame}
+
+        cb = tk.Checkbutton(row_frame, variable=item["var"], bg="#FFFFFF", activebackground="#FFFFFF",
+                            selectcolor="#FFFFFF", command=lambda: self.on_todo_toggled(item))
         cb.pack(side="left")
-        
-        entry = tk.Entry(row_frame, bg="#FFFFFF", fg="#333333", relief="flat", font=(MAIN_FONT, 11, FONT_STYLE), insertbackground="#333333")
+
+        tk.Button(row_frame, text="✕", bg="#FFFFFF", fg="#C8C8C8", relief="flat", borderwidth=0,
+                  font=("Arial", 9), cursor="hand2",
+                  command=lambda: self.remove_todo_item(item)).pack(side="right", padx=(2, 4))
+
+        entry = tk.Entry(row_frame, bg="#FFFFFF", fg="#333333", relief="flat", font=self.todo_font, insertbackground="#333333")
         entry.pack(side="left", fill="x", expand=True, padx=2)
         if task_text:
             entry.insert(0, task_text)
         entry.bind("<KeyRelease>", self.schedule_auto_save)
-        
+        item["entry"] = entry
+
         sep = tk.Frame(self.todo_box, bg="#F0F0F0", height=1)
         sep.pack(fill="x", padx=5)
-        
-        self.todo_items.append({"var": var, "entry": entry, "frame": row_frame, "sep": sep})
-        
+        item["sep"] = sep
+
+        self.todo_items.append(item)
+        self.style_todo_item(item)
+
         if trigger_save:
             self.schedule_auto_save()
 
-    def remove_todo_item(self):
-        if self.todo_items:
-            item = self.todo_items.pop()
-            item["frame"].destroy()
-            item["sep"].destroy()
-            self.schedule_auto_save()
+    def style_todo_item(self, item):
+        """A ticked task is struck through and greyed out."""
+        done = item["var"].get()
+        item["entry"].config(font=self.todo_font_done if done else self.todo_font,
+                             fg="#A0A0A0" if done else "#333333")
+
+    def on_todo_toggled(self, item):
+        self.style_todo_item(item)
+        self.schedule_auto_save()
+
+    def remove_todo_item(self, item):
+        if item not in self.todo_items:
+            return
+        self.todo_items.remove(item)
+        item["frame"].destroy()
+        item["sep"].destroy()
+        self.set_status("")
+        self.schedule_auto_save()
 
     # ==========================================
     # DICTATION LOGIC (Speech to Text)
@@ -437,17 +498,42 @@ class AIJournalHardcoded:
     # DATA SAVING & LOADING LOGIC
     # ==========================================
     def load_journal_data(self):
+        """Read the history. An encrypted file read before unlocking returns {}, not a failure."""
         self.history_load_failed = False
-        if os.path.exists(HISTORY_FILE):
-            try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-                self.history_load_failed = True
-            except Exception:
-                self.history_load_failed = True
-        return {}
+        if not os.path.exists(HISTORY_FILE):
+            return {}
+
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+        except Exception:
+            self.history_load_failed = True
+            return {}
+
+        if not isinstance(raw, dict):
+            self.history_load_failed = True
+            return {}
+
+        if not raw.get("encrypted"):
+            return raw
+
+        if self.fernet is None:
+            return {}
+
+        try:
+            plain = self.fernet.decrypt(raw["payload"].encode("utf-8"))
+            data = json.loads(plain.decode("utf-8"))
+        except Exception:
+            self.history_load_failed = True
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def write_history(self):
+        if self.fernet is None:
+            write_json_atomic(HISTORY_FILE, self.journal_data)
+            return
+        payload = self.fernet.encrypt(json.dumps(self.journal_data, ensure_ascii=False).encode("utf-8"))
+        write_json_atomic(HISTORY_FILE, {"encrypted": True, "payload": payload.decode("ascii")})
 
     def get_current_date_key(self):
         return f"{self.current_year}-{self.current_month}-{self.current_day}"
@@ -462,6 +548,9 @@ class AIJournalHardcoded:
             self.status_lbl.config(text=message)
 
     def save_current_day_data(self):
+        if self.password_enabled and self.fernet is None:
+            return  # locked: writing now would replace the encrypted file with plaintext
+
         if self.history_load_failed:
             self.set_status("⚠ History file unreadable — saving is paused to protect it")
             return
@@ -494,7 +583,7 @@ class AIJournalHardcoded:
         self.journal_data[date_key] = data
         
         try:
-            write_json_atomic(HISTORY_FILE, self.journal_data)
+            self.write_history()
             self.set_status("")
         except Exception as e:
             self.set_status(f"⚠ Save failed: {str(e)[:45]}")
@@ -676,19 +765,67 @@ class AIJournalHardcoded:
     def save_config(self, api_key, user_name, user_password):
         self.api_key = api_key
         self.user_name = user_name
-        self.user_password = user_password
         self.main_title_lbl.config(text=f"{self.user_name}'s {self.current_year} Journal")
-        
+
+        if user_password != self.user_password and not self.apply_password_change(user_password):
+            return
+
         if hasattr(self, 'cover_frame') and self.cover_frame.winfo_exists():
             self.cover_frame.destroy()
             self.build_cover_screen()
-            
+
+        self.persist_config()
+
+    def apply_password_change(self, new_password):
+        """Re-key the journal. Returns False (and says why) if it could not be done safely."""
+        if self.history_load_failed:
+            self.set_status("⚠ History unreadable — password unchanged")
+            return False
+
+        previous = (self.fernet, self.password_salt, self.password_check, self.password_enabled)
+        if new_password:
+            salt = os.urandom(16)
+            key = derive_key(new_password, salt)
+            self.password_salt = base64.urlsafe_b64encode(salt).decode("ascii")
+            self.password_check = Fernet(key).encrypt(b"unlocked").decode("ascii")
+            self.fernet = Fernet(key)
+            self.password_enabled = True
+        else:
+            self.password_salt = ""
+            self.password_check = ""
+            self.fernet = None
+            self.password_enabled = False
+
         try:
-            write_json_atomic(CONFIG_FILE, {"api_key": api_key, "user_name": user_name,
-                                            "password": user_password})
+            self.write_history()
+        except Exception as e:
+            self.fernet, self.password_salt, self.password_check, self.password_enabled = previous
+            self.set_status(f"⚠ Password unchanged: {str(e)[:40]}")
+            return False
+
+        self.user_password = new_password
+        return True
+
+    def persist_config(self):
+        try:
+            write_json_atomic(CONFIG_FILE, {"api_key": self.api_key, "user_name": self.user_name,
+                                            "password_salt": self.password_salt,
+                                            "password_check": self.password_check})
             self.set_status("")
         except Exception as e:
             self.set_status(f"⚠ Settings not saved: {str(e)[:45]}")
+
+    def migrate_legacy_password(self):
+        """Convert a plaintext password from an older version into salt + encrypted journal."""
+        legacy = self.config_data.get("password", "")
+        if not legacy or self.password_enabled or self.history_load_failed:
+            return
+        if not self.apply_password_change(legacy):
+            return
+        self.persist_config()
+        self.fernet = None
+        self.user_password = ""
+        self.journal_data = {}
 
     def show_help_settings(self):
         settings_win = tk.Toplevel(self.root)

@@ -229,7 +229,7 @@ class AIJournalHardcoded:
         self.status_lbl.pack(side="right", padx=10)
 
         self.main_title_lbl = tk.Label(self.top_bar, text=f"{self.user_name}'s {self.current_year} Journal", bg="#F9F9F8", fg="#505050", font=(MAIN_FONT, 18, FONT_STYLE))
-        self.main_title_lbl.pack(side="left", padx=300, expand=True)
+        self.main_title_lbl.pack(side="left", expand=True)
 
         self.left_panel = tk.Frame(self.main_frame, bg="#F9F9F8", width=300)
         self.left_panel.pack(side="left", fill="y", padx=20, pady=10)
@@ -335,8 +335,7 @@ class AIJournalHardcoded:
         self.days_frame.pack(side="top", fill="x", pady=(0, 20))
         self.day_labels = []
         for d in range(1, 32):
-            lbl = tk.Label(self.days_frame, text=str(d), bg="#F9F9F8", fg="#A0A0A0", font=(MAIN_FONT, 11, FONT_STYLE), cursor="hand2")
-            lbl.pack(side="left", padx=3)
+            lbl = tk.Label(self.days_frame, text=str(d), bg="#F9F9F8", fg="#A0A0A0", font=(MAIN_FONT, 10, FONT_STYLE), cursor="hand2", padx=0)
             lbl.bind("<Button-1>", lambda e, day=str(d), l=lbl: self.select_day(day, l))
             self.day_labels.append(lbl)
 
@@ -506,7 +505,7 @@ class AIJournalHardcoded:
             write_json_atomic(HISTORY_FILE, self.journal_data)
             self.set_status("")
         except Exception as e:
-            self.set_status(f"⚠ Save failed: {str(e)[:60]}")
+            self.set_status(f"⚠ Save failed: {str(e)[:45]}")
 
     def load_day_data(self):
         date_key = self.get_current_date_key()
@@ -592,12 +591,20 @@ class AIJournalHardcoded:
         return calendar.monthrange(self.current_year, month_num)[1]
 
     def refresh_day_labels(self):
-        """Show only the days this month has, and pull the selection back inside it."""
+        """Show only the days this month has, and pull the selection back inside it.
+
+        Laid out with equal-weight grid columns rather than packed, so the whole
+        strip always fits the panel width instead of running off the edge.
+        """
         last_day = self.days_in_current_month()
         for lbl in self.day_labels:
-            lbl.pack_forget()
-        for lbl in self.day_labels[:last_day]:
-            lbl.pack(side="left", padx=3)
+            lbl.grid_forget()
+        for column, lbl in enumerate(self.day_labels[:last_day]):
+            lbl.grid(row=0, column=column, sticky="ew")
+        for column in range(len(self.day_labels)):
+            in_month = column < last_day
+            self.days_frame.columnconfigure(column, weight=1 if in_month else 0,
+                                            uniform="day" if in_month else "")
 
         if int(self.current_day) > last_day:
             self.current_day = str(last_day)
@@ -690,7 +697,7 @@ class AIJournalHardcoded:
                                             "password": user_password, "language": language})
             self.set_status("")
         except Exception as e:
-            self.set_status(f"⚠ Settings not saved: {str(e)[:60]}")
+            self.set_status(f"⚠ Settings not saved: {str(e)[:45]}")
 
     def show_help_settings(self):
         settings_win = tk.Toplevel(self.root)

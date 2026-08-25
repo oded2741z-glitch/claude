@@ -11,7 +11,6 @@ from datetime import datetime
 from PIL import Image, ImageTk
 import speech_recognition as sr
 import calendar
-import re
 import shutil
 import tempfile
 
@@ -37,16 +36,6 @@ def user_data_dir():
 DATA_DIR = user_data_dir()
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 HISTORY_FILE = os.path.join(DATA_DIR, "journal_history.json")
-
-HEBREW_CHARS = re.compile(r"[\u0590-\u05FF]")
-
-# code -> (menu label, gTTS code, speech-recognition locale).
-# gTTS still expects the legacy "iw" code for Hebrew and rejects "he".
-LANGUAGES = {
-    "he": ("Hebrew (he-IL)", "iw", "he-IL"),
-    "en": ("English (en-US)", "en", "en-US"),
-}
-
 
 def migrate_legacy_files():
     """Bring over config/history that older versions left in the working directory."""
@@ -98,7 +87,6 @@ class AIJournalHardcoded:
         self.api_key = self.config_data.get("api_key", "")
         self.user_name = self.config_data.get("user_name", "My")
         self.user_password = self.config_data.get("password", "")
-        self.language = self.config_data.get("language", "he")
 
         self.current_mood = ""
         now = datetime.now()
@@ -420,8 +408,8 @@ class AIJournalHardcoded:
                 # Listen to the user (timeout if nobody speaks for 5s, max phrase length 15s)
                 audio = recognizer.listen(source, timeout=5, phrase_time_limit=15)
             
-            # Google's free Web Speech API, in the language chosen in Settings
-            text = recognizer.recognize_google(audio, language=self.dictation_locale())
+            # Google's free Web Speech API (English)
+            text = recognizer.recognize_google(audio, language="en-US")
             self.root.after(0, self.insert_dictation, text)
             
         except sr.WaitTimeoutError:
@@ -431,9 +419,6 @@ class AIJournalHardcoded:
         except Exception as e:
             print("Dictation error:", e)
             self.root.after(0, self.reset_dictate_btn)
-
-    def dictation_locale(self):
-        return LANGUAGES.get(self.language, LANGUAGES["en"])[2]
 
     def insert_dictation(self, text):
         current_text = self.thoughts_area.get("1.0", tk.END).strip()
@@ -688,11 +673,10 @@ class AIJournalHardcoded:
                 return {}
         return {}
 
-    def save_config(self, api_key, user_name, user_password, language):
+    def save_config(self, api_key, user_name, user_password):
         self.api_key = api_key
         self.user_name = user_name
         self.user_password = user_password
-        self.language = language
         self.main_title_lbl.config(text=f"{self.user_name}'s {self.current_year} Journal")
         
         if hasattr(self, 'cover_frame') and self.cover_frame.winfo_exists():
@@ -701,7 +685,7 @@ class AIJournalHardcoded:
             
         try:
             write_json_atomic(CONFIG_FILE, {"api_key": api_key, "user_name": user_name,
-                                            "password": user_password, "language": language})
+                                            "password": user_password})
             self.set_status("")
         except Exception as e:
             self.set_status(f"⚠ Settings not saved: {str(e)[:45]}")
@@ -709,7 +693,7 @@ class AIJournalHardcoded:
     def show_help_settings(self):
         settings_win = tk.Toplevel(self.root)
         settings_win.overrideredirect(True)
-        settings_win.geometry("400x370")
+        settings_win.geometry("400x310")
         settings_win.configure(bg="#FFFFFF")
         
         frame = tk.Frame(settings_win, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -734,19 +718,11 @@ class AIJournalHardcoded:
         api_entry.place(x=20, y=191, width=360, height=28)
         api_entry.insert(0, self.api_key)
 
-        tk.Label(frame, text="Dictation Language:", bg="#FFFFFF", fg="#505050", font=(MAIN_FONT, 11, FONT_STYLE)).place(x=20, y=224)
-        lang_names = {code: meta[0] for code, meta in LANGUAGES.items()}
-        lang_var = tk.StringVar(value=lang_names.get(self.language, lang_names["en"]))
-        lang_menu = tk.OptionMenu(frame, lang_var, *lang_names.values())
-        lang_menu.config(bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, highlightthickness=0, font=(MAIN_FONT, 11, FONT_STYLE))
-        lang_menu.place(x=20, y=247, width=360, height=28)
-
         def save_and_close():
-            language = next((code for code, name in lang_names.items() if name == lang_var.get()), "en")
-            self.save_config(api_entry.get().strip(), name_entry.get().strip(), pass_entry.get().strip(), language)
+            self.save_config(api_entry.get().strip(), name_entry.get().strip(), pass_entry.get().strip())
             settings_win.destroy()
 
-        tk.Button(frame, text="Save Settings", bg="#323232", fg="#FFFFFF", relief="flat", font=(MAIN_FONT, 11, FONT_STYLE), command=save_and_close).place(x=20, y=300, width=150, height=35)
+        tk.Button(frame, text="Save Settings", bg="#323232", fg="#FFFFFF", relief="flat", font=(MAIN_FONT, 11, FONT_STYLE), command=save_and_close).place(x=20, y=245, width=150, height=35)
 
     def read_aloud(self):
         text = self.reflection_area.get("1.0", tk.END).strip()
@@ -758,8 +734,7 @@ class AIJournalHardcoded:
 
     def speak_text(self, text):
         try:
-            code = "he" if HEBREW_CHARS.search(text) else "en"
-            tts = gTTS(text=text, lang=LANGUAGES[code][1], slow=False)
+            tts = gTTS(text=text, lang="en", slow=False)
             fp = io.BytesIO()
             tts.write_to_fp(fp)
             fp.seek(0)

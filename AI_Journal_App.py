@@ -40,6 +40,13 @@ HISTORY_FILE = os.path.join(DATA_DIR, "journal_history.json")
 
 HEBREW_CHARS = re.compile(r"[\u0590-\u05FF]")
 
+# code -> (menu label, gTTS code, speech-recognition locale).
+# gTTS still expects the legacy "iw" code for Hebrew and rejects "he".
+LANGUAGES = {
+    "he": ("Hebrew (he-IL)", "iw", "he-IL"),
+    "en": ("English (en-US)", "en", "en-US"),
+}
+
 
 def migrate_legacy_files():
     """Bring over config/history that older versions left in the working directory."""
@@ -426,7 +433,7 @@ class AIJournalHardcoded:
             self.root.after(0, self.reset_dictate_btn)
 
     def dictation_locale(self):
-        return "he-IL" if self.language == "he" else "en-US"
+        return LANGUAGES.get(self.language, LANGUAGES["en"])[2]
 
     def insert_dictation(self, text):
         current_text = self.thoughts_area.get("1.0", tk.END).strip()
@@ -728,7 +735,7 @@ class AIJournalHardcoded:
         api_entry.insert(0, self.api_key)
 
         tk.Label(frame, text="Dictation Language:", bg="#FFFFFF", fg="#505050", font=(MAIN_FONT, 11, FONT_STYLE)).place(x=20, y=224)
-        lang_names = {"he": "Hebrew (he-IL)", "en": "English (en-US)"}
+        lang_names = {code: meta[0] for code, meta in LANGUAGES.items()}
         lang_var = tk.StringVar(value=lang_names.get(self.language, lang_names["en"]))
         lang_menu = tk.OptionMenu(frame, lang_var, *lang_names.values())
         lang_menu.config(bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, highlightthickness=0, font=(MAIN_FONT, 11, FONT_STYLE))
@@ -745,13 +752,14 @@ class AIJournalHardcoded:
         text = self.reflection_area.get("1.0", tk.END).strip()
         if not text or "[SYSTEM]" in text or "personalized reflection" in text:
             return
+        self.set_status("")
         self.read_btn.config(state="disabled", text="Speaking...")
         threading.Thread(target=self.speak_text, args=(text,), daemon=True).start()
 
     def speak_text(self, text):
         try:
-            lang = "he" if HEBREW_CHARS.search(text) else "en"
-            tts = gTTS(text=text, lang=lang, slow=False)
+            code = "he" if HEBREW_CHARS.search(text) else "en"
+            tts = gTTS(text=text, lang=LANGUAGES[code][1], slow=False)
             fp = io.BytesIO()
             tts.write_to_fp(fp)
             fp.seek(0)
@@ -759,8 +767,8 @@ class AIJournalHardcoded:
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
                 pygame.time.Clock().tick(10)
-        except Exception:
-            pass
+        except Exception as e:
+            self.root.after(0, self.set_status, f"⚠ Playback failed: {str(e)[:45]}")
         finally:
             self.root.after(0, lambda: self.read_btn.config(state="normal", text="Listen 🔊"))
 

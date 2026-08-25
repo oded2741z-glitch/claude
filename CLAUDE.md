@@ -37,6 +37,8 @@ Day/month selection is a save-then-load cycle: `select_day`/`select_month` flush
 
 **Threading.** Gemini calls (`call_gemini`), TTS (`speak_text`) and dictation (`dictation_worker`) each run on a daemon thread; every touch of a widget from those threads is marshalled back through `self.root.after(0, ...)`. Keep that discipline — Tkinter is not thread-safe. Each also disables its button on start and re-enables it in the `after` callback / `finally`.
 
-**Language.** `config["language"]` (`"he"` or `"en"`, default `"he"`, set from Settings) only drives dictation, through `dictation_locale()` → `he-IL`/`en-US`. TTS ignores it and picks by script instead: `HEBREW_CHARS` matching the reflection text selects `gTTS(lang="he")`, otherwise `"en"`. The UI strings themselves are English throughout.
+**Language.** The `LANGUAGES` table maps a config code to `(menu label, gTTS code, speech-recognition locale)`; the Settings dropdown is built from it, so adding a language means adding a row. The two codes differ per service and must not be assumed equal — gTTS still expects the legacy `"iw"` for Hebrew and raises `ValueError` on `"he"`, while the recognizer wants `he-IL`.
+
+`config["language"]` (default `"he"`) only drives dictation, through `dictation_locale()`. TTS ignores it and picks by script instead: `HEBREW_CHARS` matching the reflection text selects Hebrew, otherwise English — so a third language in the table would be dictated but not spoken until that detection is replaced. The UI strings themselves are English throughout.
 
 **Prompting.** `analyze_journal` assembles the prompt (recent-entry context, date, mood, to-dos, persona instruction from the `persona_instructions` dict) and hands it to the thread; `call_gemini` strips `*` from the response because the prompt asks for no asterisk formatting. The model id is hardcoded in `call_gemini`.

@@ -652,11 +652,18 @@ def read_temps_lhm_web(port=8085, timeout=1.5):
         except (ValueError, IndexError):
             return None
 
+    # 'intel'/'amd' are NOT used as CPU hints — they also name GPUs
+    # (Intel UHD/Iris/Arc, AMD Radeon), which would misfile a GPU as CPU.
+    gpu_hw = ("gpu", "nvidia", "geforce", "radeon", "quadro", "graphics",
+              "uhd", "iris", "vega", "firepro", "gtx", "rtx", " arc")
+    cpu_hw = ("cpu", "core i", "core(tm)", "ryzen", "processor", "xeon",
+              "pentium", "celeron", "threadripper", "athlon")
+
     def walk(node, ctx):
         text = str(node.get("Text", "")).lower()
-        if any(k in text for k in ("gpu", "nvidia", "geforce", "radeon", "quadro")):
+        if any(k in text for k in gpu_hw):
             ctx = "gpu"
-        elif any(k in text for k in ("cpu", "core i", "ryzen", "processor", "intel", "amd")):
+        elif any(k in text for k in cpu_hw):
             ctx = "cpu"
         val = node.get("Value")
         if val and "°" in str(val):

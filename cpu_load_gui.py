@@ -490,15 +490,20 @@ def read_cpu_temp(sys_root="/sys", psutil_mod=None):
 # LibreHardwareMonitor / OpenHardwareMonitor sensors first (accurate, if the
 # app is running), then the ACPI thermal zone (often requires administrator
 # rights and is not exposed on every machine).
+# Match sensors by their Identifier path (e.g. /gpu-nvidia/0/temperature/0,
+# /intelcpu/0/temperature/1) which reliably names the hardware regardless of
+# how the sensor's display Name is worded — falling back to the Name.
 _PS_TEMP_SCRIPT = (
     "$c=$null;$g=$null;"
     "foreach($ns in 'root/LibreHardwareMonitor','root/OpenHardwareMonitor'){"
     "try{$s=Get-CimInstance -Namespace $ns -ClassName Sensor -ErrorAction Stop|"
     "Where-Object{$_.SensorType -eq 'Temperature'};"
     "if($s){"
-    "$cp=$s|Where-Object{$_.Name -notmatch 'GPU' -and $_.Name -match 'CPU|Package|Core'}|"
+    "$cp=$s|Where-Object{$_.Identifier -notmatch 'gpu' -and $_.Name -notmatch 'GPU' -and "
+    "($_.Identifier -match 'cpu' -or $_.Name -match 'CPU|Package|Core|Tdie|Tctl')}|"
     "Sort-Object Value -Descending|Select-Object -First 1;"
-    "$gp=$s|Where-Object{$_.Name -match 'GPU'}|Sort-Object Value -Descending|Select-Object -First 1;"
+    "$gp=$s|Where-Object{$_.Identifier -match 'gpu' -or $_.Name -match 'GPU'}|"
+    "Sort-Object Value -Descending|Select-Object -First 1;"
     "if($cp){$c=$cp.Value};if($gp){$g=$gp.Value};"
     "if($null -ne $c -or $null -ne $g){break}}}catch{}};"
     "if($null -eq $c){"

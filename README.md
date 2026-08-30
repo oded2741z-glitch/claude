@@ -76,7 +76,8 @@ YourFolder/
 
 - **Load generation** works on any GPU with an OpenCL driver (NVIDIA, AMD, Intel — included in the regular graphics driver). If the GPU section shows "No OpenCL GPU detected", update your graphics driver.
 - **Multi-GPU machines** (e.g. onboard Intel + discrete NVIDIA): the discrete card is selected automatically, and a dropdown under the GPU slider lets you switch cards — even mid-run.
-- **Usage / temperature readings** come from `nvidia-smi` (NVIDIA, Windows & Linux) or sysfs (AMD on Linux). On AMD/Intel under Windows the readings show "—", but the load itself still works — you can watch usage in Task Manager's GPU tab.
+- **Usage** comes from `nvidia-smi` (NVIDIA, Windows & Linux) or sysfs (AMD on Linux). On AMD/Intel under Windows usage shows "—", but the load itself still works — you can watch usage in Task Manager's GPU tab.
+- **GPU temperature** comes from `nvidia-smi` when available, otherwise from **LibreHardwareMonitor** (any card) — so if you already run LHM for the CPU temperature, the GPU temperature fills in too.
 
 **עברית:** יצירת העומס עובדת על כל כרטיס מסך עם דרייבר OpenCL (מגיע עם הדרייבר הרגיל של NVIDIA/AMD/Intel). קריאת השימוש והטמפרטורה זמינה בכרטיסי NVIDIA (דרך `nvidia-smi`); ב-AMD/Intel ב-Windows המדדים יציגו "—" אבל העומס עצמו עובד — אפשר לראות את השימוש ב-Task Manager בלשונית GPU.
 

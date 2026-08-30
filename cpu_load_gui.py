@@ -491,17 +491,22 @@ def read_cpu_temp(sys_root="/sys", psutil_mod=None):
 # app is running), then the ACPI thermal zone (often requires administrator
 # rights and is not exposed on every machine).
 _PS_TEMP_SCRIPT = (
-    "$t=$null;"
+    "$c=$null;$g=$null;"
     "foreach($ns in 'root/LibreHardwareMonitor','root/OpenHardwareMonitor'){"
     "try{$s=Get-CimInstance -Namespace $ns -ClassName Sensor -ErrorAction Stop|"
-    "Where-Object{$_.SensorType -eq 'Temperature' -and $_.Name -match 'CPU|Package|Core'}|"
+    "Where-Object{$_.SensorType -eq 'Temperature'};"
+    "if($s){"
+    "$cp=$s|Where-Object{$_.Name -notmatch 'GPU' -and $_.Name -match 'CPU|Package|Core'}|"
     "Sort-Object Value -Descending|Select-Object -First 1;"
-    "if($s){$t=$s.Value;break}}catch{}};"
-    "if($null -eq $t){"
+    "$gp=$s|Where-Object{$_.Name -match 'GPU'}|Sort-Object Value -Descending|Select-Object -First 1;"
+    "if($cp){$c=$cp.Value};if($gp){$g=$gp.Value};"
+    "if($null -ne $c -or $null -ne $g){break}}}catch{}};"
+    "if($null -eq $c){"
     "try{$z=Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
     "-ErrorAction Stop|Sort-Object CurrentTemperature -Descending|Select-Object -First 1;"
-    "if($z){$t=($z.CurrentTemperature/10)-273.15}}catch{}};"
-    "if($null -ne $t){[math]::Round($t,1)}"
+    "if($z){$c=($z.CurrentTemperature/10)-273.15}}catch{}};"
+    "'CPU='+$(if($null -ne $c){[math]::Round($c,1)}else{''});"
+    "'GPU='+$(if($null -ne $g){[math]::Round($g,1)}else{''})"
 )
 
 
@@ -622,19 +627,36 @@ def relaunch_as_admin():
         return False
 
 
-def read_temp_powershell(exe):
+def read_temps_powershell(exe):
+    """(cpu_temp, gpu_temp) in °C from LibreHardwareMonitor / OpenHardware-
+    Monitor (CPU falls back to the ACPI zone) via one PowerShell call.
+    Either may be None."""
     flags = 0x08000000 if IS_WINDOWS else 0  # CREATE_NO_WINDOW
+    cpu = gpu = None
     try:
         out = subprocess.run(
             [exe, "-NoProfile", "-NonInteractive", "-Command", _PS_TEMP_SCRIPT],
             capture_output=True, text=True, timeout=10, creationflags=flags,
-        ).stdout.strip()
-        if not out:
-            return None
-        val = float(out.splitlines()[-1].replace(",", "."))
-        return val if 0 < val < 150 else None
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
+        ).stdout
+        for line in out.splitlines():
+            key, sep, raw = line.strip().partition("=")
+            if not sep or key not in ("CPU", "GPU"):
+                continue
+            raw = raw.strip().replace(",", ".")
+            val = None
+            if raw:
+                try:
+                    v = float(raw)
+                    val = v if 0 < v < 150 else None
+                except ValueError:
+                    val = None
+            if key == "CPU":
+                cpu = val
+            else:
+                gpu = val
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return cpu, gpu
 
 
 class CpuSampler:
@@ -656,6 +678,7 @@ class CpuSampler:
         self._nvsmi = find_nvidia_smi()
         self._gpu_period = 2.0         # nvidia-smi is a subprocess; poll gently
         self._gpu_ts = 0.0
+        self._lhm_gpu_temp = None      # GPU temp from LibreHardwareMonitor
         try:
             import psutil
             self._psutil = psutil
@@ -680,9 +703,12 @@ class CpuSampler:
             return
         self._gpu_ts = now
         try:
-            self.gpu_util, self.gpu_temp = read_gpu_stats(self._nvsmi)
+            util, temp = read_gpu_stats(self._nvsmi)
         except Exception:
-            self.gpu_util, self.gpu_temp = None, None
+            util, temp = None, None
+        if temp is None:                     # LibreHardwareMonitor fallback
+            temp = self._lhm_gpu_temp
+        self.gpu_util, self.gpu_temp = util, temp
 
     def _sample_temp(self):
         now = time.time()
@@ -692,7 +718,7 @@ class CpuSampler:
         try:
             t = read_cpu_temp(psutil_mod=self._psutil)
             if t is None and self._ps_exe:
-                t = read_temp_powershell(self._ps_exe)
+                t, self._lhm_gpu_temp = read_temps_powershell(self._ps_exe)
                 self._temp_period = 4.0   # PowerShell is slow; poll gently
             self.temp = t
         except Exception:

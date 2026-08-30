@@ -583,6 +583,19 @@ def _set_hw_monitor_minimized(exe):
         pass    # worst case it opens a window once
 
 
+def hw_monitor_running():
+    """True if LibreHardwareMonitor / OpenHardwareMonitor is already running,
+    so we don't start a second copy."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        out = subprocess.run(["tasklist"], capture_output=True, text=True,
+                             timeout=5, creationflags=0x08000000).stdout.lower()
+        return "hardwaremonitor" in out
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def launch_hw_monitor(exe):
     """Start the hardware monitor minimized to the tray; the shell handles
     its UAC elevation (it needs admin for the sensor driver)."""
@@ -1393,10 +1406,16 @@ class App:
             return self.engine.cpu_count
 
     def _autostart_hw_monitor(self):
-        """If no CPU temp is readable but a LibreHardwareMonitor copy sits
-        next to the program, start it — its WMI sensors appear within
-        seconds and the temperature tile fills in automatically."""
-        if not IS_WINDOWS or self.sampler.temp is not None:
+        """If no temperature is readable and a LibreHardwareMonitor copy sits
+        next to the program, start it — its sensors appear within seconds and
+        the temperature tiles fill in automatically. Skips launching when a
+        monitor is already running (so it never opens a second copy) or when
+        any temperature is already coming through."""
+        if not IS_WINDOWS:
+            return
+        if self.sampler.temp is not None or self.sampler.gpu_temp is not None:
+            return
+        if hw_monitor_running():          # already open — don't start another
             return
         exe = find_hw_monitor()
         if exe and launch_hw_monitor(exe):

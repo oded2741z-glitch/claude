@@ -489,23 +489,21 @@ def read_cpu_temp(sys_root="/sys", psutil_mod=None):
 # Windows (and WSL) fallback: ask WMI through PowerShell. Tries
 # LibreHardwareMonitor / OpenHardwareMonitor sensors first (accurate, if the
 # app is running), then the ACPI thermal zone (often requires administrator
-# rights and is not exposed on every machine).
-# Match sensors by their Identifier path (e.g. /gpu-nvidia/0/temperature/0,
-# /intelcpu/0/temperature/1) which reliably names the hardware regardless of
-# how the sensor's display Name is worded — falling back to the Name.
+# rights and is not exposed on every machine). The CPU query is the original
+# proven one (match by sensor Name), only excluding 'GPU'-named sensors so a
+# "GPU Core" reading never lands in the CPU slot; GPU is matched additively.
 _PS_TEMP_SCRIPT = (
     "$c=$null;$g=$null;"
     "foreach($ns in 'root/LibreHardwareMonitor','root/OpenHardwareMonitor'){"
     "try{$s=Get-CimInstance -Namespace $ns -ClassName Sensor -ErrorAction Stop|"
     "Where-Object{$_.SensorType -eq 'Temperature'};"
     "if($s){"
-    "$cp=$s|Where-Object{$_.Identifier -notmatch 'gpu' -and $_.Name -notmatch 'GPU' -and "
-    "($_.Identifier -match 'cpu' -or $_.Name -match 'CPU|Package|Core|Tdie|Tctl')}|"
+    "$cp=$s|Where-Object{$_.Name -match 'CPU|Package|Core' -and $_.Name -notmatch 'GPU'}|"
     "Sort-Object Value -Descending|Select-Object -First 1;"
-    "$gp=$s|Where-Object{$_.Identifier -match 'gpu' -or $_.Name -match 'GPU'}|"
+    "$gp=$s|Where-Object{$_.Name -match 'GPU' -or $_.Identifier -match 'gpu'}|"
     "Sort-Object Value -Descending|Select-Object -First 1;"
     "if($cp){$c=$cp.Value};if($gp){$g=$gp.Value};"
-    "if($null -ne $c -or $null -ne $g){break}}}catch{}};"
+    "if($null -ne $c){break}}}catch{}};"
     "if($null -eq $c){"
     "try{$z=Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
     "-ErrorAction Stop|Sort-Object CurrentTemperature -Descending|Select-Object -First 1;"
@@ -632,6 +630,58 @@ def relaunch_as_admin():
         return False
 
 
+def read_temps_lhm_web(port=8085, timeout=1.5):
+    """(cpu_temp, gpu_temp) in °C from LibreHardwareMonitor's built-in web
+    server (Options → Remote Web Server → Run). Pure stdlib, no WMI, no
+    admin. Either may be None. This is the most reliable source when WMI is
+    unavailable."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                "http://127.0.0.1:%d/data.json" % port, timeout=timeout) as r:
+            data = json.load(r)
+    except Exception:
+        return None, None
+
+    cpu, gpu = [], []
+
+    def num(v):
+        try:
+            return float(str(v).split()[0].replace(",", "."))
+        except (ValueError, IndexError):
+            return None
+
+    def walk(node, ctx):
+        text = str(node.get("Text", "")).lower()
+        if any(k in text for k in ("gpu", "nvidia", "geforce", "radeon", "quadro")):
+            ctx = "gpu"
+        elif any(k in text for k in ("cpu", "core i", "ryzen", "processor", "intel", "amd")):
+            ctx = "cpu"
+        val = node.get("Value")
+        if val and "°" in str(val):
+            t = num(val)
+            if t is not None and 0 < t < 150:
+                if "gpu" in text:
+                    which = "gpu"
+                elif "cpu" in text or "package" in text:
+                    which = "cpu"
+                else:
+                    which = ctx
+                if which == "gpu":
+                    gpu.append(t)
+                elif which == "cpu":
+                    cpu.append(t)
+        for ch in node.get("Children", []) or []:
+            walk(ch, ctx)
+
+    try:
+        walk(data, None)
+    except Exception:
+        return None, None
+    return (max(cpu) if cpu else None, max(gpu) if gpu else None)
+
+
 def read_temps_powershell(exe):
     """(cpu_temp, gpu_temp) in °C from LibreHardwareMonitor / OpenHardware-
     Monitor (CPU falls back to the ACPI zone) via one PowerShell call.
@@ -721,10 +771,21 @@ class CpuSampler:
             return
         self._temp_ts = now
         try:
-            t = read_cpu_temp(psutil_mod=self._psutil)
-            if t is None and self._ps_exe:
-                t, self._lhm_gpu_temp = read_temps_powershell(self._ps_exe)
-                self._temp_period = 4.0   # PowerShell is slow; poll gently
+            t = read_cpu_temp(psutil_mod=self._psutil)   # Linux sysfs
+            if t is None:
+                # LibreHardwareMonitor web server first (no WMI, no admin),
+                # then WMI via PowerShell.
+                cw, gw = read_temps_lhm_web()
+                if cw is not None or gw is not None:
+                    t = cw
+                    if gw is not None:
+                        self._lhm_gpu_temp = gw
+                    self._temp_period = 2.0
+                elif self._ps_exe:
+                    t, gw = read_temps_powershell(self._ps_exe)
+                    if gw is not None:
+                        self._lhm_gpu_temp = gw
+                    self._temp_period = 4.0   # PowerShell is slow; poll gently
             self.temp = t
         except Exception:
             self.temp = None

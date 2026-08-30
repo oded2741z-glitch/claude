@@ -55,11 +55,13 @@ PyInstaller cannot cross-compile — build the Linux binary on Linux and the Win
 
 ## Temperature readings · קריאת טמפרטורה
 
-| Platform | Source |
+| Platform | Source (in order) |
 |---|---|
 | Linux | `/sys/class/thermal` and hwmon sensors (or `psutil` if installed) |
-| Windows | WMI via PowerShell: [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) / OpenHardwareMonitor sensors if the app is running, otherwise the ACPI thermal zone |
+| Windows | 1) [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) **web server** (`localhost:8085`) — most reliable, reads both CPU **and** GPU, no admin;  2) LHM/OpenHardwareMonitor **WMI** via PowerShell;  3) the ACPI thermal zone |
 | WSL | Windows WMI through `powershell.exe` |
+
+**Getting GPU temperature on Windows:** if the GPU temperature stays "—", turn on LibreHardwareMonitor's built-in web server — **Options → Remote Web Server → Run** (default port 8085). The app then reads both CPU and GPU temperatures straight from it, with no WMI and no administrator rights. This is the most reliable route and works on cards `nvidia-smi` doesn't support.
 
 **Windows note:** many PCs don't expose CPU temperature to Windows at all — the reliable source is **LibreHardwareMonitor** ([download the ZIP](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases), free). **Put its folder inside the program's folder and you're done**: on startup, if no temperature is readable, the app finds it, configures it to start minimized to the tray, and launches it automatically (one UAC prompt) — the temperature fills in within seconds. Without it, the app falls back to the ACPI thermal zone, which usually needs the **"click to restart as Administrator"** link shown in the temperature tile — and on many desktops isn't available at all.
 

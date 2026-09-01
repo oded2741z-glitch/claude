@@ -522,8 +522,18 @@ _PS_TEMP_SCRIPT = (
     "if($null -ne $c){break}}}catch{}};"
     "if($null -eq $c){"
     "try{$z=Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
-    "-ErrorAction Stop|Sort-Object CurrentTemperature -Descending|Select-Object -First 1;"
+    "-ErrorAction Stop|Where-Object{$_.CurrentTemperature -gt 0}|"
+    "Sort-Object CurrentTemperature -Descending|Select-Object -First 1;"
     "if($z){$c=($z.CurrentTemperature/10)-273.15}}catch{}};"
+    # Same ACPI zones, different provider. Boards that answer
+    # 'Not supported' (0x8004100c) to the query above sometimes still
+    # publish the perf counter, so it is worth one more try.
+    "if($null -eq $c){"
+    "try{$p=Get-CimInstance -Namespace root/cimv2 -ClassName "
+    "Win32_PerfFormattedData_Counters_ThermalZoneInformation -ErrorAction Stop|"
+    "Where-Object{$_.HighPrecisionTemperature -gt 0}|"
+    "Sort-Object HighPrecisionTemperature -Descending|Select-Object -First 1;"
+    "if($p){$c=($p.HighPrecisionTemperature/10)-273.15}}catch{}};"
     "'CPU='+$(if($null -ne $c){[math]::Round($c,1)}else{''});"
     "'GPU='+$(if($null -ne $g){[math]::Round($g,1)}else{''})"
 )
@@ -730,8 +740,8 @@ def read_temps_lhm_web(port=8085, timeout=1.5):
 
 def read_temps_powershell(exe):
     """(cpu_temp, gpu_temp) in °C from LibreHardwareMonitor / OpenHardware-
-    Monitor (CPU falls back to the ACPI zone) via one PowerShell call.
-    Either may be None."""
+    Monitor (CPU falls back to the ACPI thermal zone, then to its perf
+    counter) via one PowerShell call. Either may be None."""
     flags = 0x08000000 if IS_WINDOWS else 0  # CREATE_NO_WINDOW
     cpu = gpu = None
     try:
@@ -1728,10 +1738,13 @@ def print_temp_report():
         print("nvidia-smi                           not found")
 
     if IS_WINDOWS:
-        print("\nOn Windows the ACPI zone (MSAcpi_ThermalZoneTemperature) "
-              "usually needs\nadministrator rights, and many boards do not "
-              "expose it at all. Running\nLibreHardwareMonitor gives per-core "
-              "CPU and GPU sensors on any machine.")
+        print("\nWindows has no general CPU-temperature API. The ACPI zone "
+              "(MSAcpi_Thermal-\nZoneTemperature) needs administrator rights "
+              "AND firmware support: many desktop\nboards answer 'Not "
+              "supported' (0x8004100c) even to an elevated query, and a\n"
+              "reading of -273.15 C means the class returned nothing at all.\n"
+              "Running LibreHardwareMonitor gives real per-core CPU sensors "
+              "on any machine;\nthis app picks it up automatically.")
 
 
 def main():

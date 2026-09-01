@@ -25,7 +25,13 @@ Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature |
 # ($z.CurrentTemperature / 10) - 273.15  ->  °C
 ```
 
-`MSAcpi_ThermalZoneTemperature` usually needs administrator rights and many
-boards never expose it, so LibreHardwareMonitor's sensors are tried first —
-they also give the GPU reading on non-NVIDIA cards. Run `--temps` to see
-which source answers on a given machine.
+`MSAcpi_ThermalZoneTemperature` needs administrator rights *and* firmware
+support. Many desktop boards answer `Not supported` (`0x8004100c`) even to an
+elevated query — and when the class returns nothing, the arithmetic above
+yields `-273.15`, which is absolute zero, not a reading. A second provider
+(`Win32_PerfFormattedData_Counters_ThermalZoneInformation`) is tried after
+it, but it reads the same ACPI zones and fails on the same boards.
+
+So LibreHardwareMonitor's sensors are queried first: they read the CPU's own
+on-die sensors, work without ACPI, and also cover the GPU on non-NVIDIA
+cards. Run `--temps` to see which source answers on a given machine.

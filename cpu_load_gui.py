@@ -578,19 +578,23 @@ def _program_dir():
 
 
 def find_hw_monitor():
-    """LibreHardwareMonitor/OpenHardwareMonitor exe shipped next to the app."""
+    """LibreHardwareMonitor/OpenHardwareMonitor exe shipped next to the app.
+
+    Searched up to two folders deep. Unzipping either tool usually nests the
+    exe ('Tools/OpenHardwareMonitor/OpenHardwareMonitor.exe'), and the folder
+    is not always named after the tool, so matching only folder names called
+    '*HardwareMonitor*' missed the common layouts. The depth stays small on
+    purpose: this runs on the GUI thread."""
     if not IS_WINDOWS:
         return None
     base = _program_dir()
-    candidates = [os.path.join(base, "LibreHardwareMonitor.exe"),
-                  os.path.join(base, "OpenHardwareMonitor.exe")]
-    for pattern in ("*HardwareMonitor*", "*hardwaremonitor*"):
-        for sub in glob.glob(os.path.join(base, pattern)):
-            candidates.append(os.path.join(sub, "LibreHardwareMonitor.exe"))
-            candidates.append(os.path.join(sub, "OpenHardwareMonitor.exe"))
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
+    if not base or not os.path.isdir(base):
+        return None
+    for name in ("LibreHardwareMonitor.exe", "OpenHardwareMonitor.exe"):
+        for depth in ("", "*" + os.sep, "*" + os.sep + "*" + os.sep):
+            for hit in sorted(glob.glob(os.path.join(base, depth + name))):
+                if os.path.isfile(hit):
+                    return hit
     return None
 
 
@@ -1194,8 +1198,11 @@ class App:
         self.temp_hint = tk.Label(self.tile_temp.master, font=(base, 8, "underline"),
                                   bg=CARD, fg=BLUE, cursor="hand2")
         self.temp_hint.bind("<Button-1>", lambda e: self._temp_hint_click())
-        self._temp_hint_mode = None   # None | "starting" | "elevate" | "lhm"
+        # None | "starting" | "admin" | "launch" | "elevate" | "lhm"
+        self._temp_hint_mode = None
         self._hwmon_started_at = None
+        self._hw_probe_ts = 0.0
+        self._hw_probe_val = (False, None)
         root.after(4000, self._autostart_hw_monitor)
 
         chart_card = self._card(dash)
@@ -1444,21 +1451,37 @@ class App:
         except ValueError:
             return self.engine.cpu_count
 
+    def _hw_probe(self):
+        """(a monitor is running, path to a monitor exe) — cached.
+
+        tasklist spawns a process and the exe search walks directories, so
+        neither can run on the 500 ms GUI tick."""
+        now = time.time()
+        if now - self._hw_probe_ts > 15.0:
+            self._hw_probe_ts = now
+            self._hw_probe_val = (hw_monitor_running(), find_hw_monitor())
+        return self._hw_probe_val
+
     def _autostart_hw_monitor(self):
-        """If no temperature is readable and a LibreHardwareMonitor copy sits
-        next to the program, start it — its sensors appear within seconds and
-        the temperature tiles fill in automatically. Skips launching when a
-        monitor is already running (so it never opens a second copy) or when
-        any temperature is already coming through."""
-        if not IS_WINDOWS:
+        """If the CPU temperature is unreadable and a Libre/OpenHardware-
+        Monitor copy sits next to the program, start it — its sensors appear
+        within seconds and the tile fills in by itself. Skips launching when
+        a monitor is already running, so it never opens a second copy.
+
+        Keyed on the CPU temperature alone: a GPU reading from nvidia-smi
+        says nothing about whether a CPU sensor is available, and treating it
+        as 'a temperature came through' used to suppress the launch on every
+        machine with an NVIDIA card. Re-checked periodically because the
+        first sampling round can outlast the initial delay."""
+        if not IS_WINDOWS or self._hwmon_started_at is not None:
             return
-        if self.sampler.temp is not None or self.sampler.gpu_temp is not None:
+        if self.sampler.temp is not None:      # a CPU sensor is answering
             return
-        if hw_monitor_running():          # already open — don't start another
-            return
-        exe = find_hw_monitor()
-        if exe and launch_hw_monitor(exe):
+        running, exe = self._hw_probe()
+        if not running and exe and launch_hw_monitor(exe):
             self._hwmon_started_at = time.time()
+            return
+        self.root.after(20000, self._autostart_hw_monitor)
 
     def _update_temp_hint(self, temp):
         """Offer a fix in the temperature tile when Windows shows no sensor."""
@@ -1467,21 +1490,34 @@ class App:
         elif (self._hwmon_started_at is not None and
               time.time() - self._hwmon_started_at < 40):
             mode = "starting"
-        elif not is_windows_admin():
-            mode = "elevate"
         else:
-            mode = "lhm"
+            running, exe = self._hw_probe()
+            if running:
+                # It is open but publishing nothing: without administrator
+                # rights it never loads its kernel driver, so its sensor list
+                # stays empty. Telling the user to download it again would be
+                # useless advice.
+                mode = "admin"
+            elif exe:
+                mode = "launch"
+            elif not is_windows_admin():
+                mode = "elevate"
+            else:
+                mode = "lhm"
         if mode == self._temp_hint_mode:
             return
         self._temp_hint_mode = mode
         if mode is None:
             self.temp_hint.pack_forget()
         else:
-            texts = {"starting": "starting LibreHardwareMonitor…",
+            texts = {"starting": "starting hardware monitor…",
+                     "admin": "monitor open — run it as Administrator",
+                     "launch": "click to start the hardware monitor",
                      "elevate": "click to restart as Administrator",
                      "lhm": "no CPU sensor — click to download"}
-            self.temp_hint.config(text=texts[mode],
-                                  cursor="arrow" if mode == "starting" else "hand2")
+            self.temp_hint.config(
+                text=texts[mode],
+                cursor="arrow" if mode in ("starting", "admin") else "hand2")
             self.temp_hint.pack(anchor="w", padx=14, pady=(0, 8))
 
     def _temp_hint_click(self):
@@ -1489,6 +1525,10 @@ class App:
             self.engine.stop()
             self.root.destroy()
             sys.exit(0)
+        elif self._temp_hint_mode == "launch":
+            exe = self._hw_probe()[1]
+            if exe and launch_hw_monitor(exe):
+                self._hwmon_started_at = time.time()
         elif self._temp_hint_mode == "lhm":
             # No usable sensor on this machine: send the user straight to
             # the download rather than leaving them to search for the name.
@@ -1746,6 +1786,13 @@ def print_temp_report():
         print("nvidia-smi                           not found")
 
     if IS_WINDOWS:
+        exe = find_hw_monitor()
+        print("hardware monitor exe                 %s"
+              % (exe or "not found next to this program"))
+        print("hardware monitor running             %s"
+              % ("yes" if hw_monitor_running() else "no"))
+        print("this process is elevated             %s"
+              % ("yes" if is_windows_admin() else "no"))
         print("\nWindows has no general CPU-temperature API. The ACPI zone "
               "(MSAcpi_Thermal-\nZoneTemperature) needs administrator rights "
               "AND firmware support: many desktop\nboards answer 'Not "

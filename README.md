@@ -6,9 +6,24 @@ Standard library only; `psutil` is optional and only adds CPU usage on
 Windows.
 
 ```
-python3 cpu_load_gui.py           # run the GUI
-python3 cpu_load_gui.py --temps   # print which temperature sources work here
+python3 cpu_load_gui.py                       # run the GUI
+python3 cpu_load_gui.py --temps               # print which sources work here
+python3 cpu_load_gui.py --autostart-monitor   # opt in to launching the monitor
 ```
+
+## A warning about the hardware monitors
+
+LibreHardwareMonitor and OpenHardwareMonitor read CPU sensors through a
+kernel driver (`WinRing0`). On some machines loading it causes a bugcheck —
+a blue screen — most often when another tool is already holding the same
+driver: the other monitor, MSI Afterburner, RivaTuner, HWiNFO, CPU-Z. Never
+run two of them at once.
+
+Because of that, this program never starts a monitor on its own. The
+temperature tile offers a link you can click, and `--autostart-monitor`
+opts in to launching one automatically. If a monitor blue-screens your
+machine, do not use it there — the GPU temperature still works through
+`nvidia-smi`, which needs no driver.
 
 ## Where the temperatures come from
 

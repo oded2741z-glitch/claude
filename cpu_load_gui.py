@@ -541,6 +541,14 @@ _PS_TEMP_SCRIPT = (
 
 IS_WINDOWS = os.name == "nt"
 
+# Libre/OpenHardwareMonitor read CPU sensors through a kernel driver
+# (WinRing0). On some machines loading it bugchecks the box outright,
+# most often when a second tool already holds the same driver. Starting
+# something like that unprompted is not this program's call to make, so
+# the launch is opt-in; without the flag the temperature tile just offers
+# a link the user can click.
+AUTOSTART_MONITOR = "--autostart-monitor" in sys.argv[1:]
+
 LHM_RELEASES_URL = ("https://github.com/LibreHardwareMonitor/"
                     "LibreHardwareMonitor/releases")
 
@@ -1475,12 +1483,18 @@ class App:
         within seconds and the tile fills in by itself. Skips launching when
         a monitor is already running, so it never opens a second copy.
 
+        Off unless --autostart-monitor is passed: the monitor loads a kernel
+        driver, and a machine where that driver bugchecks would blue-screen
+        on every launch of this program, with a retry loop making it worse.
+
         Keyed on the CPU temperature alone: a GPU reading from nvidia-smi
         says nothing about whether a CPU sensor is available, and treating it
         as 'a temperature came through' used to suppress the launch on every
         machine with an NVIDIA card. Re-checked periodically because the
         first sampling round can outlast the initial delay."""
-        if not IS_WINDOWS or self._hwmon_started_at is not None:
+        if not (IS_WINDOWS and AUTOSTART_MONITOR):
+            return
+        if self._hwmon_started_at is not None:
             return
         if self.sampler.temp is not None:      # a CPU sensor is answering
             return

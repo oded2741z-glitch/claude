@@ -541,6 +541,9 @@ _PS_TEMP_SCRIPT = (
 
 IS_WINDOWS = os.name == "nt"
 
+LHM_RELEASES_URL = ("https://github.com/LibreHardwareMonitor/"
+                    "LibreHardwareMonitor/releases")
+
 
 def find_powershell():
     """Path to a PowerShell host, or None.
@@ -1476,9 +1479,9 @@ class App:
         else:
             texts = {"starting": "starting LibreHardwareMonitor…",
                      "elevate": "click to restart as Administrator",
-                     "lhm": "no sensor — install LibreHardwareMonitor"}
+                     "lhm": "no CPU sensor — click to download"}
             self.temp_hint.config(text=texts[mode],
-                                  cursor="hand2" if mode == "elevate" else "arrow")
+                                  cursor="arrow" if mode == "starting" else "hand2")
             self.temp_hint.pack(anchor="w", padx=14, pady=(0, 8))
 
     def _temp_hint_click(self):
@@ -1486,6 +1489,11 @@ class App:
             self.engine.stop()
             self.root.destroy()
             sys.exit(0)
+        elif self._temp_hint_mode == "lhm":
+            # No usable sensor on this machine: send the user straight to
+            # the download rather than leaving them to search for the name.
+            import webbrowser
+            webbrowser.open(LHM_RELEASES_URL)
 
     def _toggle(self):
         if self.engine.running:
@@ -1744,7 +1752,8 @@ def print_temp_report():
               "supported' (0x8004100c) even to an elevated query, and a\n"
               "reading of -273.15 C means the class returned nothing at all.\n"
               "Running LibreHardwareMonitor gives real per-core CPU sensors "
-              "on any machine;\nthis app picks it up automatically.")
+              "on any machine;\nthis app picks it up automatically. Get it "
+              "at\n" + LHM_RELEASES_URL)
 
 
 def main():

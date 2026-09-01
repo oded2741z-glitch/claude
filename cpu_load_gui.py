@@ -1196,8 +1196,15 @@ class App:
 
         # shown in the temperature tile when Windows exposes no sensor
         self.temp_hint = tk.Label(self.tile_temp.master, font=(base, 8, "underline"),
-                                  bg=CARD, fg=BLUE, cursor="hand2")
+                                  bg=CARD, fg=BLUE, cursor="hand2",
+                                  justify="left", anchor="w")
         self.temp_hint.bind("<Button-1>", lambda e: self._temp_hint_click())
+        # Wrap to the tile width. The tile is narrow and these messages are
+        # sentences, so without this they are silently clipped mid-word and
+        # the instruction is lost.
+        self.tile_temp.master.bind(
+            "<Configure>",
+            lambda e: self.temp_hint.config(wraplength=max(60, e.width - 28)))
         # None | "starting" | "admin" | "launch" | "elevate" | "lhm"
         self._temp_hint_mode = None
         self._hwmon_started_at = None
@@ -1511,7 +1518,8 @@ class App:
             self.temp_hint.pack_forget()
         else:
             texts = {"starting": "starting hardware monitor…",
-                     "admin": "monitor open — run it as Administrator",
+                     "admin": "monitor open, but no sensors — "
+                              "close it and run it as Administrator",
                      "launch": "click to start the hardware monitor",
                      "elevate": "click to restart as Administrator",
                      "lhm": "no CPU sensor — click to download"}

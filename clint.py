@@ -46,6 +46,24 @@ HEARTBEAT_INTERVAL: float = 1.0      # פעימה לשרת במהלך שיחה
 CAPTURE_STALL_SECS: float = 5.0      # המיקרופון הפסיק לספק דגימות -> ההתקן נעלם
 DEVICE_CHECK_INTERVAL: float = 2.0   # בדיקת נוכחות התקן בזמן המתנה לעמית
 
+# --- Acoustic echo suppression (voice switch) ---
+# ההד נולד בצד שמשמיע ברמקול: המיקרופון שלו קולט את קול הצד השני ומחזיר
+# אותו. הפתרון כאן הוא voice switch פשוט - מנמיכים את המיקרופון המקומי כל
+# עוד הצד השני מדבר. אין תלות בספריות DSP, ועובד גם מול רמקולים.
+ECHO_SUPPRESSION: bool = True
+FAR_END_ACTIVE_RMS: float = 300.0   # מעל זה נחשב "הצד השני מדבר" (int16 RMS)
+DUCK_HANGOVER: float = 0.25         # כמה זמן להנמיך אחרי המילה האחרונה שנקלטה
+DUCK_GAIN: float = 0.05             # לא אפס: החבילות חייבות להמשיך לזרום,
+                                    # אחרת הצד השני יכריז ניתוק אחרי 3 שניות
+BREAK_IN_RATIO: float = 2.5         # דיבור חזק פי כך מהנכנס גובר על ההנמכה
+
+
+def audio_rms(block) -> float:
+    """עוצמת בלוק אודיו. float32 כדי שלא תהיה גלישה בריבוע של int16."""
+    if block is None or block.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(block.astype(np.float32)))))
+
 
 class IntercomCLI:
     def __init__(self) -> None:
@@ -62,6 +80,10 @@ class IntercomCLI:
         # מסמן שהניתוק נבע מההתקן ולא מהרשת - קובע מה מדווח לשרת
         self._device_failed: bool = False
         self._last_capture: float = 0.0
+
+        # Echo suppression state (נכתב ע"י תרד הקליטה, נקרא ע"י תרד השידור)
+        self._far_end_active: float = 0.0
+        self._far_end_level: float = 0.0
 
         # Peer address handling
         self.peer_lock: threading.Lock = threading.Lock()
@@ -301,6 +323,8 @@ class IntercomCLI:
         """Handles server registration, NAT hole punching, and threading activation."""
         self.is_running = True
         self._device_failed = False
+        self._far_end_active = 0.0
+        self._far_end_level = 0.0
         self._safe_refresh_hardware()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(1.0)
@@ -393,6 +417,30 @@ class IntercomCLI:
             return None  # חבילה קטומה
         return payload
 
+
+    def _note_far_end(self, block) -> None:
+        """מסמן שהצד השני מדבר, כדי שנוכל להנמיך את המיקרופון ולמנוע הד."""
+        if not ECHO_SUPPRESSION:
+            return
+        level = audio_rms(block)
+        if level > FAR_END_ACTIVE_RMS:
+            self._far_end_level = level
+            self._far_end_active = time.time()
+
+    def _tx_block(self, block):
+        """מנמיך את המיקרופון בזמן שהצד השני מדבר.
+
+        זה מה שמונע מהצד השני לשמוע את עצמו: מה שהרמקול שלנו משמיע חוזר
+        למיקרופון שלנו, ובלי ההנמכה היינו משדרים אותו בחזרה כהד.
+        """
+        if not ECHO_SUPPRESSION:
+            return block
+        if time.time() - self._far_end_active > DUCK_HANGOVER:
+            return block
+        if audio_rms(block) > self._far_end_level * BREAK_IN_RATIO:
+            return block   # דיבור חזק מספיק גובר, כדי שאפשר יהיה להפסיק את הצד השני
+        return (block * DUCK_GAIN).astype(np.int16)
+
     def _audio_receiver(self) -> None:
         """Dedicated thread for receiving and playing live P2P audio data."""
         last_data_time: float = time.time()
@@ -421,7 +469,9 @@ class IntercomCLI:
                     last_data_time = time.time()
                     payload = self._peer_audio(addr, data)
                     if payload is not None:
-                        stream.write(np.frombuffer(payload, dtype=np.int16).reshape(-1, CHANNELS))
+                        block = np.frombuffer(payload, dtype=np.int16)
+                        self._note_far_end(block)
+                        stream.write(block.reshape(-1, CHANNELS))
         except Exception:
             if self.is_running:
                 self.log("Output device error (Headphones disconnected).")
@@ -440,7 +490,7 @@ class IntercomCLI:
                     if sock is None or peer is None:
                         break
                     try:
-                        sock.sendto(AUDIO_TAG + data.tobytes(), peer)
+                        sock.sendto(AUDIO_TAG + self._tx_block(data).tobytes(), peer)
                     except ConnectionResetError:
                         continue
                     except (AttributeError, OSError):

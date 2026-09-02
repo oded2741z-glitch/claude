@@ -48,6 +48,24 @@ HEARTBEAT_INTERVAL: float = 1.0   # פעימה לשרת הסיגנלינג במ�
 REPORT_RETRIES: int = 4           # כל דיווח מצב נשלח כמה פעמים (UDP לא אמין)
 REPORT_RETRY_DELAY: float = 0.04
 
+# --- Acoustic echo suppression (voice switch) ---
+# ההד נולד בצד שמשמיע ברמקול: המיקרופון שלו קולט את קול הצד השני ומחזיר
+# אותו. הפתרון כאן הוא voice switch פשוט - מנמיכים את המיקרופון המקומי כל
+# עוד הצד השני מדבר. אין תלות בספריות DSP, ועובד גם מול רמקולים.
+ECHO_SUPPRESSION: bool = True
+FAR_END_ACTIVE_RMS: float = 300.0   # מעל זה נחשב "הצד השני מדבר" (int16 RMS)
+DUCK_HANGOVER: float = 0.25         # כמה זמן להנמיך אחרי המילה האחרונה שנקלטה
+DUCK_GAIN: float = 0.05             # לא אפס: החבילות חייבות להמשיך לזרום,
+                                    # אחרת הצד השני יכריז ניתוק אחרי 3 שניות
+BREAK_IN_RATIO: float = 2.5         # דיבור חזק פי כך מהנכנס גובר על ההנמכה
+
+
+def audio_rms(block) -> float:
+    """עוצמת בלוק אודיו. float32 כדי שלא תהיה גלישה בריבוע של int16."""
+    if block is None or block.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(block.astype(np.float32)))))
+
 # --- Dashboard ---
 UI_TICK_MS: int = 200             # קצב רענון המחוונים
 PEER_IDLE: float = 1.5            # אין אודיו מעבר לזה -> נורית הקליינט כבר לא ירוקה
@@ -136,6 +154,9 @@ class IntercomGUI:
         self._events: deque = deque(maxlen=200)
         self._last_rx: float = 0.0
         self._call_started: float = 0.0
+        # Echo suppression state (נכתב ע"י תרד הקליטה, נקרא ע"י תרד השידור)
+        self._far_end_active: float = 0.0
+        self._far_end_level: float = 0.0
         self._server_port: int = 0
         self._server_error: str = ""
         # מצב אוזניות של לקוחות מרוחקים בלבד: id -> ClientState
@@ -736,6 +757,8 @@ class IntercomGUI:
         self.peer_id = ""
         self._call_started = 0.0
         self._last_rx = 0.0
+        self._far_end_active = 0.0
+        self._far_end_level = 0.0
         self.signalling_addr = (server_ip, server_port)
         with self.peer_lock:
             self.assigned_peer = None
@@ -858,6 +881,30 @@ class IntercomGUI:
             return None  # חבילה קטומה
         return payload
 
+
+    def _note_far_end(self, block) -> None:
+        """מסמן שהצד השני מדבר, כדי שנוכל להנמיך את המיקרופון ולמנוע הד."""
+        if not ECHO_SUPPRESSION:
+            return
+        level = audio_rms(block)
+        if level > FAR_END_ACTIVE_RMS:
+            self._far_end_level = level
+            self._far_end_active = time.time()
+
+    def _tx_block(self, block):
+        """מנמיך את המיקרופון בזמן שהצד השני מדבר.
+
+        זה מה שמונע מהצד השני לשמוע את עצמו: מה שהרמקול שלנו משמיע חוזר
+        למיקרופון שלנו, ובלי ההנמכה היינו משדרים אותו בחזרה כהד.
+        """
+        if not ECHO_SUPPRESSION:
+            return block
+        if time.time() - self._far_end_active > DUCK_HANGOVER:
+            return block
+        if audio_rms(block) > self._far_end_level * BREAK_IN_RATIO:
+            return block   # דיבור חזק מספיק גובר, כדי שאפשר יהיה להפסיק את הצד השני
+        return (block * DUCK_GAIN).astype(np.int16)
+
     def _audio_receiver(self) -> None:
         last_data_time: float = time.time()
         while self.is_running:
@@ -892,6 +939,7 @@ class IntercomGUI:
                         if payload is None:
                             continue
                         block = np.frombuffer(payload, dtype=np.int16)
+                        self._note_far_end(block)
                         self._last_rx = last_data_time
                         try:
                             stream.write(block.reshape(-1, CHANNELS))
@@ -928,7 +976,7 @@ class IntercomGUI:
                         if sock is None or peer is None:
                             return
                         try:
-                            sock.sendto(AUDIO_TAG + data.tobytes(), peer)
+                            sock.sendto(AUDIO_TAG + self._tx_block(data).tobytes(), peer)
                         except ConnectionResetError:
                             continue
                         except (AttributeError, OSError):

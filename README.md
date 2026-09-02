@@ -30,3 +30,18 @@ blocks are still transmitted, so the peer's 3 s silence timeout never fires.
 Tuning constants at the top of both files: `ECHO_SUPPRESSION`,
 `FAR_END_ACTIVE_RMS`, `DUCK_HANGOVER`, `DUCK_GAIN`, `BREAK_IN_RATIO`.
 Real headsets on both ends remain the best fix; this is the fallback.
+
+### Remote client control
+
+The GUI has a **STOP / START REMOTE CLIENT** button. It does not kill the
+client process - a killed process could never receive the command to come
+back. It puts the client into **standby**: the call ends, the sound card is
+released, the client stays out of the matching pool, and it keeps reporting
+its state and listening for commands every 2 s.
+
+Commands (`{"cmd": "standby"}` / `{"cmd": "active"}`) are sent by the
+**internal** signalling server only, and always back to the address the
+client's last report came from - that is the only hole its NAT keeps open.
+The button is therefore disabled while the internal server is not running.
+If a command is lost, the server re-sends it on every client report whose
+`mode` does not match, so the button and the client cannot drift apart.

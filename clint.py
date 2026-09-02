@@ -30,6 +30,15 @@ STATUS_ALIVE: str = "alive"                 # פעימה במהלך שיחה: ה
 STATUS_LEFT: str = "left"                   # יציאה מהשיחה - מצב האוזניות לא השתנה
 STATUS_DISCONNECTED: str = "disconnected"   # האוזניות באמת נשלפו
 
+# --- Remote control (server -> client) ---
+# השרת יכול להעביר את הלקוח למצב המתנה ולהחזיר אותו לפעולה. זו לא סגירת
+# התהליך: תהליך סגור לא יכול לקבל פקודת הפעלה, ולכן "כיבוי" כאן פירושו
+# שחרור כרטיס הקול והפסקת השיחה, כשהלקוח ממשיך להאזין לפקודות.
+CMD_KEY: str = "cmd"
+MODE_ACTIVE: str = "active"
+MODE_STANDBY: str = "standby"
+STANDBY_REPORT_INTERVAL: float = 2.0   # דיווח + האזנה לפקודות בזמן המתנה
+
 PUNCH_DURATION: float = 2.0
 PUNCH_INTERVAL: float = 0.1
 HW_REFRESH_GAP: float = 5.0       # מרווח מזערי בין אתחולי PortAudio
@@ -68,7 +77,11 @@ def audio_rms(block) -> float:
 class IntercomCLI:
     def __init__(self) -> None:
         self.sock: Optional[socket.socket] = None
+        # סוקט קבוע לדיווחי מצב ולקבלת פקודות. השרת עונה תמיד לכתובת שממנה
+        # הגיע הדיווח, ולכן חור ה-NAT שלו הוא הדרך היחידה שפקודה יכולה לעבור.
+        self.ctrl_sock: Optional[socket.socket] = None
         self.is_running: bool = False
+        self.standby: bool = False        # מופעל בפקודת השרת
         self.audio_lock: threading.Lock = threading.Lock()
         self._open_streams: int = 0       # מוגן ע"י audio_lock
         self._last_refresh: float = 0.0
@@ -134,37 +147,97 @@ class IntercomCLI:
     # ------------------------------------------------------------------
     # Server state reporting
     # ------------------------------------------------------------------
+    def _ensure_ctrl_sock(self) -> Optional[socket.socket]:
+        """הסוקט הקבוע של ערוץ הבקרה. נוצר פעם אחת ונשאר פתוח."""
+        if self.ctrl_sock is None:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.settimeout(0.2)
+            except OSError:
+                return None
+            self.ctrl_sock = sock
+        return self.ctrl_sock
+
     def _send_signalling(self, payload: Dict[str, Any], repeats: int = REPORT_RETRIES) -> None:
-        """שולח הודעת בקרה לשרת, עם חזרות ובלי תלות בסוקט הראשי.
+        """שולח דיווח מצב לשרת, עם חזרות ובלי תלות בסוקט ה-P2P.
 
         זו הנקודה שבה נשבר החיווי קודם: הדיווח נשלח פעם אחת בלבד, ורק אם
         סוקט ה-P2P היה פתוח. חבילה אחת שאבדה (או שליפת אוזניות לפני שהיה
         חיבור) הותירה את השרת עם מצב ישן.
         """
-        data = json.dumps(payload).encode('utf-8')
+        sock = self._ensure_ctrl_sock()
+        if sock is None:
+            return
+        body = dict(payload)
+        # כל דיווח נושא את מצב ההפעלה, כדי שהשרת ידע אם הפקודה שלו כבר יושמה
+        body.setdefault("mode", MODE_STANDBY if self.standby else MODE_ACTIVE)
+        data = json.dumps(body).encode('utf-8')
         target = (self.server_ip, self.server_port)
 
-        sock = self.sock
-        temp: Optional[socket.socket] = None
-        if sock is None:
+        for i in range(max(1, repeats)):
             try:
-                temp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            except OSError:
-                return
-            sock = temp
+                sock.sendto(data, target)
+            except (AttributeError, OSError):
+                return   # לא נורא, יש שידור חוזר
+            if i + 1 < repeats:
+                time.sleep(REPORT_RETRY_DELAY)
 
+    def _handle_command(self, data: bytes) -> bool:
+        """מפעיל פקודת שרת. מחזיר True אם החבילה הייתה פקודה."""
         try:
-            for i in range(max(1, repeats)):
-                try:
-                    sock.sendto(data, target)
-                except (AttributeError, OSError):
-                    return   # הסוקט נסגר תחת הרגליים - לא נורא, יש שידור חוזר
-                if i + 1 < repeats:
-                    time.sleep(REPORT_RETRY_DELAY)
-        finally:
-            if temp is not None:
-                with contextlib.suppress(OSError):
-                    temp.close()
+            msg = json.loads(data.decode('utf-8'))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False
+        if not isinstance(msg, dict):
+            return False
+
+        cmd = msg.get(CMD_KEY)
+        if cmd == MODE_STANDBY:
+            if not self.standby:
+                self.log("Remote command from server: STOP (standby).")
+                self.standby = True
+                # סוגר שיחה פעילה ומשחרר את כרטיס הקול
+                self.is_running = False
+            return True
+        if cmd == MODE_ACTIVE:
+            if self.standby:
+                self.log("Remote command from server: START.")
+                self.standby = False
+            return True
+        return False
+
+    def _poll_commands(self, sock: Optional[socket.socket] = None) -> None:
+        """מרוקן פקודות ממתינות מערוץ הבקרה. לא חוסם יותר מ-timeout אחד."""
+        target = sock or self.ctrl_sock
+        if target is None:
+            return
+        for _ in range(8):
+            try:
+                data, _addr = target.recvfrom(BUFFER_SIZE)
+            except (socket.timeout, BlockingIOError):
+                return
+            except (AttributeError, OSError):
+                return
+            self._handle_command(data)
+
+    def _standby_loop(self) -> None:
+        """מצב המתנה בפקודת השרת.
+
+        לא נפתח כרטיס קול ולא נפתחת שיחה, אבל הלקוח ממשיך לדווח את מצבו
+        ולהאזין לפקודות - וגם משאיר את חור ה-NAT פתוח כדי שפקודת ההפעלה
+        תוכל להגיע אליו בכלל.
+        """
+        self.log("Client is in STANDBY (remote command). Waiting for START...")
+        while self.standby:
+            self._safe_refresh_hardware()
+            self._send_signalling({
+                "id": self.my_id,
+                "status": STATUS_ALIVE if self._devices_present() else STATUS_DISCONNECTED,
+            }, repeats=1)
+            deadline = time.time() + STANDBY_REPORT_INTERVAL
+            while self.standby and time.time() < deadline:
+                self._poll_commands()
+        self.log("Leaving STANDBY.")
 
     def _heartbeat(self) -> None:
         """פעימה לשרת כל עוד השיחה חיה.
@@ -177,7 +250,8 @@ class IntercomCLI:
             self._send_signalling({"id": self.my_id, "status": STATUS_ALIVE}, repeats=1)
             deadline = time.time() + HEARTBEAT_INTERVAL
             while self.is_running and time.time() < deadline:
-                time.sleep(0.1)
+                # אותו תרד גם מקשיב: כך פקודת עצירה מגיעה גם באמצע שיחה
+                self._poll_commands()
 
     # ------------------------------------------------------------------
     # Audio hardware
@@ -232,7 +306,8 @@ class IntercomCLI:
         """Blocks until BOTH audio devices are connected, reporting the state meanwhile."""
         self.log("Waiting for headphones (Mic & Speaker) to be connected...")
         last_report: float = 0.0
-        while True:
+        while not self.standby:
+            self._poll_commands()
             if self._devices_present():
                 self.log("Audio devices (Mic & Speaker) detected! Initiating connection to Server...")
                 return
@@ -258,10 +333,13 @@ class IntercomCLI:
 
         while True:
             try:
-                if not self.is_running:
+                if self.standby:
+                    self._standby_loop()
+                elif not self.is_running:
                     self.load_settings()
                     self._wait_for_audio_device()
-                    self._connect_and_stream()
+                    if not self.standby:
+                        self._connect_and_stream()
                 time.sleep(1)
             except KeyboardInterrupt:
                 self.log("Exiting...")
@@ -302,6 +380,10 @@ class IntercomCLI:
                 continue
             except (AttributeError, OSError):
                 return None
+
+            # פקודה מהשרת יכולה להגיע גם לסוקט הזה (הרישום נשלח ממנו)
+            if self._handle_command(data):
+                continue
 
             # חבילת אודיו מעמית שהקדים אותנו כבר לא מפילה את הרישום
             try:
@@ -467,6 +549,8 @@ class IntercomCLI:
                         break  # הסוקט נסגר - יציאה נקייה
 
                     last_data_time = time.time()
+                    if data[:1] not in P2P_TAGS and self._handle_command(data):
+                        continue
                     payload = self._peer_audio(addr, data)
                     if payload is not None:
                         block = np.frombuffer(payload, dtype=np.int16)

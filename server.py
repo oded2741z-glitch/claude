@@ -159,6 +159,10 @@ class IntercomGUI:
         self._far_end_level: float = 0.0
         self._server_port: int = 0
         self._server_error: str = ""
+        # מונה תעבורה גלוי בלוח: התשובה המהירה ל"האם הדיווחים בכלל מגיעים"
+        self._packets: int = 0
+        self._last_packet: float = 0.0
+        self._last_packet_from: str = ""
         # מצב אוזניות של לקוחות מרוחקים בלבד: id -> ClientState
         self._hp_lock: threading.Lock = threading.Lock()
         self._remote_clients: Dict[str, ClientState] = {}
@@ -297,8 +301,14 @@ class IntercomGUI:
     def log(self, msg: str, color_tag: str = "white") -> None:
         """Events go to stdout only - the dashboard carries the state itself."""
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-        print(line, flush=True)
         self._events.append(line)
+        try:
+            print(line, flush=True)
+        except Exception:
+            # בלי stdout (הרצה תחת pythonw) print זורק. לוג לא יכול להפיל את
+            # מי שקרא לו: אחרת תרד השרת מת, או שרענון הלוח מפסיק והלוח נשאר
+            # תקוע על המצב האחרון שצויר.
+            pass
 
     # ------------------------------------------------------------------
     # Dashboard refresh
@@ -308,10 +318,21 @@ class IntercomGUI:
         canvas.itemconfig(dot, fill=color)
         detail.config(text=text, fg=text_color or (Theme.FG if color != Theme.LED_OFF else Theme.DISCONNECTED))
 
+    @staticmethod
+    def _ago(stamp: float) -> str:
+        if not stamp:
+            return "never"
+        delta = time.time() - stamp
+        return f"{delta:.1f}s ago" if delta < 60 else f"{int(delta // 60)}m ago"
+
     def _refresh_server_row(self) -> None:
         server_up = self.server_thread is not None and self.server_thread.is_alive()
         if server_up:
-            self._set_row("SERVER", Theme.CONNECTED, f"internal server listening on port {self._server_port}")
+            # התעבורה מוצגת כדי שאפשר יהיה לראות בלי קונסולה אם הלקוח מדווח
+            who = f" from {self._last_packet_from}" if self._last_packet_from else ""
+            self._set_row("SERVER", Theme.CONNECTED,
+                          f"port {self._server_port}  ·  {self._packets} pkt  ·  "
+                          f"last {self._ago(self._last_packet)}{who}")
         elif self._server_error:
             self._set_row("SERVER", Theme.QUIT, self._server_error, Theme.QUIT)
         elif self.is_running and self.signalling_addr:
@@ -392,19 +413,21 @@ class IntercomGUI:
 
         client_id, state = entries[0]
         stamp = time.strftime('%H:%M:%S', time.localtime(state.since))
+        # גיל הדיווח האחרון: אם הוא גדל, הלקוח הפסיק לדווח (ולא "המצב לא השתנה")
+        seen = f"  ·  seen {self._ago(state.last_seen)}"
         extra = f"   (+{len(entries) - 1} more)" if len(entries) > 1 else ""
         if state.connected:
             # הרמז שבגללו השורה קיימת: הצד השני מוכן, אפשר לפתוח שיחה
             hint = "   ->  press START INTERCOM" if not self.is_running else ""
             self._set_row("HEADPHONES", Theme.CONNECTED,
-                          f"{client_id} connected  ·  {stamp}{extra}{hint}")
+                          f"{client_id} connected  ·  {stamp}{seen}{extra}{hint}")
         elif state.note:
             # מצב שנגזר משתיקת הלקוח ולא מדיווח מפורש - מסומן אחרת
             self._set_row("HEADPHONES", Theme.WAITING,
-                          f"{client_id} disconnected ({state.note})  ·  {stamp}{extra}", Theme.WAITING)
+                          f"{client_id} disconnected ({state.note})  ·  {stamp}{seen}{extra}", Theme.WAITING)
         else:
             self._set_row("HEADPHONES", Theme.QUIT,
-                          f"{client_id} disconnected  ·  {stamp}{extra}", Theme.QUIT)
+                          f"{client_id} disconnected  ·  {stamp}{seen}{extra}", Theme.QUIT)
 
     def _ui_tick(self) -> None:
         """Single periodic redraw. Worker threads only write plain values."""
@@ -416,6 +439,15 @@ class IntercomGUI:
             self._refresh_server_row()
             self._refresh_client_row(now)
             self._refresh_headphones_row()
+        except tk.TclError:
+            return  # החלון נסגר
+        except Exception as e:
+            # שגיאה בציור אסור שתהיה סופית: בלי התזמון החוזר שלמטה הלוח קופא
+            # על המצב האחרון שצויר (למשל "מחובר" ירוק) ולא מתעדכן יותר לעולם,
+            # בזמן שהשרת עצמו ממשיך לקבל דיווחים כרגיל.
+            self.log(f"Dashboard refresh error: {type(e).__name__}: {e}", "red")
+
+        try:
             self.root.after(UI_TICK_MS, self._ui_tick)
         except tk.TclError:
             return  # החלון נסגר
@@ -563,6 +595,7 @@ class IntercomGUI:
         if not isinstance(client_id, str) or not client_id.strip():
             return
         client_id = client_id.strip()
+        self._last_packet_from = client_id
         status = msg.get("status")
 
         # --- דיווחי מצב שאינם רישום ---
@@ -640,8 +673,12 @@ class IntercomGUI:
                     self.log(f"[Server] Socket error: {e}", "red")
                     break
 
-                # חבילה פגומה אחת לא מפילה את השרת
+                # שום תקלה בטיפול בחבילה לא מפילה את התרד הזה: אם הוא מת,
+                # השרת מפסיק לעבד דיווחים והלוח נשאר תקוע על המצב האחרון
+                # שהתקבל - בדיוק "הלקוח מזהה אבל השרת לא מגיב".
                 try:
+                    self._packets += 1
+                    self._last_packet = time.time()
                     self._handle_signalling(server_sock, clients, data, addr, ext_ip, use_local)
                 except Exception as e:
                     self.log(f"[Server] Error handling packet: {e}", "red")

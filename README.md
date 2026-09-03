@@ -89,3 +89,19 @@ Both programs therefore `abort()` the stream (which discards buffers instead
 of draining them) before closing it. As a last resort the client restarts
 itself (`RESTART_IF_AUDIO_WEDGED`) if a stream still holds the device for
 `WEDGED_RESTART_AFTER` seconds, since nothing can free it from inside.
+
+### Reading the dashboard
+
+The SERVER row shows live traffic - `port 9999 · 1423 pkt · 0.4s ago from
+node_B` - and the CLIENT HEADPHONES row shows the age of that client's last
+report (`seen 0.4s ago`). Between them they answer the question that used to
+need a console: if the packet count and the "seen" age keep moving, reports
+are arriving and the state shown is current; if the age grows, the client
+stopped reporting; if the count is frozen, nothing is reaching the server at
+all.
+
+Neither the dashboard refresh nor the signalling thread can now be killed by
+an unexpected error (including `print` failing with no console, under
+`pythonw.exe`): the refresh logs and reschedules itself, the receive loop logs
+and keeps serving. A dashboard frozen on its last state was indistinguishable
+from "the server does not notice anything".

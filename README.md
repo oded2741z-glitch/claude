@@ -55,3 +55,17 @@ For case 2, name the headset explicitly in `settings.txt`:
 Empty means "system default"; a number is a device index; anything else is
 matched against the device name. `python audio_check.py` prints the device
 list (and follows plug/unplug live) so the right name can be copied from it.
+
+#### The wedged sound card
+
+The concrete failure behind "re-plugging is never noticed": leaving a stream
+through a `with` block calls `stop()`, which **waits for the output buffers to
+drain**. On a USB device that was just yanked that wait never returns, so the
+audio thread stays alive holding the sound card, `_open_streams` never drops
+to zero, the device list is never refreshed, and the adapter being plugged
+back in cannot be seen - until the process is restarted.
+
+Both programs therefore `abort()` the stream (which discards buffers instead
+of draining them) before closing it. As a last resort the client restarts
+itself (`RESTART_IF_AUDIO_WEDGED`) if a stream still holds the device for
+`WEDGED_RESTART_AFTER` seconds, since nothing can free it from inside.

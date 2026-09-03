@@ -47,6 +47,12 @@ CAPTURE_STALL_SECS: float = 5.0      # המיקרופון הפסיק לספק ד
 DEVICE_CHECK_INTERVAL: float = 2.0   # בדיקת נוכחות התקן בזמן המתנה לעמית
 DEVICE_DIAG_INTERVAL: float = 10.0   # כל כמה זמן להסביר ביומן למה אין התקן
 
+# תרד אודיו שנתקע על התקן שנשלף מחזיק את PortAudio, ואז רשימת ההתקנים לא
+# מתרעננת לעולם - חיבור האוזניות מחדש לא ייקלט עד הפעלה מחדש. אין דרך
+# לשחרר את זה מבפנים, ולכן הלקוח מפעיל את עצמו מחדש.
+RESTART_IF_AUDIO_WEDGED: bool = True
+WEDGED_RESTART_AFTER: float = 20.0
+
 # --- Acoustic echo suppression (voice switch) ---
 # ההד נולד בצד שמשמיע ברמקול: המיקרופון שלו קולט את קול הצד השני ומחזיר
 # אותו. הפתרון כאן הוא voice switch פשוט - מנמיכים את המיקרופון המקומי כל
@@ -254,10 +260,25 @@ class IntercomCLI:
         """
         with self.audio_lock:
             self._open_streams += 1
+        stream = None
         try:
-            with factory() as stream:
-                yield stream
+            stream = factory()
+            stream.start()
+            yield stream
         finally:
+            if stream is not None:
+                # abort ולא stop: היציאה הרגילה מ-with קוראת ל-stop, שממתין
+                # לניקוז הבאפרים - וזה בדיוק מה שנתקע לנצח על התקן USB שנשלף.
+                # תרד תקוע כזה מחזיק את המונה, ואז רשימת ההתקנים של PortAudio
+                # לא מתרעננת לעולם - כלומר חיבור האוזניות מחדש כבר לא ייקלט.
+                try:
+                    stream.abort()
+                except Exception:
+                    pass
+                try:
+                    stream.close(ignore_errors=True)
+                except Exception:
+                    pass
             with self.audio_lock:
                 self._open_streams -= 1
 
@@ -292,6 +313,24 @@ class IntercomCLI:
         ins = [d["name"] for d in devices if d.get("max_input_channels", 0) > 0]
         outs = [d["name"] for d in devices if d.get("max_output_channels", 0) > 0]
         return (f"{len(ins)} input(s) {ins[:4]} | {len(outs)} output(s) {outs[:4]}")
+
+    def _restart_process(self) -> None:
+        """מפעיל את הלקוח מחדש כשכרטיס הקול תקוע.
+
+        execv מחליף את התהליך הנוכחי, ומערכת ההפעלה משחררת את ההתקן שהתרד
+        התקוע החזיק. זו הדרך היחידה לחזור לעבוד בלי התערבות ידנית.
+        """
+        self.log("Audio subsystem is wedged (a stream never released the device); "
+                 "restarting the client process to recover.")
+        self._send_signalling({"id": self.my_id, "status": STATUS_DISCONNECTED})
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            self.log(f"Automatic restart failed: {e}. Please restart the client manually.")
 
     def _wait_for_audio_device(self) -> None:
         """Blocks until BOTH audio devices are connected, reporting the state meanwhile."""
@@ -329,6 +368,11 @@ class IntercomCLI:
             # Refresh hardware in case the device was just plugged in and unrecognized
             if self._safe_refresh_hardware():
                 continue   # הרשימה התרעננה - בודקים מיד, בלי להמתין עוד שנייה
+
+            blocked = self._refresh_blocked_since
+            if (RESTART_IF_AUDIO_WEDGED and blocked
+                    and time.time() - blocked > WEDGED_RESTART_AFTER):
+                self._restart_process()
             time.sleep(1)
 
     # ------------------------------------------------------------------

@@ -681,10 +681,25 @@ class IntercomGUI:
         """
         with self.audio_lock:
             self._open_streams += 1
+        stream = None
         try:
-            with factory() as stream:
-                yield stream
+            stream = factory()
+            stream.start()
+            yield stream
         finally:
+            if stream is not None:
+                # abort ולא stop: היציאה הרגילה מ-with קוראת ל-stop, שממתין
+                # לניקוז הבאפרים - וזה בדיוק מה שנתקע לנצח על התקן USB שנשלף.
+                # תרד תקוע כזה מחזיק את המונה, ואז רשימת ההתקנים של PortAudio
+                # לא מתרעננת לעולם - כלומר חיבור האוזניות מחדש כבר לא ייקלט.
+                try:
+                    stream.abort()
+                except Exception:
+                    pass
+                try:
+                    stream.close(ignore_errors=True)
+                except Exception:
+                    pass
             with self.audio_lock:
                 self._open_streams -= 1
 

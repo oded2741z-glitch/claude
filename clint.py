@@ -116,6 +116,8 @@ class IntercomCLI:
         self._mic_id: Optional[int] = None
         self._speaker_id: Optional[int] = None
         self._device_signature: Optional[Tuple[str, str]] = None
+        # ההתקן שננעלנו עליו כשאין הגדרה מפורשת - "האוזניות" מבחינת הלקוח
+        self._pinned: Dict[str, Optional[str]] = {"input": None, "output": None}
 
         self.load_settings()
 
@@ -307,11 +309,40 @@ class IntercomCLI:
                 return -1
             return value if isinstance(value, int) else -1
 
+        def usable(i: int) -> bool:
+            return 0 <= i < len(devices) and devices[i].get(key, 0) >= CHANNELS
+
         if wanted is None:
+            # אין הגדרה מפורשת: ננעלים על ההתקן הראשון שראינו ומתייחסים אליו
+            # כ"אוזניות". בלי הנעילה הזו, שליפת מתאם USB רק מזיזה את ברירת
+            # המחדל לכרטיס המובנה, הבדיקה ממשיכה להצליח - והשרת חוזר לירוק.
             index = default_index()
-            if 0 <= index < len(devices) and devices[index].get(key, 0) >= CHANNELS:
-                return index, devices[index]["name"]
-            return None, ""
+            default_name = devices[index]["name"] if usable(index) else ""
+            pinned = self._pinned.get(kind)
+
+            if pinned is None:
+                if not default_name:
+                    return None, ""
+                self._pinned[kind] = default_name
+                return index, default_name
+
+            available = {d["name"] for d in devices if d.get(key, 0) >= CHANNELS}
+            if pinned not in available:
+                return None, ""      # ההתקן הנעול נעלם - זו שליפת האוזניות
+
+            if default_name and default_name != pinned:
+                # המערכת עברה להתקן אחר בזמן שהנעול עדיין קיים - למשל חיבור
+                # מתאם USB במחשב שהתחיל בלעדיו. ננעלים על החדש.
+                self._pinned[kind] = default_name
+                return index, default_name
+
+            preferred = devices[index].get("hostapi") if usable(index) else None
+            candidates = [i for i, d in enumerate(devices)
+                          if d.get(key, 0) >= CHANNELS and d["name"] == pinned]
+            for i in candidates:
+                if preferred is not None and devices[i].get("hostapi") == preferred:
+                    return i, pinned
+            return (candidates[0], pinned) if candidates else (None, "")
 
         if isinstance(wanted, int):
             if 0 <= wanted < len(devices) and devices[wanted].get(key, 0) >= CHANNELS:
@@ -330,6 +361,14 @@ class IntercomCLI:
                 return i, devices[i]["name"]
         return matches[0], devices[matches[0]]["name"]
 
+    def _wanted_name(self, kind: str) -> str:
+        """שם ההתקן שהלקוח מחפש - מההגדרות או מהנעילה האוטומטית."""
+        configured = self.mic if kind == "input" else self.speaker
+        if configured is not None:
+            return repr(configured)
+        pinned = self._pinned.get(kind)
+        return repr(pinned) if pinned else "the system default device"
+
     def _device_check(self) -> Tuple[bool, str]:
         """שאילתה על ההתקנים במקום לפתוח ולסגור streams אמיתיים -
         כל מחזור פתיחה/סגירה על התקן מתנתק הוא סיכון מיותר.
@@ -345,9 +384,9 @@ class IntercomCLI:
         speaker_id, speaker_name = self._device_slot(self.speaker, "output", devices)
         mic_id, mic_name = self._device_slot(self.mic, "input", devices)
         if speaker_id is None:
-            return False, f"no output device matching {self.speaker or 'system default'}"
+            return False, f"no output device: {self._wanted_name('output')} is not connected"
         if mic_id is None:
-            return False, f"no input device matching {self.mic or 'system default'}"
+            return False, f"no input device: {self._wanted_name('input')} is not connected"
 
         try:
             sd.check_output_settings(device=speaker_id, samplerate=SAMPLE_RATE,

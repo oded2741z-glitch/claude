@@ -48,10 +48,16 @@ Two things make a plugged-in headset invisible to the client:
 There is a third, and on a machine with more than one sound card the most
 common: **unplugging moves the system default somewhere else.** Pull the USB
 adapter and Windows falls back to the built-in Realtek card, so a check on the
-*default* device still succeeds - the state never changes and nothing is ever
-reported, in either direction. The client now compares the *names* of the
-devices it is using between checks and reports a switch as a device change
-(`DETECT_DEVICE_SWITCH`), but the precise fix is to name the adapter.
+*default* device still succeeds.
+
+The client therefore **pins** the device it first saw and treats that one as
+"the headphones": if it disappears the state is disconnected and stays
+disconnected until it comes back, instead of silently continuing on the
+built-in card (which showed up as one red blink and then green again). If the
+system default moves to a different device while the pinned one is still
+present - plugging the adapter into a machine that started without it - the
+client re-pins onto it and reports the change. Naming the adapter in
+`settings.txt` overrides all of this and is still the most explicit option.
 
 To name the headset explicitly in `settings.txt`:
 

@@ -65,7 +65,7 @@ class JitterBuffer:
         return chunk
 
     def dead(self):
-        return self.idle > SENDER_TIMEOUT and not self.pending
+        return self.idle > SENDER_TIMEOUT
 
 
 class AudioEngine:
@@ -177,6 +177,7 @@ class AudioEngine:
             except socket.timeout:
                 continue
             except OSError:
+                time.sleep(0.05)
                 continue
             if len(data) != PKT_SIZE:
                 continue
@@ -273,9 +274,9 @@ class IntercomClient:
         self.root.after(0, lambda: self.status_lbl.configure(text=text, text_color=color))
 
     def apply_state(self, state, peers):
-        if state not in STATE_COLORS:
+        if not isinstance(state, str) or state not in STATE_COLORS:
             state = "STANDBY"
-        self.peers = set(peers)
+        self.peers = set(p for p in peers if isinstance(p, str))
         if state != self.state:
             self.state = state
             self.audio.clear()
@@ -287,7 +288,7 @@ class IntercomClient:
             try:
                 conn = socket.create_connection((self.manager_ip, CTRL_PORT), timeout=5)
                 conn.settimeout(None)
-                stream = conn.makefile("r")
+                stream = conn.makefile("r", errors="replace")
                 for line in stream:
                     line = line.strip()
                     if not line:
@@ -296,8 +297,13 @@ class IntercomClient:
                         msg = json.loads(line)
                     except ValueError:
                         continue
-                    self.apply_state(msg.get("state", "STANDBY"), msg.get("peers", []))
-            except OSError:
+                    if not isinstance(msg, dict):
+                        continue
+                    peers = msg.get("peers", [])
+                    if not isinstance(peers, list):
+                        peers = []
+                    self.apply_state(msg.get("state", "STANDBY"), peers)
+            except Exception:
                 pass
             finally:
                 if conn is not None:

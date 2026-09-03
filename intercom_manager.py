@@ -65,7 +65,7 @@ class JitterBuffer:
         return chunk
 
     def dead(self):
-        return self.idle > SENDER_TIMEOUT and not self.pending
+        return self.idle > SENDER_TIMEOUT
 
 
 class AudioEngine:
@@ -177,6 +177,7 @@ class AudioEngine:
             except socket.timeout:
                 continue
             except OSError:
+                time.sleep(0.05)
                 continue
             if len(data) != PKT_SIZE:
                 continue
@@ -215,6 +216,7 @@ class IntercomManager:
 
         self.clients = {}
         self.clients_lock = threading.Lock()
+        self.state_lock = threading.RLock()
 
         self.audio = AudioEngine(self.tx_targets, self.rx_accept)
 
@@ -322,26 +324,28 @@ class IntercomManager:
             self.join_buttons[gname] = btn_join
 
     def state_for(self, ip):
-        if self.is_broadcasting:
-            return "BROADCAST", []
-        peers = set()
-        active = False
-        for gname in self.active_groups:
-            members = self.groups.get(gname, set())
-            if ip in members:
+        with self.state_lock:
+            if self.is_broadcasting:
+                return "BROADCAST", []
+            peers = set()
+            active = False
+            for gname in self.active_groups:
+                members = self.groups.get(gname, set())
+                if ip in members:
+                    active = True
+                    peers |= members - {ip}
+            if self.joined_group and ip in self.groups.get(self.joined_group, set()):
                 active = True
-                peers |= members - {ip}
-        if self.joined_group and ip in self.groups.get(self.joined_group, set()):
-            active = True
-            peers.add(self.my_ip)
+                peers.add(self.my_ip)
+        peers.discard(ip)
         return ("ACTIVE" if active else "STANDBY"), sorted(peers)
 
     def send_state(self, ip, conn):
-        state, peers = self.state_for(ip)
-        line = json.dumps({"state": state, "peers": peers}) + "\n"
         try:
+            state, peers = self.state_for(ip)
+            line = json.dumps({"state": state, "peers": peers}) + "\n"
             conn.sendall(line.encode())
-        except OSError:
+        except Exception:
             self.drop_client(ip, conn)
 
     def push_state(self):
@@ -378,60 +382,74 @@ class IntercomManager:
             try:
                 conn, addr = srv.accept()
             except OSError:
+                time.sleep(0.05)
                 continue
-            ip = addr[0]
-            with self.clients_lock:
-                old = self.clients.get(ip)
-                self.clients[ip] = conn
-            if old is not None:
-                self.close_conn(old)
-            threading.Thread(target=self.client_reader, args=(ip, conn), daemon=True).start()
-            self.send_state(ip, conn)
+            try:
+                conn.settimeout(5.0)
+                ip = addr[0]
+                with self.clients_lock:
+                    previous = self.clients.get(ip)
+                    self.clients[ip] = conn
+                if previous is not None:
+                    self.close_conn(previous)
+                threading.Thread(target=self.client_reader, args=(ip, conn), daemon=True).start()
+                self.send_state(ip, conn)
+            except Exception:
+                self.close_conn(conn)
 
     def client_reader(self, ip, conn):
         try:
             while True:
-                if not conn.recv(1024):
-                    break
+                try:
+                    if not conn.recv(1024):
+                        break
+                except socket.timeout:
+                    continue
         except OSError:
             pass
         self.drop_client(ip, conn)
 
     def tx_targets(self):
-        if self.is_broadcasting:
-            return [ip for ip in self.all_ips if ip != self.my_ip]
-        if self.joined_group:
-            return [ip for ip in self.groups.get(self.joined_group, set()) if ip != self.my_ip]
-        return []
+        with self.state_lock:
+            if self.is_broadcasting:
+                return [ip for ip in self.all_ips if ip != self.my_ip]
+            if self.joined_group:
+                return [ip for ip in self.groups.get(self.joined_group, set()) if ip != self.my_ip]
+            return []
 
     def rx_accept(self, ip):
-        if self.is_broadcasting:
+        with self.state_lock:
+            if self.is_broadcasting:
+                return False
+            if self.joined_group:
+                return ip in self.groups.get(self.joined_group, set())
             return False
-        if self.joined_group:
-            return ip in self.groups.get(self.joined_group, set())
-        return False
 
     def toggle_group(self, gname):
-        if self.is_broadcasting:
-            return
+        with self.state_lock:
+            if self.is_broadcasting:
+                return
+            if gname in self.active_groups:
+                self.active_groups.discard(gname)
+                active = False
+            else:
+                self.active_groups.add(gname)
+                active = True
         btn = self.group_buttons[gname]
-        if gname in self.active_groups:
-            self.active_groups.discard(gname)
-            btn.configure(text="INACTIVE", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
-        else:
-            self.active_groups.add(gname)
+        if active:
             btn.configure(text="ACTIVE", fg_color=ACCENT_COLOR, text_color="#000000")
+        else:
+            btn.configure(text="INACTIVE", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
         self.push_state()
 
     def toggle_join(self, gname):
-        if self.is_broadcasting:
-            return
-        if self.joined_group == gname:
-            self.joined_group = None
-        else:
-            self.joined_group = gname
+        with self.state_lock:
+            if self.is_broadcasting:
+                return
+            self.joined_group = None if self.joined_group == gname else gname
+            joined = self.joined_group
         for name, btn in self.join_buttons.items():
-            if name == self.joined_group:
+            if name == joined:
                 btn.configure(text="LEAVE", fg_color=ACCENT_COLOR, text_color="#000000")
             else:
                 btn.configure(text="JOIN", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
@@ -439,16 +457,15 @@ class IntercomManager:
         self.push_state()
 
     def toggle_broadcast(self):
-        if not self.is_broadcasting:
-            self.is_broadcasting = True
+        with self.state_lock:
+            self.is_broadcasting = not self.is_broadcasting
+            broadcasting = self.is_broadcasting
+        if broadcasting:
             self.btn_broadcast.configure(text="ACTIVE", fg_color=BROADCAST_COLOR, text_color="#000000")
-            for btn in list(self.group_buttons.values()) + list(self.join_buttons.values()):
-                btn.configure(state="disabled")
         else:
-            self.is_broadcasting = False
             self.btn_broadcast.configure(text="INACTIVE", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
-            for btn in list(self.group_buttons.values()) + list(self.join_buttons.values()):
-                btn.configure(state="normal")
+        for btn in list(self.group_buttons.values()) + list(self.join_buttons.values()):
+            btn.configure(state="disabled" if broadcasting else "normal")
         self.audio.clear()
         self.push_state()
 

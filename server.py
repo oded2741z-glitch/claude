@@ -35,15 +35,6 @@ STATUS_ALIVE: str = "alive"                 # פעימה במהלך שיחה: ה
 STATUS_LEFT: str = "left"                   # יציאה מהשיחה - מצב האוזניות לא השתנה
 STATUS_DISCONNECTED: str = "disconnected"   # האוזניות באמת נשלפו
 
-# --- Remote control (server -> client) ---
-# "כיבוי" הלקוח הוא מצב המתנה ולא סגירת התהליך: תהליך סגור לא יכול לקבל
-# פקודת הפעלה. במצב המתנה הלקוח משחרר את כרטיס הקול, לא נכנס להצמדה,
-# וממשיך לדווח ולהאזין לפקודות.
-CMD_KEY: str = "cmd"
-MODE_ACTIVE: str = "active"
-MODE_STANDBY: str = "standby"
-CMD_RETRIES: int = 3
-
 # --- Signalling server behaviour ---
 CLIENT_TTL: float = 30.0          # רישום ישן לא ישמש להצמדה
 MATCH_RETRIES: int = 5            # UDP לא אמין - שולחים את פרטי העמית כמה פעמים
@@ -86,7 +77,6 @@ class ClientState(NamedTuple):
     since: float        # מתי המצב השתנה (מוצג ליד השורה)
     last_seen: float    # מתי התקבל ממנו דיווח אחרון (בסיס לזיהוי אובדן קשר)
     note: str = ""      # הסבר קצר כשהמצב נגזר מאובדן קשר ולא מדיווח מפורש
-    mode: str = MODE_ACTIVE   # active / standby, כפי שהלקוח מדווח בעצמו
 
 
 class Theme:
@@ -173,11 +163,6 @@ class IntercomGUI:
         self._hp_lock: threading.Lock = threading.Lock()
         self._remote_clients: Dict[str, ClientState] = {}
 
-        # Remote client control
-        self._desired_client_mode: Optional[str] = None   # None = לא נשלחה פקודה
-        self._server_sock: Optional[socket.socket] = None
-        self._client_addrs: Dict[str, Tuple[str, int]] = {}   # מוגן ע"י _hp_lock
-
         self.server_thread: Optional[threading.Thread] = None
         self.server_stop_event: threading.Event = threading.Event()
         self._rewrite_warned: bool = False
@@ -224,7 +209,7 @@ class IntercomGUI:
                   relief="flat", width=6, command=self.show_help, activebackground=Theme.DIVIDER,
                   activeforeground=Theme.FG).pack(side="right", padx=2)
 
-        tk.Frame(self.root, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10, pady=3)
+        tk.Frame(self.root, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10, pady=5)
 
         # --- Integrated Signalling Server ---
         tk.Label(self.root, text="Integrated Signalling Server", font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.FG).pack(anchor="w", padx=15, pady=(10, 0))
@@ -244,9 +229,9 @@ class IntercomGUI:
         self.server_btn = tk.Button(server_frame, text="START INTERNAL SERVER", font=("Arial", 9, "bold"),
                                     bg=Theme.BTN_BG, fg=Theme.FG, relief="flat", width=35, pady=4,
                                     command=self.toggle_local_server, activebackground=Theme.DIVIDER, activeforeground=Theme.FG)
-        self.server_btn.grid(row=2, column=0, columnspan=2, pady=6)
+        self.server_btn.grid(row=2, column=0, columnspan=2, pady=10)
 
-        tk.Frame(self.root, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10, pady=3)
+        tk.Frame(self.root, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10, pady=5)
 
         # --- Connection Settings ---
         tk.Label(self.root, text="Connection Settings", font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.FG).pack(anchor="w", padx=15, pady=(5, 0))
@@ -266,7 +251,7 @@ class IntercomGUI:
         self.my_id_entry.grid(row=1, column=1, pady=5, padx=5)
 
         self.status_label = tk.Label(self.root, text="STATUS: DISCONNECTED", font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.DISCONNECTED)
-        self.status_label.pack(pady=6)
+        self.status_label.pack(pady=10)
 
         # --- Main Toggle Button ---
         btn_border = tk.Frame(self.root, bg=Theme.FG, padx=1, pady=1)
@@ -276,14 +261,6 @@ class IntercomGUI:
                                     relief="flat", width=42, pady=6, command=self.toggle_intercom)
         self.toggle_btn.pack()
 
-        # --- Remote client power (standby) ---
-        self.client_btn = tk.Button(self.root, text="REMOTE CLIENT", font=("Arial", 9, "bold"),
-                                    bg=Theme.BTN_BG, fg=Theme.FG, relief="flat", width=44, pady=3,
-                                    command=self.toggle_client_power,
-                                    activebackground=Theme.DIVIDER, activeforeground=Theme.FG,
-                                    disabledforeground=Theme.DISCONNECTED)
-        self.client_btn.pack(pady=(4, 0))
-
         # --- Live Dashboard (replaces the scrolling text log) ---
         self._create_dashboard()
 
@@ -292,14 +269,14 @@ class IntercomGUI:
     def _create_dashboard(self) -> None:
         """Three status rows: signalling server, client link, client headphones."""
         dash = tk.Frame(self.root, bg=Theme.BG)
-        dash.pack(fill="both", expand=True, padx=15, pady=(3, 3))
+        dash.pack(fill="both", expand=True, padx=15, pady=(5, 5))
 
         self.rows: Dict[str, Tuple[tk.Canvas, int, tk.Label]] = {}
         for key, title in (("SERVER", "SERVER CONNECTION"),
                            ("CLIENT", "CLIENT CONNECTION"),
                            ("HEADPHONES", "CLIENT HEADPHONES")):
-            card = tk.Frame(dash, bg=Theme.LOG_BG, padx=10, pady=6)
-            card.pack(fill="x", pady=3)
+            card = tk.Frame(dash, bg=Theme.LOG_BG, padx=10, pady=8)
+            card.pack(fill="x", pady=4)
 
             head = tk.Frame(card, bg=Theme.LOG_BG)
             head.pack(fill="x")
@@ -377,19 +354,8 @@ class IntercomGUI:
                 # אותו מצב - לא מאפסים את חותמת השינוי, רק מרעננים את הקשר
                 self._remote_clients[client_id] = previous._replace(last_seen=now, note="")
                 return False
-            mode = previous.mode if previous is not None else MODE_ACTIVE
-            self._remote_clients[client_id] = ClientState(connected, now, now, note, mode)
+            self._remote_clients[client_id] = ClientState(connected, now, now, note)
         return True
-
-    def _note_client(self, client_id: str, addr: Tuple[str, int], mode: str) -> None:
-        """שומר את הכתובת האחרונה ואת מצב ההפעלה שהלקוח דיווח."""
-        if not client_id or client_id == self.my_id:
-            return
-        with self._hp_lock:
-            self._client_addrs[client_id] = addr
-            previous = self._remote_clients.get(client_id)
-            if previous is not None and previous.mode != mode:
-                self._remote_clients[client_id] = previous._replace(mode=mode)
 
     def _touch_headphones(self, client_id: str) -> None:
         """דיווח שאינו נוגע למצב האוזניות (יציאה משיחה) - רק מרענן את הקשר."""
@@ -411,66 +377,11 @@ class IntercomGUI:
         with self._hp_lock:
             for cid, state in list(self._remote_clients.items()):
                 if state.connected and now - state.last_seen > HP_TIMEOUT:
-                    self._remote_clients[cid] = state._replace(connected=False, since=now,
-                                                               note="no contact")
+                    self._remote_clients[cid] = ClientState(False, now, state.last_seen, "no contact")
                     lost.append(cid)
         for cid in lost:
             self.log(f"[Server] {cid}: no report for {HP_TIMEOUT:.0f}s - "
                      f"Headphones disconnected !!!", "red")
-
-    def _observed_client_mode(self) -> str:
-        """מצב ההפעלה שהלקוח האחרון דיווח עליו בפועל."""
-        with self._hp_lock:
-            entries = sorted(self._remote_clients.items(), key=lambda kv: kv[1].last_seen, reverse=True)
-        return entries[0][1].mode if entries else MODE_ACTIVE
-
-    def toggle_client_power(self) -> None:
-        """פותח/סוגר את הלקוח המרוחק (מצב המתנה, לא סגירת התהליך)."""
-        if self._server_sock is None:
-            messagebox.showinfo(
-                "Remote client control",
-                "Start the internal signalling server first.\n\n"
-                "The client's NAT only lets through packets coming back from the "
-                "signalling server's own address, so the command has to be sent "
-                "from there.")
-            return
-
-        current = self._desired_client_mode or self._observed_client_mode()
-        desired = MODE_STANDBY if current == MODE_ACTIVE else MODE_ACTIVE
-        self._desired_client_mode = desired
-        self.log(f"Remote client command: {desired.upper()}.", "yellow")
-        # שידור מיידי; אם הוא אובד, כל דיווח לא-תואם מהלקוח יגרום לשידור חוזר
-        threading.Thread(target=self._push_client_mode, args=(desired,), daemon=True).start()
-
-    def _push_client_mode(self, desired: str) -> None:
-        sock = self._server_sock
-        if sock is None:
-            return
-        with self._hp_lock:
-            targets = list(self._client_addrs.values())
-        payload = json.dumps({CMD_KEY: desired}).encode('utf-8')
-        for _ in range(CMD_RETRIES):
-            for addr in targets:
-                try:
-                    sock.sendto(payload, addr)
-                except OSError:
-                    return
-            time.sleep(REPORT_RETRY_DELAY)
-
-    def _refresh_client_button(self) -> None:
-        mode = self._observed_client_mode()
-        if self._server_sock is None:
-            self.client_btn.config(text="REMOTE CLIENT: NEEDS INTERNAL SERVER", state="disabled",
-                                   bg=Theme.BTN_BG, fg=Theme.FG)
-            return
-        self.client_btn.config(state="normal")
-        if self._desired_client_mode is not None and self._desired_client_mode != mode:
-            self.client_btn.config(text=f"SENDING {self._desired_client_mode.upper()}...",
-                                   bg=Theme.BTN_BG, fg=Theme.WAITING)
-        elif mode == MODE_STANDBY:
-            self.client_btn.config(text="START REMOTE CLIENT", bg=Theme.ACCENT, fg="#000000")
-        else:
-            self.client_btn.config(text="STOP REMOTE CLIENT (STANDBY)", bg=Theme.BTN_BG, fg=Theme.FG)
 
     def _refresh_headphones_row(self) -> None:
         with self._hp_lock:
@@ -482,13 +393,9 @@ class IntercomGUI:
         client_id, state = entries[0]
         stamp = time.strftime('%H:%M:%S', time.localtime(state.since))
         extra = f"   (+{len(entries) - 1} more)" if len(entries) > 1 else ""
-        if state.mode == MODE_STANDBY:
-            extra += "   ·  STANDBY"
         if state.connected:
             # הרמז שבגללו השורה קיימת: הצד השני מוכן, אפשר לפתוח שיחה
-            # בהמתנה מרוחקת אין טעם להציע לפתוח שיחה - הלקוח לא יענה
-            hint = ("   ->  press START INTERCOM"
-                    if not self.is_running and state.mode != MODE_STANDBY else "")
+            hint = "   ->  press START INTERCOM" if not self.is_running else ""
             self._set_row("HEADPHONES", Theme.CONNECTED,
                           f"{client_id} connected  ·  {stamp}{extra}{hint}")
         elif state.note:
@@ -509,7 +416,6 @@ class IntercomGUI:
             self._refresh_server_row()
             self._refresh_client_row(now)
             self._refresh_headphones_row()
-            self._refresh_client_button()
             self.root.after(UI_TICK_MS, self._ui_tick)
         except tk.TclError:
             return  # החלון נסגר
@@ -599,11 +505,9 @@ class IntercomGUI:
             # לסוקט השרת יש timeout של שנייה - נותנים לו מספיק זמן לשחרר את הפורט
             self.server_thread.join(timeout=2.5)
         self.server_thread = None
-        self._server_sock = None
         # בלי שרת אין דיווחים, ולכן כל מצב מוצג יהיה ניחוש ישן
         with self._hp_lock:
             self._remote_clients.clear()
-            self._client_addrs.clear()
         self._mark_server_stopped()
         self.log("Internal Signalling Server STOPPED.")
 
@@ -660,18 +564,6 @@ class IntercomGUI:
             return
         client_id = client_id.strip()
         status = msg.get("status")
-        mode = msg.get("mode")
-        mode = mode if mode in (MODE_ACTIVE, MODE_STANDBY) else MODE_ACTIVE
-        self._note_client(client_id, addr, mode)
-
-        # אכיפת פקודת ההפעלה: חוזרים עליה בכל דיווח שאינו תואם, עד שהלקוח
-        # מיישם. כך אובדן חבילה בודדת לא משאיר את הכפתור והלקוח לא מסונכרנים.
-        if (self._desired_client_mode is not None and mode != self._desired_client_mode
-                and client_id != self.my_id):
-            server_sock.sendto(json.dumps({CMD_KEY: self._desired_client_mode}).encode('utf-8'), addr)
-
-        if mode == MODE_STANDBY:
-            clients.pop(client_id, None)   # לקוח בהמתנה לא משתתף בהצמדה
 
         # --- דיווחי מצב שאינם רישום ---
         # חשוב שלא ייכנסו לבריכת ההצמדה: כל פעימה הייתה גורמת להצמדה חוזרת
@@ -702,8 +594,7 @@ class IntercomGUI:
 
         if self._mark_headphones(client_id, True):
             self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
-        if mode != MODE_STANDBY:
-            clients[client_id] = (addr, now)
+        clients[client_id] = (addr, now)
 
         if len(clients) == 2:
             (peer1_id, (addr1, _)), (peer2_id, (addr2, _)) = clients.items()
@@ -733,8 +624,6 @@ class IntercomGUI:
             self.root.after(0, self._mark_server_stopped)
             return
 
-        # קודם מפרסמים את הסוקט (ממנו נשלחות הפקודות) ורק אז מעדכנים את ה-UI
-        self._server_sock = server_sock
         self.root.after(0, self._mark_server_started, port)
         clients: Dict[str, Tuple[Tuple[str, int], float]] = {}
 
@@ -757,7 +646,6 @@ class IntercomGUI:
                 except Exception as e:
                     self.log(f"[Server] Error handling packet: {e}", "red")
 
-        self._server_sock = None
         self.root.after(0, self._mark_server_stopped)
 
     # ------------------------------------------------------------------

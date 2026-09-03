@@ -30,3 +30,28 @@ blocks are still transmitted, so the peer's 3 s silence timeout never fires.
 Tuning constants at the top of both files: `ECHO_SUPPRESSION`,
 `FAR_END_ACTIVE_RMS`, `DUCK_HANGOVER`, `DUCK_GAIN`, `BREAK_IN_RATIO`.
 Real headsets on both ends remain the best fix; this is the fallback.
+
+### The client does not notice the headphones
+
+Two things make a plugged-in headset invisible to the client:
+
+1. **PortAudio caches its device list at startup.** A device plugged in later
+   does not exist for it until the list is refreshed (`_terminate()` +
+   `_initialize()`), which the client does every few seconds - but never while
+   a stream is still open. An audio thread stuck on a removed device therefore
+   blocks detection permanently; the client now says so in its log.
+2. **The check looks at the *default* device.** On a machine with built-in
+   audio the default may stay on the internal speakers/mic, so the check
+   passes whether or not the headset is plugged in - the state never changes
+   and no notification is ever produced.
+
+For case 2, name the headset explicitly in `settings.txt`:
+
+```json
+{"ip": "192.168.1.11", "port": "9999", "my_id": "node_B",
+ "mic": "USB Audio", "speaker": "USB Audio"}
+```
+
+Empty means "system default"; a number is a device index; anything else is
+matched against the device name. `python audio_check.py` prints the device
+list (and follows plug/unplug live) so the right name can be copied from it.

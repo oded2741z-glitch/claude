@@ -45,6 +45,7 @@ STATE_REPORT_INTERVAL: float = 2.0   # שידור חוזר של "אין אוזנ
 HEARTBEAT_INTERVAL: float = 1.0      # פעימה לשרת במהלך שיחה
 CAPTURE_STALL_SECS: float = 5.0      # המיקרופון הפסיק לספק דגימות -> ההתקן נעלם
 DEVICE_CHECK_INTERVAL: float = 2.0   # בדיקת נוכחות התקן בזמן המתנה לעמית
+DEVICE_DIAG_INTERVAL: float = 10.0   # כל כמה זמן להסביר ביומן למה אין התקן
 
 # --- Acoustic echo suppression (voice switch) ---
 # ההד נולד בצד שמשמיע ברמקול: המיקרופון שלו קולט את קול הצד השני ומחזיר
@@ -72,6 +73,8 @@ class IntercomCLI:
         self.audio_lock: threading.Lock = threading.Lock()
         self._open_streams: int = 0       # מוגן ע"י audio_lock
         self._last_refresh: float = 0.0
+        self._refresh_error: str = ""          # למה אתחול PortAudio נכשל
+        self._refresh_blocked_since: float = 0.0   # מתי נחסם הרענון ע"י stream פתוח
 
         self.rx_thread: Optional[threading.Thread] = None
         self.tx_thread: Optional[threading.Thread] = None
@@ -95,6 +98,10 @@ class IntercomCLI:
         self.server_port: int = 9999
         self.my_id: str = "node_B"
         self.peer_id: str = ""
+        # התקנים מפורשים מקובץ ההגדרות. None = התקן ברירת המחדל של המערכת.
+        # נחוץ כשהאוזניות אינן ההתקן הראשי - אז בדיקת ברירת המחדל לא רואה אותן.
+        self.mic: Optional[Any] = None
+        self.speaker: Optional[Any] = None
 
         self.load_settings()
 
@@ -111,7 +118,13 @@ class IntercomCLI:
                     self.server_ip = str(data.get("ip", self.server_ip)).strip()
                     self.server_port = int(data.get("port", self.server_port))
                     self.my_id = str(data.get("my_id", self.my_id)).strip()
-                self.log(f"Loaded settings: IP={self.server_ip}, Port={self.server_port}, ID={self.my_id}")
+                    self.mic = self._device_setting(data.get("mic"))
+                    self.speaker = self._device_setting(data.get("speaker"))
+                picked = ""
+                if self.mic is not None or self.speaker is not None:
+                    picked = f", Mic={self.mic!r}, Speaker={self.speaker!r}"
+                self.log(f"Loaded settings: IP={self.server_ip}, Port={self.server_port}, "
+                         f"ID={self.my_id}{picked}")
             except Exception as e:
                 self.log(f"Error loading {SETTINGS_FILE}: {e}. Using defaults.")
         else:
@@ -123,13 +136,30 @@ class IntercomCLI:
         data: Dict[str, str] = {
             "ip": self.server_ip,
             "port": str(self.server_port),
-            "my_id": self.my_id
+            "my_id": self.my_id,
+            # ריק = התקן ברירת המחדל. אפשר לשים אינדקס (0,1,2...) או חלק משם
+            # ההתקן, למשל "USB Audio" - שימושי כשהאוזניות אינן ההתקן הראשי.
+            "mic": "" if self.mic is None else str(self.mic),
+            "speaker": "" if self.speaker is None else str(self.speaker),
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
         except OSError as e:
             self.log(f"Error saving settings: {e}")
+
+    @staticmethod
+    def _device_setting(value: Any) -> Optional[Any]:
+        """ריק/חסר = ברירת המחדל. מספר = אינדקס התקן. אחרת: חלק משם ההתקן."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return text
 
     # ------------------------------------------------------------------
     # Server state reporting
@@ -182,24 +212,37 @@ class IntercomCLI:
     # ------------------------------------------------------------------
     # Audio hardware
     # ------------------------------------------------------------------
-    def _safe_refresh_hardware(self) -> None:
-        """Restarts the PortAudio bindings. Never runs while a stream is open."""
+    def _safe_refresh_hardware(self) -> bool:
+        """Restarts the PortAudio bindings. Never runs while a stream is open.
+
+        מחזיר True רק כשרשימת ההתקנים באמת התרעננה. בלי הרענון הזה PortAudio
+        ממשיך לעבוד מול רשימת ההתקנים שנבנתה באתחול, ולכן אוזניות שחוברו
+        אחר כך פשוט לא קיימות מבחינתו.
+        """
         with self.audio_lock:
             # אתחול PortAudio בזמן ש-stream פתוח מקריס את התהליך ברמת ה-C,
             # בלי traceback. המונה מוחזק על פני כל חיי ה-stream (ראה _counted_stream).
             if self._open_streams > 0:
-                return
+                if not self._refresh_blocked_since:
+                    self._refresh_blocked_since = time.time()
+                return False
+            self._refresh_blocked_since = 0.0
             # אתחול גלובלי חוזר בזמן שההתקן מתחבר/מתנתק הוא בעצמו גורם קריסה,
             # לכן לא מרעננים בתדירות גבוהה
             now = time.time()
             if now - self._last_refresh < HW_REFRESH_GAP:
-                return
+                return False
             self._last_refresh = now
             try:
                 sd._terminate()
                 sd._initialize()
-            except Exception:
-                pass
+                self._refresh_error = ""
+                return True
+            except Exception as e:
+                # נשמר כדי שיודפס ביומן: כישלון שקט כאן פירושו שהתקן חדש
+                # לעולם לא ייקלט
+                self._refresh_error = f"{type(e).__name__}: {e}"
+                return False
 
     @contextlib.contextmanager
     def _counted_stream(self, factory):
@@ -218,22 +261,46 @@ class IntercomCLI:
             with self.audio_lock:
                 self._open_streams -= 1
 
-    def _devices_present(self) -> bool:
+    def _device_check(self) -> Tuple[bool, str]:
         """שאילתה על ההתקנים במקום לפתוח ולסגור streams אמיתיים -
-        כל מחזור פתיחה/סגירה על התקן מתנתק הוא סיכון מיותר."""
+        כל מחזור פתיחה/סגירה על התקן מתנתק הוא סיכון מיותר.
+
+        מחזיר גם את סיבת הכישלון, כדי שיהיה אפשר לראות ביומן למה האוזניות
+        לא זוהו במקום לנחש.
+        """
         try:
-            sd.check_output_settings(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
-            sd.check_input_settings(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
-            return True
-        except Exception:
-            return False
+            sd.check_output_settings(device=self.speaker, samplerate=SAMPLE_RATE,
+                                     channels=CHANNELS, dtype=DTYPE)
+        except Exception as e:
+            return False, f"output ({self.speaker or 'default'}): {type(e).__name__}: {e}"
+        try:
+            sd.check_input_settings(device=self.mic, samplerate=SAMPLE_RATE,
+                                    channels=CHANNELS, dtype=DTYPE)
+        except Exception as e:
+            return False, f"input ({self.mic or 'default'}): {type(e).__name__}: {e}"
+        return True, ""
+
+    def _devices_present(self) -> bool:
+        return self._device_check()[0]
+
+    def _device_summary(self) -> str:
+        """מה PortAudio רואה כרגע - הדרך המהירה להבין אם ההתקן בכלל הגיע."""
+        try:
+            devices = sd.query_devices()
+        except Exception as e:
+            return f"query_devices failed: {type(e).__name__}: {e}"
+        ins = [d["name"] for d in devices if d.get("max_input_channels", 0) > 0]
+        outs = [d["name"] for d in devices if d.get("max_output_channels", 0) > 0]
+        return (f"{len(ins)} input(s) {ins[:4]} | {len(outs)} output(s) {outs[:4]}")
 
     def _wait_for_audio_device(self) -> None:
         """Blocks until BOTH audio devices are connected, reporting the state meanwhile."""
         self.log("Waiting for headphones (Mic & Speaker) to be connected...")
         last_report: float = 0.0
+        last_diag: float = 0.0
         while True:
-            if self._devices_present():
+            ok, reason = self._device_check()
+            if ok:
                 self.log("Audio devices (Mic & Speaker) detected! Initiating connection to Server...")
                 return
 
@@ -244,8 +311,24 @@ class IntercomCLI:
                 last_report = now
                 self._send_signalling({"id": self.my_id, "status": STATUS_DISCONNECTED})
 
+            # בלי ההסבר הזה הלקוח פשוט שותק, ואי אפשר לדעת אם הוא לא רואה
+            # את ההתקן, לא מצליח לרענן את הרשימה, או תקוע לגמרי
+            if now - last_diag >= DEVICE_DIAG_INTERVAL:
+                last_diag = now
+                self.log(f"No audio device yet -> {reason}")
+                self.log(f"PortAudio currently sees: {self._device_summary()}")
+                if self._refresh_error:
+                    self.log(f"Device list refresh is failing: {self._refresh_error}")
+                if self._refresh_blocked_since:
+                    stuck = int(now - self._refresh_blocked_since)
+                    self.log(f"WARNING: an audio thread has been holding the sound card for "
+                             f"{stuck}s, so the device list cannot be refreshed. Re-plugging "
+                             f"the headphones will NOT be detected until this client is "
+                             f"restarted.")
+
             # Refresh hardware in case the device was just plugged in and unrecognized
-            self._safe_refresh_hardware()
+            if self._safe_refresh_hardware():
+                continue   # הרשימה התרעננה - בודקים מיד, בלי להמתין עוד שנייה
             time.sleep(1)
 
     # ------------------------------------------------------------------
@@ -446,7 +529,8 @@ class IntercomCLI:
         last_data_time: float = time.time()
         try:
             with self._counted_stream(
-                    lambda: sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)) as stream:
+                    lambda: sd.OutputStream(device=self.speaker, samplerate=SAMPLE_RATE,
+                                            channels=CHANNELS, dtype=DTYPE)) as stream:
                 while self.is_running:
                     sock = self.sock
                     if sock is None:
@@ -481,7 +565,8 @@ class IntercomCLI:
         """Dedicated thread for capturing and transmitting local microphone audio."""
         try:
             with self._counted_stream(
-                    lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE,
+                    lambda: sd.InputStream(device=self.mic, samplerate=SAMPLE_RATE,
+                                           channels=CHANNELS, dtype=DTYPE,
                                            blocksize=CHUNK_SIZE)) as stream:
                 while self.is_running:
                     data, _ = stream.read(CHUNK_SIZE)

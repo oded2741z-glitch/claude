@@ -53,19 +53,68 @@ def dump_devices():
               f"  {dev['name']}  {' '.join(marks)}")
 
 
+def device_slot(wanted, kind, devices):
+    """ההתקן שישמש בפועל: (אינדקס, שם). זהה ללוגיקה שב-clint.py.
+
+    אותו התקן מופיע בכמה host APIs, ולכן חיפוש לפי שם דרך sounddevice זורק
+    ValueError ("Multiple devices found") במקום לבחור אחד.
+    """
+    key = "max_input_channels" if kind == "input" else "max_output_channels"
+    slot = 0 if kind == "input" else 1
+
+    def default_index():
+        try:
+            value = sd.default.device[slot]
+        except Exception:
+            return -1
+        return value if isinstance(value, int) else -1
+
+    if wanted is None:
+        index = default_index()
+        if 0 <= index < len(devices) and devices[index].get(key, 0) >= CHANNELS:
+            return index, devices[index]["name"]
+        return None, ""
+    if isinstance(wanted, int):
+        if 0 <= wanted < len(devices) and devices[wanted].get(key, 0) >= CHANNELS:
+            return wanted, devices[wanted]["name"]
+        return None, ""
+    text = str(wanted).lower()
+    matches = [i for i, d in enumerate(devices)
+               if d.get(key, 0) >= CHANNELS and text in d["name"].lower()]
+    if not matches:
+        return None, ""
+    index = default_index()
+    preferred = devices[index]["hostapi"] if 0 <= index < len(devices) else None
+    for i in matches:
+        if preferred is not None and devices[i].get("hostapi") == preferred:
+            return i, devices[i]["name"]
+    return matches[0], devices[matches[0]]["name"]
+
+
 def check(mic, speaker):
     """מחזיר (יש התקן?, הסבר) - בדיוק הבדיקה שהלקוח עצמו מריץ."""
     try:
-        sd.check_output_settings(device=speaker, samplerate=SAMPLE_RATE,
+        devices = sd.query_devices()
+    except Exception as e:
+        return False, f"query_devices failed: {type(e).__name__}: {e}"
+
+    speaker_id, speaker_name = device_slot(speaker, "output", devices)
+    mic_id, mic_name = device_slot(mic, "input", devices)
+    if speaker_id is None:
+        return False, f"no output device matching {speaker or 'system default'}"
+    if mic_id is None:
+        return False, f"no input device matching {mic or 'system default'}"
+    try:
+        sd.check_output_settings(device=speaker_id, samplerate=SAMPLE_RATE,
                                  channels=CHANNELS, dtype=DTYPE)
     except Exception as e:
-        return False, f"output ({speaker or 'default'}): {type(e).__name__}: {e}"
+        return False, f"output [{speaker_id}] {speaker_name}: {type(e).__name__}: {e}"
     try:
-        sd.check_input_settings(device=mic, samplerate=SAMPLE_RATE,
+        sd.check_input_settings(device=mic_id, samplerate=SAMPLE_RATE,
                                 channels=CHANNELS, dtype=DTYPE)
     except Exception as e:
-        return False, f"input ({mic or 'default'}): {type(e).__name__}: {e}"
-    return True, "OK"
+        return False, f"input [{mic_id}] {mic_name}: {type(e).__name__}: {e}"
+    return True, f"in [{mic_id}] {mic_name}  |  out [{speaker_id}] {speaker_name}"
 
 
 def refresh():
@@ -94,6 +143,11 @@ def main():
     print("\nPlug the headphones in and out. Every change is printed below.")
     print("If nothing is printed when you plug them in, PortAudio never sees the")
     print("device - that is the bug, not the intercom.  (Ctrl+C to stop)\n")
+
+    print("\nThe line below is what the client uses. If it names a Realtek/NVIDIA")
+    print("device while the USB adapter is plugged in, put the adapter's name in")
+    print('settings.txt ("mic" / "speaker") so the client stops following the')
+    print("system default.\n")
 
     last = None
     while True:

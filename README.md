@@ -45,7 +45,15 @@ Two things make a plugged-in headset invisible to the client:
    passes whether or not the headset is plugged in - the state never changes
    and no notification is ever produced.
 
-For case 2, name the headset explicitly in `settings.txt`:
+There is a third, and on a machine with more than one sound card the most
+common: **unplugging moves the system default somewhere else.** Pull the USB
+adapter and Windows falls back to the built-in Realtek card, so a check on the
+*default* device still succeeds - the state never changes and nothing is ever
+reported, in either direction. The client now compares the *names* of the
+devices it is using between checks and reports a switch as a device change
+(`DETECT_DEVICE_SWITCH`), but the precise fix is to name the adapter.
+
+To name the headset explicitly in `settings.txt`:
 
 ```json
 {"ip": "192.168.1.11", "port": "9999", "my_id": "node_B",
@@ -55,6 +63,12 @@ For case 2, name the headset explicitly in `settings.txt`:
 Empty means "system default"; a number is a device index; anything else is
 matched against the device name. `python audio_check.py` prints the device
 list (and follows plug/unplug live) so the right name can be copied from it.
+
+The name is resolved to a single device by the client itself, not by
+sounddevice: the same hardware appears once per host API (MME, DirectSound,
+WASAPI), and sounddevice raises `ValueError: Multiple devices found` on such a
+name instead of picking one. The client keeps the match that sits on the same
+host API as the system default.
 
 #### The wedged sound card
 

@@ -46,6 +46,10 @@ HEARTBEAT_INTERVAL: float = 1.0      # פעימה לשרת במהלך שיחה
 CAPTURE_STALL_SECS: float = 5.0      # המיקרופון הפסיק לספק דגימות -> ההתקן נעלם
 DEVICE_CHECK_INTERVAL: float = 2.0   # בדיקת נוכחות התקן בזמן המתנה לעמית
 DEVICE_DIAG_INTERVAL: float = 10.0   # כל כמה זמן להסביר ביומן למה אין התקן
+# כשלא הוגדר התקן מפורש: החלפה של התקן ברירת המחדל (למשל שליפת מתאם USB
+# שגורמת ל-Windows ליפול חזרה לכרטיס המובנה) נחשבת שינוי מצב אוזניות.
+# בלי זה הבדיקה פשוט עוברת על ההתקן החלופי ואין שום חיווי.
+DETECT_DEVICE_SWITCH: bool = True
 
 # תרד אודיו שנתקע על התקן שנשלף מחזיק את PortAudio, ואז רשימת ההתקנים לא
 # מתרעננת לעולם - חיבור האוזניות מחדש לא ייקלט עד הפעלה מחדש. אין דרך
@@ -108,6 +112,10 @@ class IntercomCLI:
         # נחוץ כשהאוזניות אינן ההתקן הראשי - אז בדיקת ברירת המחדל לא רואה אותן.
         self.mic: Optional[Any] = None
         self.speaker: Optional[Any] = None
+        # ההתקנים שנבחרו בפועל (אינדקסים) והשמות שלהם, לזיהוי החלפה
+        self._mic_id: Optional[int] = None
+        self._speaker_id: Optional[int] = None
+        self._device_signature: Optional[Tuple[str, str]] = None
 
         self.load_settings()
 
@@ -282,6 +290,46 @@ class IntercomCLI:
             with self.audio_lock:
                 self._open_streams -= 1
 
+    def _device_slot(self, wanted: Optional[Any], kind: str, devices) -> Tuple[Optional[int], str]:
+        """ההתקן שישמש בפועל: (אינדקס, שם), או (None, "") אם אין כזה.
+
+        הבחירה נעשית כאן ולא ע"י sounddevice: אותו התקן מופיע בכמה host APIs
+        (MME/DirectSound/WASAPI), ואז חיפוש לפי שם זורק שם ValueError
+        ("Multiple devices found") במקום לבחור אחד.
+        """
+        key = "max_input_channels" if kind == "input" else "max_output_channels"
+        slot = 0 if kind == "input" else 1
+
+        def default_index() -> int:
+            try:
+                value = sd.default.device[slot]
+            except Exception:
+                return -1
+            return value if isinstance(value, int) else -1
+
+        if wanted is None:
+            index = default_index()
+            if 0 <= index < len(devices) and devices[index].get(key, 0) >= CHANNELS:
+                return index, devices[index]["name"]
+            return None, ""
+
+        if isinstance(wanted, int):
+            if 0 <= wanted < len(devices) and devices[wanted].get(key, 0) >= CHANNELS:
+                return wanted, devices[wanted]["name"]
+            return None, ""
+
+        text = str(wanted).lower()
+        matches = [i for i, d in enumerate(devices)
+                   if d.get(key, 0) >= CHANNELS and text in d["name"].lower()]
+        if not matches:
+            return None, ""
+        index = default_index()
+        preferred = devices[index]["hostapi"] if 0 <= index < len(devices) else None
+        for i in matches:
+            if preferred is not None and devices[i].get("hostapi") == preferred:
+                return i, devices[i]["name"]
+        return matches[0], devices[matches[0]]["name"]
+
     def _device_check(self) -> Tuple[bool, str]:
         """שאילתה על ההתקנים במקום לפתוח ולסגור streams אמיתיים -
         כל מחזור פתיחה/סגירה על התקן מתנתק הוא סיכון מיותר.
@@ -290,15 +338,39 @@ class IntercomCLI:
         לא זוהו במקום לנחש.
         """
         try:
-            sd.check_output_settings(device=self.speaker, samplerate=SAMPLE_RATE,
+            devices = sd.query_devices()
+        except Exception as e:
+            return False, f"query_devices failed: {type(e).__name__}: {e}"
+
+        speaker_id, speaker_name = self._device_slot(self.speaker, "output", devices)
+        mic_id, mic_name = self._device_slot(self.mic, "input", devices)
+        if speaker_id is None:
+            return False, f"no output device matching {self.speaker or 'system default'}"
+        if mic_id is None:
+            return False, f"no input device matching {self.mic or 'system default'}"
+
+        try:
+            sd.check_output_settings(device=speaker_id, samplerate=SAMPLE_RATE,
                                      channels=CHANNELS, dtype=DTYPE)
         except Exception as e:
-            return False, f"output ({self.speaker or 'default'}): {type(e).__name__}: {e}"
+            return False, f"output [{speaker_id}] {speaker_name}: {type(e).__name__}: {e}"
         try:
-            sd.check_input_settings(device=self.mic, samplerate=SAMPLE_RATE,
+            sd.check_input_settings(device=mic_id, samplerate=SAMPLE_RATE,
                                     channels=CHANNELS, dtype=DTYPE)
         except Exception as e:
-            return False, f"input ({self.mic or 'default'}): {type(e).__name__}: {e}"
+            return False, f"input [{mic_id}] {mic_name}: {type(e).__name__}: {e}"
+
+        self._mic_id, self._speaker_id = mic_id, speaker_id
+        signature = (mic_name, speaker_name)
+        previous = self._device_signature
+        # מאמצים את החתימה מיד, כדי שהשינוי ידווח פעם אחת ולא בלולאה
+        self._device_signature = signature
+        if DETECT_DEVICE_SWITCH and previous is not None and previous != signature:
+            # זה המקרה של שליפת מתאם USB בלי הגדרת התקן: Windows נופל חזרה
+            # לכרטיס המובנה, הבדיקה "מצליחה" ובלי השוואת השמות אין שום חיווי
+            self.log(f"Audio device changed:  {previous[0]} | {previous[1]}"
+                     f"   ->   {signature[0]} | {signature[1]}")
+            return False, "audio device changed"
         return True, ""
 
     def _devices_present(self) -> bool:
@@ -409,8 +481,9 @@ class IntercomCLI:
             if time.time() - last_device_check >= DEVICE_CHECK_INTERVAL:
                 last_device_check = time.time()
                 self._safe_refresh_hardware()
-                if not self._devices_present():
-                    self.log("Headphones removed while waiting for a peer.")
+                device_ok, why = self._device_check()
+                if not device_ok:
+                    self.log(f"Audio device lost while waiting for a peer: {why}")
                     self._device_failed = True
                     self.is_running = False
                     return None
@@ -573,7 +646,7 @@ class IntercomCLI:
         last_data_time: float = time.time()
         try:
             with self._counted_stream(
-                    lambda: sd.OutputStream(device=self.speaker, samplerate=SAMPLE_RATE,
+                    lambda: sd.OutputStream(device=self._speaker_id, samplerate=SAMPLE_RATE,
                                             channels=CHANNELS, dtype=DTYPE)) as stream:
                 while self.is_running:
                     sock = self.sock
@@ -609,7 +682,7 @@ class IntercomCLI:
         """Dedicated thread for capturing and transmitting local microphone audio."""
         try:
             with self._counted_stream(
-                    lambda: sd.InputStream(device=self.mic, samplerate=SAMPLE_RATE,
+                    lambda: sd.InputStream(device=self._mic_id, samplerate=SAMPLE_RATE,
                                            channels=CHANNELS, dtype=DTYPE,
                                            blocksize=CHUNK_SIZE)) as stream:
                 while self.is_running:

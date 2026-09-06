@@ -7,7 +7,7 @@ import time
 import sounddevice as sd
 import numpy as np
 import os
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, List, Dict, Any
 
 # --- System & Audio Settings ---
 SAMPLE_RATE: int = 16000
@@ -26,12 +26,12 @@ P2P_TAGS: Tuple[bytes, bytes] = (AUDIO_TAG, PUNCH_TAG)
 
 PUNCH_DURATION: float = 2.0
 PUNCH_INTERVAL: float = 0.1
-HW_REFRESH_GAP: float = 5.0
 STREAM_CLOSE_WAIT: float = 5.0
 
 HEARTBEAT_INTERVAL: float = 1.0
 SERVER_TIMEOUT: float = 3.0
 DEVICE_POLL_INTERVAL: float = 1.0
+DEVICE_REFRESH_GAP: float = 2.0   # מרווח מזערי בין אתחולי PortAudio
 REPORT_REPEATS: int = 3
 AUDIO_QUEUE_MAX: int = 64
 CALL_RETRY_GAP: float = 1.0
@@ -58,9 +58,15 @@ class IntercomCLI:
         self.server_ip: str = "192.168.1.11"
         self.server_port: int = 9999
         self.my_id: str = "node_B"
+        self.hp_device: str = ""
         self.peer_id: str = ""
 
         self.headphones_ok: bool = False
+        self.input_device: Optional[int] = None
+        self.output_device: Optional[int] = None
+        self.input_name: str = ""
+        self.output_name: str = ""
+
         self._server_online: bool = False
         self._last_ack: float = 0.0
         self._last_rx: float = 0.0
@@ -90,21 +96,26 @@ class IntercomCLI:
             ip = str(data.get("ip", self.server_ip)).strip()
             port = int(data.get("port", self.server_port))
             my_id = str(data.get("my_id", self.my_id)).strip()
+            hp_device = str(data.get("hp_device", self.hp_device)).strip()
         except Exception as e:
             self.log(f"Error loading {SETTINGS_FILE}: {e}. Keeping current values.")
             return
 
-        changed = (ip, port, my_id) != (self.server_ip, self.server_port, self.my_id)
-        self.server_ip, self.server_port, self.my_id = ip, port, my_id
+        changed = (ip, port, my_id, hp_device) != (self.server_ip, self.server_port,
+                                                   self.my_id, self.hp_device)
+        self.server_ip, self.server_port, self.my_id, self.hp_device = ip, port, my_id, hp_device
         if changed or not quiet:
-            self.log(f"Settings: IP={self.server_ip}, Port={self.server_port}, ID={self.my_id}")
+            match = self.hp_device if self.hp_device else "<default device>"
+            self.log(f"Settings: IP={self.server_ip}, Port={self.server_port}, "
+                     f"ID={self.my_id}, hp_device={match}")
 
     def save_settings(self) -> None:
         """Serializes current configuration into a localized JSON config."""
         data: Dict[str, str] = {
             "ip": self.server_ip,
             "port": str(self.server_port),
-            "my_id": self.my_id
+            "my_id": self.my_id,
+            "hp_device": self.hp_device
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -143,15 +154,19 @@ class IntercomCLI:
     # ------------------------------------------------------------------
     # Audio hardware
     # ------------------------------------------------------------------
-    def _safe_refresh_hardware(self) -> None:
-        """Restarts the PortAudio bindings. Never runs while a stream is open."""
+    def _refresh_device_list(self) -> None:
+        """Re-initializes PortAudio so hot-plugged devices actually show up.
+
+        PortAudio snapshots the device list when it starts, so without this a
+        headset that is unplugged keeps being reported as present forever.
+        Never runs while a stream is open: terminating PortAudio underneath a
+        live stream kills the process at the C level, with no traceback.
+        """
         with self.audio_lock:
-            # אתחול PortAudio בזמן ש-stream פתוח מקריס את התהליך ברמת ה-C,
-            # בלי traceback. המונה מוחזק על פני כל חיי ה-stream (ראה _counted_stream).
             if self._open_streams > 0:
                 return
             now = time.time()
-            if now - self._last_refresh < HW_REFRESH_GAP:
+            if now - self._last_refresh < DEVICE_REFRESH_GAP:
                 return
             self._last_refresh = now
             try:
@@ -172,30 +187,93 @@ class IntercomCLI:
             with self.audio_lock:
                 self._open_streams -= 1
 
-    def _devices_ready(self) -> bool:
+    @staticmethod
+    def _device_list() -> List[Dict[str, Any]]:
         try:
-            sd.check_output_settings(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
-            sd.check_input_settings(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE)
-            return True
+            return [dict(d) for d in sd.query_devices()]
+        except Exception:
+            return []
+
+    def log_devices(self) -> None:
+        """Prints every audio device, so hp_device can be set from a real name."""
+        devices = self._device_list()
+        if not devices:
+            self.log("Audio devices: none detected.")
+            return
+        self.log("Audio devices detected:")
+        for idx, d in enumerate(devices):
+            self.log(f"   [{idx}] in={d.get('max_input_channels', 0)} "
+                     f"out={d.get('max_output_channels', 0)}  {d.get('name', '')}")
+        self.log("Set \"hp_device\" in settings.txt to part of your headset name "
+                 "to track that exact device.")
+
+    def _find_devices(self) -> Tuple[Optional[int], Optional[int], str, str]:
+        """Locates the headset by name. Falls back to the system default devices."""
+        devices = self._device_list()
+        if not devices:
+            return None, None, "", ""
+
+        keyword = self.hp_device.strip().lower()
+        if keyword:
+            in_idx = out_idx = None
+            for idx, d in enumerate(devices):
+                name = str(d.get("name", "")).lower()
+                if keyword not in name:
+                    continue
+                if in_idx is None and d.get("max_input_channels", 0) > 0:
+                    in_idx = idx
+                if out_idx is None and d.get("max_output_channels", 0) > 0:
+                    out_idx = idx
+            if in_idx is None or out_idx is None:
+                return None, None, "", ""
+            return (in_idx, out_idx,
+                    str(devices[in_idx].get("name", "")), str(devices[out_idx].get("name", "")))
+
+        try:
+            default_in, default_out = sd.default.device
+        except Exception:
+            return None, None, "", ""
+        if not isinstance(default_in, int) or not isinstance(default_out, int):
+            return None, None, "", ""
+        if default_in < 0 or default_out < 0 or default_in >= len(devices) or default_out >= len(devices):
+            return None, None, "", ""
+        return (default_in, default_out,
+                str(devices[default_in].get("name", "")), str(devices[default_out].get("name", "")))
+
+    def _devices_ready(self) -> bool:
+        """True only when the tracked headset can actually carry the stream."""
+        in_idx, out_idx, in_name, out_name = self._find_devices()
+        if in_idx is None or out_idx is None:
+            return False
+        try:
+            sd.check_input_settings(device=in_idx, samplerate=SAMPLE_RATE,
+                                    channels=CHANNELS, dtype=DTYPE)
+            sd.check_output_settings(device=out_idx, samplerate=SAMPLE_RATE,
+                                     channels=CHANNELS, dtype=DTYPE)
         except Exception:
             return False
+        self.input_device, self.output_device = in_idx, out_idx
+        self.input_name, self.output_name = in_name, out_name
+        return True
 
     def _device_loop(self) -> None:
         """Polls the audio hardware forever. Logs and reports every state change."""
         while not self.shutdown_event.is_set():
+            self._refresh_device_list()
             ready = self._devices_ready()
             if ready != self.headphones_ok:
                 self.headphones_ok = ready
                 if ready:
-                    self.log("HEADPHONES: CONNECTED  (mic + speaker ready)")
+                    self.log(f"HEADPHONES: CONNECTED  (mic [{self.input_device}] {self.input_name} "
+                             f"| speaker [{self.output_device}] {self.output_name})")
                 else:
                     self.log("HEADPHONES: DISCONNECTED")
+                    self.input_device = self.output_device = None
+                    self.input_name = self.output_name = ""
                 self._report_headphones()
                 if not ready and self.in_call:
                     self.log("Ending call: audio device is gone.")
                     self.in_call = False
-            elif not ready:
-                self._safe_refresh_hardware()
             self.shutdown_event.wait(DEVICE_POLL_INTERVAL)
 
     # ------------------------------------------------------------------
@@ -403,8 +481,8 @@ class IntercomCLI:
     def _audio_player(self) -> None:
         try:
             with self._counted_stream(
-                    lambda: sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
-                                            dtype=DTYPE)) as stream:
+                    lambda: sd.OutputStream(device=self.output_device, samplerate=SAMPLE_RATE,
+                                            channels=CHANNELS, dtype=DTYPE)) as stream:
                 while self.in_call and not self.shutdown_event.is_set():
                     try:
                         payload = self._audio_q.get(timeout=0.25)
@@ -423,7 +501,8 @@ class IntercomCLI:
     def _audio_sender(self) -> None:
         try:
             with self._counted_stream(
-                    lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE,
+                    lambda: sd.InputStream(device=self.input_device, samplerate=SAMPLE_RATE,
+                                           channels=CHANNELS, dtype=DTYPE,
                                            blocksize=CHUNK_SIZE)) as stream:
                 while self.in_call and not self.shutdown_event.is_set():
                     data, _ = stream.read(CHUNK_SIZE)
@@ -447,6 +526,7 @@ class IntercomCLI:
     def start(self) -> None:
         self.log(f"Starting Headless Client [{self.my_id}] -> Server {self.server_ip}:{self.server_port}")
         self.log("Press Ctrl+C to exit.")
+        self.log_devices()
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(1.0)

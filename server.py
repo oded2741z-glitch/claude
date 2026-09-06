@@ -50,8 +50,9 @@ PEER_IDLE: float = 1.5            # אין אודיו מעבר לזה -> נור�
 HP_REPORT_TTL: float = 5.0        # אין דיווח מהלקוח מעבר לזה -> מצב האוזניות לא ידוע
 
 # --- Ring on headphone connect ---
-RING_INTERVAL: float = 1.5        # מרווח בין צלצולים
-RING_SOUND: str = "SystemAsterisk"
+RING_INTERVAL: float = 1.5        # מרווח בין ביפים
+RING_FREQ: int = 1000             # Hz
+RING_MS: int = 200                # אורך הביפ. Beep חוסם, אז קצר = השתקה מיידית
 
 
 class Theme:
@@ -277,14 +278,14 @@ class IntercomGUI:
         while not self._ring_stop.is_set():
             if winsound is not None:
                 try:
-                    winsound.PlaySound(RING_SOUND, winsound.SND_ALIAS | winsound.SND_ASYNC)
+                    winsound.Beep(RING_FREQ, RING_MS)
                 except Exception:
                     pass
             if self._ring_stop.wait(RING_INTERVAL):
                 break
 
     def start_ring(self) -> None:
-        """Repeats a system sound until someone acknowledges it."""
+        """Repeats a short beep until someone acknowledges it."""
         with self._ring_lock:
             if self._ringing:
                 return
@@ -300,11 +301,6 @@ class IntercomGUI:
             self._ringing = False
             self._ring_stop.set()
             self._ring_thread = None
-        if winsound is not None:
-            try:
-                winsound.PlaySound(None, winsound.SND_PURGE)
-            except Exception:
-                pass
 
     def _silence_ring(self, event: Optional[tk.Event] = None) -> None:
         if self._ringing:

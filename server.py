@@ -98,7 +98,7 @@ HELP_TEXT: str = (
 class IntercomGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root: tk.Tk = root
-        self.root.geometry("480x640")
+        self.root.geometry("480x700")
         self.root.configure(bg=Theme.BG)
         self.root.overrideredirect(True)
 
@@ -250,11 +250,13 @@ class IntercomGUI:
                                              activebackground="#cc0000", activeforeground=Theme.FG)
         self.shutdown_client_btn.pack(pady=(8, 0))
 
-        # --- Live Dashboard (replaces the scrolling text log) ---
-        self._create_dashboard()
-
+        # נארז לפני הדשבורד: pack מקצה מלמטה, והדשבורד לוקח expand=True.
+        # בסדר ההפוך אין מקום שנשאר והתווית פשוט לא מצוירת.
         tk.Label(self.root, text="oT", font=Theme.FONT_MARK, bg=Theme.BG,
                  fg=Theme.DIVIDER).pack(side="bottom", anchor="e", padx=10, pady=4)
+
+        # --- Live Dashboard (replaces the scrolling text log) ---
+        self._create_dashboard()
 
     def _create_dashboard(self) -> None:
         """Three status rows: signalling server, client link, client headphones."""

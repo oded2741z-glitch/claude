@@ -286,6 +286,84 @@ class IntercomGUI:
                     widget.bind("<Button-1>", self._silence_ring)
 
     # ------------------------------------------------------------------
+    # Themed modal dialog
+    # ------------------------------------------------------------------
+    def _dark_dialog(self, title: str, message: str, confirm_text: str = "") -> bool:
+        """Modal dialog in the app's own theme. True only when confirmed."""
+        win = tk.Toplevel(self.root)
+        win.configure(bg=Theme.BG)
+        win.overrideredirect(True)
+        win.transient(self.root)
+        win.resizable(False, False)
+        result: Dict[str, bool] = {"ok": False}
+
+        def close(ok: bool) -> None:
+            result["ok"] = ok
+            try:
+                win.grab_release()
+            except tk.TclError:
+                pass
+            win.destroy()
+
+        bar = tk.Frame(win, bg=Theme.BG)
+        bar.pack(fill="x", pady=5, padx=5)
+        title_lbl = tk.Label(bar, text=title, font=Theme.FONT_TITLE, bg=Theme.BG, fg=Theme.ACCENT)
+        title_lbl.pack(side="left", padx=10)
+
+        offset: Dict[str, int] = {"x": 0, "y": 0}
+
+        def press(event: tk.Event) -> None:
+            offset["x"], offset["y"] = event.x, event.y
+
+        def drag(event: tk.Event) -> None:
+            win.geometry(f"+{win.winfo_x() + event.x - offset['x']}"
+                         f"+{win.winfo_y() + event.y - offset['y']}")
+
+        for widget in (bar, title_lbl):
+            widget.bind("<ButtonPress-1>", press)
+            widget.bind("<B1-Motion>", drag)
+
+        tk.Frame(win, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10)
+
+        body = tk.Frame(win, bg=Theme.LOG_BG, padx=15, pady=15)
+        body.pack(fill="both", expand=True, padx=10, pady=10)
+        tk.Label(body, text=message, justify="left", anchor="w", wraplength=340,
+                 bg=Theme.LOG_BG, fg=Theme.FG, font=Theme.FONT_ENTRY).pack(fill="x")
+
+        btns = tk.Frame(win, bg=Theme.BG)
+        btns.pack(fill="x", padx=15, pady=(0, 12))
+
+        if confirm_text:
+            tk.Button(btns, text="Cancel", font=Theme.FONT_LABEL, bg=Theme.BTN_BG, fg=Theme.FG,
+                      relief="flat", width=10, pady=4, command=lambda: close(False),
+                      activebackground=Theme.DIVIDER,
+                      activeforeground=Theme.FG).pack(side="right", padx=(6, 0))
+            tk.Button(btns, text=confirm_text, font=Theme.FONT_LABEL, bg=Theme.QUIT, fg=Theme.FG,
+                      relief="flat", width=12, pady=4, command=lambda: close(True),
+                      activebackground="#cc0000",
+                      activeforeground=Theme.FG).pack(side="right")
+        else:
+            tk.Button(btns, text="OK", font=Theme.FONT_LABEL, bg=Theme.BTN_BG, fg=Theme.FG,
+                      relief="flat", width=10, pady=4, command=lambda: close(False),
+                      activebackground=Theme.DIVIDER,
+                      activeforeground=Theme.FG).pack(side="right")
+
+        win.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - win.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 3
+        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+
+        # overrideredirect מוריד את קישוט החלון, ולכן מרימים אותו במפורש
+        win.attributes("-topmost", True)
+        win.lift()
+        win.grab_set()
+        win.focus_force()
+        win.bind("<Escape>", lambda e: close(False))
+        win.bind("<Return>", lambda e: close(bool(confirm_text)))
+        self.root.wait_window(win)
+        return result["ok"]
+
+    # ------------------------------------------------------------------
     # Remote client control
     # ------------------------------------------------------------------
     def shutdown_client(self) -> None:
@@ -294,23 +372,24 @@ class IntercomGUI:
             entries = sorted(self._remote_clients.items(), key=lambda kv: kv[1][2], reverse=True)
         target = next(((cid, e[3]) for cid, e in entries if e[3] is not None), None)
         if target is None:
-            messagebox.showinfo("Shutdown Client", "No client has reported to this server yet.")
+            self._dark_dialog("Shutdown Client", "No client has reported to this server yet.")
             return
 
         client_id, addr = target
         sock = self._server_sock
         if sock is None:
             # הלקוח מקבל פקודות רק מכתובת השרת, ולכן חייבים לשלוח מהסוקט שלו
-            messagebox.showinfo("Shutdown Client",
-                                "Start the internal signalling server first.\n\n"
-                                "The command is sent from its socket, and the client accepts "
-                                "it only from the server address it registered with.")
+            self._dark_dialog("Shutdown Client",
+                              "Start the internal signalling server first.\n\n"
+                              "The command is sent from its socket, and the client accepts "
+                              "it only from the server address it registered with.")
             return
 
-        if not messagebox.askyesno("Shutdown Client",
-                                   f"Shut down {client_id} at {addr[0]}:{addr[1]}?\n\n"
-                                   "The client process will exit and has to be restarted "
-                                   "on that machine."):
+        if not self._dark_dialog("Shutdown Client",
+                                 f"Shut down {client_id} at {addr[0]}:{addr[1]}?\n\n"
+                                 "The client process will exit and has to be restarted "
+                                 "on that machine.",
+                                 confirm_text="Shut Down"):
             return
 
         payload = json.dumps({"cmd": "shutdown"}).encode('utf-8')

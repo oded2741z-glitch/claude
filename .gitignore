@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+settings.txt
+settings_A.txt

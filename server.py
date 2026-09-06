@@ -12,6 +12,11 @@ import os
 from collections import deque
 from typing import Optional, Tuple, Dict, Any
 
+try:
+    import winsound          # Windows בלבד - במערכות אחרות פשוט אין צלצול
+except ImportError:
+    winsound = None
+
 # --- Constants & Settings ---
 SAMPLE_RATE: int = 16000
 CHANNELS: int = 1
@@ -43,6 +48,10 @@ STREAM_CLOSE_WAIT: float = 5.0    # סגירת stream על התקן שנשלף �
 UI_TICK_MS: int = 200             # קצב רענון המחוונים
 PEER_IDLE: float = 1.5            # אין אודיו מעבר לזה -> נורית הקליינט כבר לא ירוקה
 HP_REPORT_TTL: float = 5.0        # אין דיווח מהלקוח מעבר לזה -> מצב האוזניות לא ידוע
+
+# --- Ring on headphone connect ---
+RING_INTERVAL: float = 1.5        # מרווח בין צלצולים
+RING_SOUND: str = "SystemAsterisk"
 
 
 class Theme:
@@ -120,6 +129,12 @@ class IntercomGUI:
         # מצב אוזניות של לקוחות מרוחקים בלבד: id -> (connected, since, last_seen)
         self._hp_lock: threading.Lock = threading.Lock()
         self._remote_clients: Dict[str, Tuple[bool, float, float]] = {}
+
+        # צלצול חוזר כשהאוזניות של הלקוח מתחברות, עד לחיצה
+        self._ring_lock: threading.Lock = threading.Lock()
+        self._ring_stop: threading.Event = threading.Event()
+        self._ring_thread: Optional[threading.Thread] = None
+        self._ringing: bool = False
 
         self.server_thread: Optional[threading.Thread] = None
         self.server_stop_event: threading.Event = threading.Event()
@@ -241,13 +256,60 @@ class IntercomGUI:
             canvas = tk.Canvas(head, width=16, height=16, bg=Theme.LOG_BG, highlightthickness=0)
             canvas.pack(side="left")
             dot = canvas.create_oval(3, 3, 14, 14, fill=Theme.LED_OFF, outline="")
-            tk.Label(head, text=title, bg=Theme.LOG_BG, fg=Theme.FG,
-                     font=Theme.FONT_LABEL).pack(side="left", padx=(6, 0))
+            title_lbl = tk.Label(head, text=title, bg=Theme.LOG_BG, fg=Theme.FG,
+                                 font=Theme.FONT_LABEL)
+            title_lbl.pack(side="left", padx=(6, 0))
 
             detail = tk.Label(card, text="-", anchor="w", bg=Theme.LOG_BG, fg=Theme.DISCONNECTED,
                               font=Theme.FONT_LOG)
             detail.pack(fill="x", padx=(22, 0), pady=(2, 0))
             self.rows[key] = (canvas, dot, detail)
+
+            # לחיצה בכל מקום על הכרטיס משתיקה את הצלצול
+            if key == "HEADPHONES":
+                for widget in (card, head, canvas, title_lbl, detail):
+                    widget.bind("<Button-1>", self._silence_ring)
+
+    # ------------------------------------------------------------------
+    # Ring on headphone connect
+    # ------------------------------------------------------------------
+    def _ring_loop(self) -> None:
+        while not self._ring_stop.is_set():
+            if winsound is not None:
+                try:
+                    winsound.PlaySound(RING_SOUND, winsound.SND_ALIAS | winsound.SND_ASYNC)
+                except Exception:
+                    pass
+            if self._ring_stop.wait(RING_INTERVAL):
+                break
+
+    def start_ring(self) -> None:
+        """Repeats a system sound until someone acknowledges it."""
+        with self._ring_lock:
+            if self._ringing:
+                return
+            self._ringing = True
+            self._ring_stop.clear()
+            self._ring_thread = threading.Thread(target=self._ring_loop, daemon=True)
+            self._ring_thread.start()
+
+    def stop_ring(self) -> None:
+        with self._ring_lock:
+            if not self._ringing:
+                return
+            self._ringing = False
+            self._ring_stop.set()
+            self._ring_thread = None
+        if winsound is not None:
+            try:
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
+
+    def _silence_ring(self, event: Optional[tk.Event] = None) -> None:
+        if self._ringing:
+            self.stop_ring()
+            self.log("Ring silenced.")
 
     def show_help(self) -> None:
         messagebox.showinfo("Help", HELP_TEXT)
@@ -330,7 +392,12 @@ class IntercomGUI:
                           f"{client_id}: no report for {int(age)}s  ·  last known: {last_state}{extra}")
         elif connected:
             # הרמז שבגללו השורה קיימת: הצד השני מוכן, אפשר לפתוח שיחה
-            hint = "   ->  press START INTERCOM" if not self.is_running else ""
+            if self._ringing:
+                hint = "   ->  click to silence"
+            elif not self.is_running:
+                hint = "   ->  press START INTERCOM"
+            else:
+                hint = ""
             self._set_row("HEADPHONES", Theme.CONNECTED,
                           f"{client_id} connected  ·  {stamp}{extra}{hint}")
         else:
@@ -430,6 +497,7 @@ class IntercomGUI:
         self.server_thread.start()
 
     def stop_local_server(self) -> None:
+        self.stop_ring()
         self.server_stop_event.set()
         if self.server_thread and self.server_thread.is_alive():
             # לסוקט השרת יש timeout של שנייה - נותנים לו מספיק זמן לשחרר את הפורט
@@ -505,8 +573,10 @@ class IntercomGUI:
             if self._mark_headphones(client_id, connected):
                 if connected:
                     self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
+                    self.start_ring()
                 else:
                     self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
+                    self.stop_ring()
             if not connected:
                 clients.pop(client_id, None)
             return
@@ -517,6 +587,7 @@ class IntercomGUI:
             clients.pop(client_id, None)
             if self._mark_headphones(client_id, False):
                 self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
+                self.stop_ring()
             return
 
         now = time.time()
@@ -525,6 +596,7 @@ class IntercomGUI:
         # רישום להצמדה. לקוח שנרשם בהכרח מחזיק אוזניות תקינות.
         if self._mark_headphones(client_id, True):
             self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
+            self.start_ring()
         if client_id not in clients:
             self.log(f"[Server] {client_id}: registered, waiting for a match.", "purple")
         clients[client_id] = (addr, now)
@@ -648,6 +720,9 @@ class IntercomGUI:
             if self.is_running:      # מגן מפני לחיצה כפולה מהירה
                 return
             self.is_running = True
+
+        # לענות לשיחה זו גם השתקה - אחרת הצלצול נכנס לאודיו של האינטרקום
+        self.stop_ring()
 
         self.last_refresh_time = 0.0
         self.my_id = my_id
@@ -913,6 +988,7 @@ class IntercomGUI:
         self.root.after(0, reset_gui)
 
     def on_close(self) -> None:
+        self.stop_ring()
         self.stop_connection()
         self.stop_local_server()
         self.root.destroy()

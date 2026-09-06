@@ -78,6 +78,7 @@ class Theme:
     FONT_LABEL: Tuple[str, int, str] = ("Arial", 10, "bold")
     FONT_ENTRY: Tuple[str, int] = ("Arial", 9)
     FONT_LOG: Tuple[str, int] = ("Consolas", 9)
+    FONT_MARK: Tuple[str, int] = ("Arial", 7)
 
 
 HELP_TEXT: str = (
@@ -252,7 +253,8 @@ class IntercomGUI:
         # --- Live Dashboard (replaces the scrolling text log) ---
         self._create_dashboard()
 
-        tk.Label(self.root, text="oT", font=("Arial", 9, "bold"), bg=Theme.BG, fg=Theme.DIVIDER).pack(side="bottom", anchor="e", padx=10, pady=5)
+        tk.Label(self.root, text="oT", font=Theme.FONT_MARK, bg=Theme.BG,
+                 fg=Theme.DIVIDER).pack(side="bottom", anchor="e", padx=10, pady=4)
 
     def _create_dashboard(self) -> None:
         """Three status rows: signalling server, client link, client headphones."""
@@ -332,6 +334,9 @@ class IntercomGUI:
 
         btns = tk.Frame(win, bg=Theme.BG)
         btns.pack(fill="x", padx=15, pady=(0, 12))
+
+        tk.Label(btns, text="oT", font=Theme.FONT_MARK, bg=Theme.BG,
+                 fg=Theme.DIVIDER).pack(side="left", anchor="s")
 
         if confirm_text:
             tk.Button(btns, text="Cancel", font=Theme.FONT_LABEL, bg=Theme.BTN_BG, fg=Theme.FG,

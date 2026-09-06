@@ -153,6 +153,17 @@ class IntercomCLI:
             except (AttributeError, OSError):
                 return
 
+    def _from_server(self, addr: Tuple[str, int]) -> bool:
+        """True only for the signalling server this client is registered with."""
+        if addr[1] != self.server_port:
+            return False
+        if addr[0] == self.server_ip:
+            return True
+        try:
+            return addr[0] == socket.gethostbyname(self.server_ip)
+        except OSError:
+            return False
+
     def _report_headphones(self, repeats: int = REPORT_REPEATS) -> None:
         """Explicit headphone-state report. Never enters the matching pool."""
         self._send_json({"id": self.my_id, "status": "hp",
@@ -329,6 +340,17 @@ class IntercomCLI:
             if data[:1] == b'{':
                 info = self._parse_json_dict(data)
                 if info is None:
+                    continue
+                if info.get("cmd") == "shutdown":
+                    # פקודה הרסנית - מתקבלת רק מהשרת, אחרת כל אחד ברשת
+                    # יכול להפיל את הלקוח בחבילת UDP אחת
+                    if self._from_server(addr):
+                        self.log("Shutdown command received from server. Exiting.")
+                        self.in_call = False
+                        self.shutdown_event.set()
+                    else:
+                        self.log(f"Ignored shutdown command from {addr[0]}:{addr[1]} "
+                                 f"- not the signalling server.")
                     continue
                 self._last_ack = time.time()
                 if "peer_ip" in info and "peer_port" in info:

@@ -39,6 +39,8 @@ ACK_PACKET: bytes = b'{"ack":true}'   # מאשר לקליינט שהשרת חי
 CLIENT_TTL: float = 30.0          # רישום ישן לא ישמש להצמדה
 MATCH_RETRIES: int = 5            # UDP לא אמין - שולחים את פרטי העמית כמה פעמים
 MATCH_RETRY_DELAY: float = 0.05
+CMD_RETRIES: int = 3              # אותו טעם: פקודה שנעלמת בדרך היא כפתור שלא עובד
+CMD_RETRY_DELAY: float = 0.05
 PUNCH_DURATION: float = 2.0
 PUNCH_INTERVAL: float = 0.1
 HW_REFRESH_GAP: float = 5.0       # מרווח מזערי בין אתחולי PortAudio
@@ -127,15 +129,20 @@ class IntercomGUI:
         self._call_started: float = 0.0
         self._server_port: int = 0
         self._server_error: str = ""
-        # מצב אוזניות של לקוחות מרוחקים בלבד: id -> (connected, since, last_seen)
+        # מצב אוזניות של לקוחות מרוחקים בלבד:
+        # id -> (connected, since, last_seen, addr)
         self._hp_lock: threading.Lock = threading.Lock()
-        self._remote_clients: Dict[str, Tuple[bool, float, float]] = {}
+        self._remote_clients: Dict[str, Tuple[bool, float, float, Optional[Tuple[str, int]]]] = {}
 
         # צלצול חוזר כשהאוזניות של הלקוח מתחברות, עד לחיצה
         self._ring_lock: threading.Lock = threading.Lock()
         self._ring_stop: threading.Event = threading.Event()
         self._ring_thread: Optional[threading.Thread] = None
         self._ringing: bool = False
+
+        # הסוקט של השרת הפנימי. פקודות ללקוח חייבות לצאת ממנו, כי הלקוח
+        # מקבל פקודות רק מכתובת השרת שהוא רשום אליה.
+        self._server_sock: Optional[socket.socket] = None
 
         self.server_thread: Optional[threading.Thread] = None
         self.server_stop_event: threading.Event = threading.Event()
@@ -235,6 +242,13 @@ class IntercomGUI:
                                     relief="flat", width=42, pady=6, command=self.toggle_intercom)
         self.toggle_btn.pack()
 
+        # --- Remote client control ---
+        self.shutdown_client_btn = tk.Button(self.root, text="SHUTDOWN CLIENT", font=("Arial", 9, "bold"),
+                                             bg=Theme.QUIT, fg=Theme.FG, relief="flat", width=35, pady=3,
+                                             command=self.shutdown_client,
+                                             activebackground="#cc0000", activeforeground=Theme.FG)
+        self.shutdown_client_btn.pack(pady=(8, 0))
+
         # --- Live Dashboard (replaces the scrolling text log) ---
         self._create_dashboard()
 
@@ -270,6 +284,46 @@ class IntercomGUI:
             if key == "HEADPHONES":
                 for widget in (card, head, canvas, title_lbl, detail):
                     widget.bind("<Button-1>", self._silence_ring)
+
+    # ------------------------------------------------------------------
+    # Remote client control
+    # ------------------------------------------------------------------
+    def shutdown_client(self) -> None:
+        """Tells the most recently heard client to exit its process."""
+        with self._hp_lock:
+            entries = sorted(self._remote_clients.items(), key=lambda kv: kv[1][2], reverse=True)
+        target = next(((cid, e[3]) for cid, e in entries if e[3] is not None), None)
+        if target is None:
+            messagebox.showinfo("Shutdown Client", "No client has reported to this server yet.")
+            return
+
+        client_id, addr = target
+        sock = self._server_sock
+        if sock is None:
+            # הלקוח מקבל פקודות רק מכתובת השרת, ולכן חייבים לשלוח מהסוקט שלו
+            messagebox.showinfo("Shutdown Client",
+                                "Start the internal signalling server first.\n\n"
+                                "The command is sent from its socket, and the client accepts "
+                                "it only from the server address it registered with.")
+            return
+
+        if not messagebox.askyesno("Shutdown Client",
+                                   f"Shut down {client_id} at {addr[0]}:{addr[1]}?\n\n"
+                                   "The client process will exit and has to be restarted "
+                                   "on that machine."):
+            return
+
+        payload = json.dumps({"cmd": "shutdown"}).encode('utf-8')
+        for _ in range(CMD_RETRIES):
+            try:
+                sock.sendto(payload, addr)
+            except OSError as e:
+                self.log(f"[Server] Failed to send shutdown to {client_id}: {e}", "red")
+                return
+            time.sleep(CMD_RETRY_DELAY)
+
+        self.stop_ring()
+        self.log(f"[Server] Shutdown command sent to {client_id} ({addr[0]}:{addr[1]}).", "yellow")
 
     # ------------------------------------------------------------------
     # Ring on headphone connect
@@ -356,18 +410,20 @@ class IntercomGUI:
             state = "no audio from peer" if self._call_started else "punching NAT..."
             self._set_row("CLIENT", Theme.WAITING, f"{peer[0]}:{peer[1]}  ·  {state}")
 
-    def _mark_headphones(self, client_id: str, connected: bool) -> bool:
+    def _mark_headphones(self, client_id: str, connected: bool,
+                         addr: Optional[Tuple[str, int]] = None) -> bool:
         """Records a REMOTE client's headphone state. True on a real change."""
         if not client_id or client_id == self.my_id:
             return False  # המצב שלנו לא מעניין - השורה נועדה להראות את הצד השני
         now = time.time()
         with self._hp_lock:
             previous = self._remote_clients.get(client_id)
+            known_addr = addr or (previous[3] if previous else None)
             if previous is not None and previous[0] == connected:
                 # אותו מצב - שומרים על חותמת השינוי ומרעננים רק את זמן הדיווח
-                self._remote_clients[client_id] = (connected, previous[1], now)
+                self._remote_clients[client_id] = (connected, previous[1], now, known_addr)
                 return False
-            self._remote_clients[client_id] = (connected, now, now)
+            self._remote_clients[client_id] = (connected, now, now, known_addr)
         return True
 
     def _refresh_headphones_row(self) -> None:
@@ -377,7 +433,7 @@ class IntercomGUI:
             self._set_row("HEADPHONES", Theme.LED_OFF, "waiting for a client to report...")
             return
 
-        client_id, (connected, since, last_seen) = entries[0]
+        client_id, (connected, since, last_seen, _addr) = entries[0]
         stamp = time.strftime('%H:%M:%S', time.localtime(since))
         extra = f"   (+{len(entries) - 1} more)" if len(entries) > 1 else ""
         age = time.time() - last_seen
@@ -566,7 +622,7 @@ class IntercomGUI:
         # דיווח מצב אוזניות מפורש. לא נכנס לבריכת ההצמדה - זה רק סטטוס.
         if status == "hp":
             connected = bool(msg.get("headphones"))
-            if self._mark_headphones(client_id, connected):
+            if self._mark_headphones(client_id, connected, addr):
                 if connected:
                     self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
                     self.start_ring()
@@ -581,7 +637,7 @@ class IntercomGUI:
         # אחרי הצמדה הרשימה מתאפסת, וזה בדיוק המקרה של ניתוק באמצע שיחה.
         if status == "disconnected":
             clients.pop(client_id, None)
-            if self._mark_headphones(client_id, False):
+            if self._mark_headphones(client_id, False, addr):
                 self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
                 self.stop_ring()
             return
@@ -590,7 +646,7 @@ class IntercomGUI:
         self._purge_stale(clients, now)
 
         # רישום להצמדה. לקוח שנרשם בהכרח מחזיק אוזניות תקינות.
-        if self._mark_headphones(client_id, True):
+        if self._mark_headphones(client_id, True, addr):
             self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
             self.start_ring()
         if client_id not in clients:
@@ -627,6 +683,7 @@ class IntercomGUI:
 
         self.root.after(0, self._mark_server_started, port)
         clients: Dict[str, Tuple[Tuple[str, int], float]] = {}
+        self._server_sock = server_sock
 
         with server_sock:
             while not self.server_stop_event.is_set():
@@ -647,6 +704,7 @@ class IntercomGUI:
                 except Exception as e:
                     self.log(f"[Server] Error handling packet: {e}", "red")
 
+        self._server_sock = None
         self.root.after(0, self._mark_server_stopped)
 
     # ------------------------------------------------------------------

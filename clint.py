@@ -67,6 +67,7 @@ class IntercomCLI:
         self.input_name: str = ""
         self.output_name: str = ""
 
+        self._keyword_missing: bool = False
         self._server_online: bool = False
         self._last_ack: float = 0.0
         self._last_rx: float = 0.0
@@ -104,6 +105,12 @@ class IntercomCLI:
         changed = (ip, port, my_id, hp_device) != (self.server_ip, self.server_port,
                                                    self.my_id, self.hp_device)
         self.server_ip, self.server_port, self.my_id, self.hp_device = ip, port, my_id, hp_device
+
+        # קובץ ישן בלי המפתח - מוסיפים אותו כדי שיהיה גלוי לעריכה
+        if "hp_device" not in data:
+            self.save_settings()
+            self.log('Added "hp_device" to settings.txt - set it to part of your headset name.')
+
         if changed or not quiet:
             match = self.hp_device if self.hp_device else "<default device>"
             self.log(f"Settings: IP={self.server_ip}, Port={self.server_port}, "
@@ -225,7 +232,12 @@ class IntercomCLI:
                 if out_idx is None and d.get("max_output_channels", 0) > 0:
                     out_idx = idx
             if in_idx is None or out_idx is None:
+                if not self._keyword_missing:
+                    self._keyword_missing = True
+                    self.log(f'hp_device "{self.hp_device}" matches no mic+speaker pair '
+                             f'among the detected devices.')
                 return None, None, "", ""
+            self._keyword_missing = False
             return (in_idx, out_idx,
                     str(devices[in_idx].get("name", "")), str(devices[out_idx].get("name", "")))
 

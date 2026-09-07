@@ -5,7 +5,6 @@ import threading
 import time
 import ipaddress
 import tkinter as tk
-from tkinter import messagebox
 import sounddevice as sd
 import numpy as np
 import os
@@ -91,7 +90,8 @@ HELP_TEXT: str = (
     "External IP: only relevant when the signalling server is NOT on the\n"
     "public internet. The port is never translated, so this requires a\n"
     "static port forward on the router. On a single LAN, tick Local Mode.\n\n"
-    "Hole punching works with cone NAT. Symmetric NAT needs a relay (TURN)."
+    "Hole punching works with cone NAT. Symmetric NAT needs a relay (TURN).\n\n"
+    "(c) oT - All rights reserved."
 )
 
 
@@ -292,7 +292,8 @@ class IntercomGUI:
     # ------------------------------------------------------------------
     # Themed modal dialog
     # ------------------------------------------------------------------
-    def _dark_dialog(self, title: str, message: str, confirm_text: str = "") -> bool:
+    def _dark_dialog(self, title: str, message: str, confirm_text: str = "",
+                     wrap: int = 340) -> bool:
         """Modal dialog in the app's own theme. True only when confirmed."""
         win = tk.Toplevel(self.root)
         win.configure(bg=Theme.BG)
@@ -331,7 +332,7 @@ class IntercomGUI:
 
         body = tk.Frame(win, bg=Theme.LOG_BG, padx=15, pady=15)
         body.pack(fill="both", expand=True, padx=10, pady=10)
-        tk.Label(body, text=message, justify="left", anchor="w", wraplength=340,
+        tk.Label(body, text=message, justify="left", anchor="w", wraplength=wrap,
                  bg=Theme.LOG_BG, fg=Theme.FG, font=Theme.FONT_ENTRY).pack(fill="x")
 
         btns = tk.Frame(win, bg=Theme.BG)
@@ -448,7 +449,7 @@ class IntercomGUI:
             self.log("Ring silenced.")
 
     def show_help(self) -> None:
-        messagebox.showinfo("Help", HELP_TEXT)
+        self._dark_dialog("Help", HELP_TEXT, wrap=470)
 
     def log(self, msg: str, color_tag: str = "white") -> None:
         """Events go to stdout only - the dashboard carries the state itself."""
@@ -847,13 +848,13 @@ class IntercomGUI:
         try:
             server_port: int = int(self.server_port_entry.get().strip())
         except ValueError:
-            messagebox.showerror("Error", "Port must be a valid number.")
+            self._dark_dialog("Error", "Port must be a valid number.")
             return
 
         server_ip = self.server_ip_entry.get().strip()
         my_id = self.my_id_entry.get().strip()
         if not my_id:
-            messagebox.showerror("Error", "Please enter a valid ID.")
+            self._dark_dialog("Error", "Please enter a valid ID.")
             return
 
         with self._stop_lock:

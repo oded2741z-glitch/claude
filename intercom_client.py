@@ -11,12 +11,14 @@ import json
 import random
 import time
 
-BG_COLOR = "#2E2E2E"
-ACCENT_COLOR = "#389379"
+BG_COLOR = "#121212"
+PANEL_COLOR = "#1E1E1E"
+ACCENT_COLOR = "#FF6600"
 TEXT_COLOR = "#FFFFFF"
+MUTED_COLOR = "#888888"
 BTN_COLOR = "#333333"
 QUIT_COLOR = "#FF0000"
-BROADCAST_COLOR = "#FF9900"
+BROADCAST_COLOR = "#FF0000"
 
 CTRL_PORT = 5001
 AUDIO_PORT = 6000
@@ -194,7 +196,7 @@ class AudioEngine:
         s.close()
 
 
-STATE_COLORS = {"STANDBY": TEXT_COLOR, "ACTIVE": ACCENT_COLOR, "BROADCAST": BROADCAST_COLOR}
+STATE_COLORS = {"STANDBY": MUTED_COLOR, "ACTIVE": ACCENT_COLOR, "BROADCAST": BROADCAST_COLOR}
 
 
 class IntercomClient:
@@ -264,10 +266,10 @@ class IntercomClient:
         ctk.CTkButton(topbar, text="Help", width=50, height=25, fg_color=BTN_COLOR, text_color=TEXT_COLOR, corner_radius=0, command=self.on_help).pack(side="right", padx=5, pady=2)
 
     def add_watermark(self):
-        ctk.CTkLabel(self.root, text="oT", font=("Arial", 10), text_color="#888888").place(relx=0.99, rely=0.99, anchor="se")
+        ctk.CTkLabel(self.root, text="oT", font=("Arial", 10), text_color=MUTED_COLOR).place(relx=0.99, rely=0.99, anchor="se")
 
     def build_ui(self):
-        self.status_lbl = ctk.CTkLabel(self.root, text="STANDBY", font=("Arial", 22, "bold"), text_color=TEXT_COLOR)
+        self.status_lbl = ctk.CTkLabel(self.root, text="STANDBY", font=("Arial", 22, "bold"), text_color=MUTED_COLOR)
         self.status_lbl.pack(expand=True)
 
     def update_status(self, text, color):

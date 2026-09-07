@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intercom Client</title>
+<meta name="description" content="Client station for the Intercom network. Join your team and stay on standby for the commander.">
+<meta name="theme-color" content="#f9fafb">
+<meta property="og:title" content="Intercom Client">
+<meta property="og:description" content="Client station for the Intercom network.">
+<meta property="og:type" content="website">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M16 7a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0v-6a3 3 0 0 1 3-3zm-7 9h2a5 5 0 0 0 10 0h2a7 7 0 0 1-6 6.9V26h-2v-3.1A7 7 0 0 1 9 16z' fill='white'/%3E%3C/svg%3E">
+<link rel="shortcut icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3C/svg%3E">
+<style>
+:root {
+  --primary-accent: #2563eb;
+  --primary-hover: #1d4ed8;
+  --bg-light: #f9fafb;
+  --text-dark: #111827;
+  --text-gray: #64748b;
+  --border-color: #e2e8f0;
+}
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+[hidden] { display:none !important; }
+body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden; }
+header { padding:1.5rem 6%; background:white; border-bottom:1px solid var(--border-color); }
+.logo-text { font-weight:800; font-size:1.5rem; letter-spacing:-0.5px; color:var(--text-dark); text-decoration:none; }
+.logo-accent { color:var(--primary-accent); }
+.work-wrap { max-width:760px; margin:3rem auto; padding:0 6%; width:100%; flex:1; }
+h1 { font-size:2.2rem; letter-spacing:-1px; margin-bottom:0.5rem; color:var(--text-dark); }
+.subtitle { font-size:1.05rem; color:var(--text-gray); margin-bottom:2rem; }
+.panel { background:white; border:1px solid var(--border-color); border-radius:12px; padding:2rem; display:flex; flex-direction:column; gap:1.25rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); margin-bottom:1.5rem; }
+.field { display:flex; flex-direction:column; gap:0.5rem; }
+label { font-size:0.85rem; font-weight:700; color:var(--text-gray); text-transform:uppercase; letter-spacing:1px; }
+input, select { background:white; border:1px solid var(--border-color); color:var(--text-dark); border-radius:8px; padding:0.6rem 0.8rem; font-size:1rem; }
+input:focus, select:focus { outline:none; border-color:var(--primary-accent); }
+.btn-primary { background:var(--primary-accent); color:#fff; border:none; border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:1rem; cursor:pointer; transition:background 0.2s; }
+.btn-primary:hover { background:var(--primary-hover); }
+.btn-primary:disabled { opacity:0.5; cursor:not-allowed; }
+.btn-outline { background:white; color:var(--text-dark); border:1px solid var(--border-color); border-radius:8px; padding:0.75rem 1.5rem; font-weight:700; cursor:pointer; transition:border-color 0.2s; }
+.btn-outline:hover { border-color:var(--primary-accent); }
+.hint { font-size:0.9rem; color:var(--text-gray); }
+.status-panel { align-items:center; text-align:center; gap:1rem; }
+.status-head { display:flex; align-items:center; gap:8px; font-size:0.95rem; font-weight:600; color:var(--text-gray); }
+.dot { width:6px; height:6px; background:#10b981; border-radius:50%; }
+.dot.off { background:#cbd5e1; }
+.status-value { font-size:3rem; font-weight:800; letter-spacing:-1px; color:var(--text-gray); }
+.status-value.active { color:#10b981; }
+.status-value.broadcast { color:var(--primary-accent); }
+.status-meta { font-size:0.95rem; color:var(--text-gray); }
+.level-track { width:100%; height:8px; background:#eff6ff; border-radius:999px; overflow:hidden; }
+.level-fill { height:100%; width:0%; background:var(--primary-accent); transition:width 0.1s linear; }
+.site-footer { padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; }
+.acc-btn { position:fixed; bottom:30px; left:30px; width:50px; height:50px; border-radius:50%; background:var(--primary-accent); display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:1000; }
+.acc-menu { position:fixed; bottom:90px; left:30px; width:260px; display:none; flex-direction:column; gap:0.8rem; padding:1.5rem; background:white; border:1px solid var(--border-color); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:1000; }
+.acc-toggle { width:100%; padding:0.6rem; border:1px solid var(--border-color); border-radius:6px; background:white; font-weight:700; text-align:left; cursor:pointer; }
+.acc-toggle:hover { border-color:var(--primary-accent); }
+body.acc-high-contrast { background:#000; color:#fff; }
+body.acc-high-contrast * { background:#000 !important; color:#fff !important; border-color:#fff !important; }
+body.acc-large-text * { font-size:120% !important; }
+body.acc-highlight-links a { background:yellow !important; color:black !important; padding:2px !important; }
+@media (max-width:768px) { .work-wrap { margin:1.5rem auto; } h1 { font-size:1.8rem; } .panel { padding:1.5rem; } .status-value { font-size:2.4rem; } }
+</style>
+</head>
+<body>
+<header>
+  <a href="client.html" class="logo-text">Inter<span class="logo-accent">com</span></a>
+</header>
+
+<main class="work-wrap">
+  <h1>Client Station</h1>
+  <p class="subtitle">Join your team and stay on standby for the commander.</p>
+
+  <div class="panel" id="join-panel">
+    <div class="field">
+      <label for="name">Your Name</label>
+      <input id="name" type="text" placeholder="Enter your name" maxlength="32" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="group">Team</label>
+      <select id="group"></select>
+    </div>
+    <button class="btn-primary" id="btn-connect" disabled>Connect</button>
+    <p class="hint" id="hint">Connecting to server...</p>
+  </div>
+
+  <div class="panel status-panel" id="status-panel" hidden>
+    <div class="status-head"><span class="dot" id="conn-dot"></span><span id="conn-text">Connected</span></div>
+    <div class="status-value" id="status">STANDBY</div>
+    <div class="status-meta" id="meta"></div>
+    <div class="level-track"><div class="level-fill" id="level"></div></div>
+    <button class="btn-outline" id="btn-leave">Disconnect</button>
+  </div>
+</main>
+
+<footer class="site-footer">&copy; 2026 Intercom. All rights reserved.</footer>
+
+<button class="acc-btn" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')">
+  <svg viewBox="0 0 24 24" fill="white" width="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
+</button>
+<div class="acc-menu" id="acc-menu">
+  <h4 style="margin-bottom:0.5rem;">Accessibility Options</h4>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-high-contrast')">High Contrast Mode</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-large-text')">Increase Font Size</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-highlight-links')">Highlight Links</button>
+  <button class="acc-toggle" onclick="location.reload()" style="color:red;border-color:red;margin-top:10px;">Reset All</button>
+</div>
+
+<script>
+const WS_URL = "ws://" + location.hostname + ":8001";
+const SAMPLE_RATE = 48000;
+const CHUNK = 1024;
+
+const recorderCode = `
+class RecorderProcessor extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(${CHUNK}); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) {
+      this.buf[this.n++] = ch[i];
+      if (this.n === ${CHUNK}) { const out = this.buf.slice(); this.port.postMessage(out.buffer, [out.buffer]); this.n = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor('recorder', RecorderProcessor);
+`;
+
+const playerCode = `
+class PlayerProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.sources = new Map();
+    this.port.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.clear) { this.sources.clear(); return; }
+      let q = this.sources.get(msg.id);
+      if (!q) { q = []; this.sources.set(msg.id, q); }
+      q.push(new Float32Array(msg.data));
+      let total = 0;
+      for (const c of q) total += c.length;
+      while (total > 12288) { total -= q.shift().length; }
+    };
+  }
+  process(inputs, outputs) {
+    const out = outputs[0][0];
+    out.fill(0);
+    for (const q of this.sources.values()) {
+      let need = out.length, pos = 0;
+      while (need > 0 && q.length) {
+        const c = q[0];
+        const take = Math.min(need, c.length);
+        for (let i = 0; i < take; i++) out[pos + i] += c[i];
+        if (take === c.length) q.shift(); else q[0] = c.subarray(take);
+        pos += take; need -= take;
+      }
+    }
+    for (let i = 0; i < out.length; i++) out[i] = Math.max(-1, Math.min(1, out[i]));
+    return true;
+  }
+}
+registerProcessor('player', PlayerProcessor);
+`;
+
+let ws = null;
+let ctx = null;
+let micStream = null;
+let recorderNode = null;
+let playerNode = null;
+let analyser = null;
+let status = "STANDBY";
+let joined = false;
+
+const el = (id) => document.getElementById(id);
+
+function moduleUrl(code) {
+  return URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
+}
+
+function setHint(text) { el("hint").textContent = text; }
+
+function applyStatus(value) {
+  status = value;
+  const node = el("status");
+  node.textContent = value;
+  node.className = "status-value" + (value === "ACTIVE" ? " active" : value === "BROADCAST" ? " broadcast" : "");
+  if (value === "BROADCAST") el("meta").textContent = "Commander broadcast in progress. Microphone muted.";
+  else if (value === "ACTIVE") el("meta").textContent = "Microphone is live.";
+  else el("meta").textContent = "Waiting for the commander.";
+}
+
+function connectSocket() {
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => {
+    el("btn-connect").disabled = false;
+    setHint("Server ready. Enter your name and connect.");
+  };
+
+  ws.onmessage = (event) => {
+    if (typeof event.data !== "string") {
+      const view = new DataView(event.data);
+      const id = view.getUint32(0, true);
+      const pcm = event.data.slice(4);
+      if (playerNode) playerNode.port.postMessage({ id: id, data: pcm }, [pcm]);
+      return;
+    }
+    const msg = JSON.parse(event.data);
+    if (msg.type === "groups") {
+      const select = el("group");
+      select.innerHTML = "";
+      msg.groups.forEach((g) => {
+        const opt = document.createElement("option");
+        opt.value = g;
+        opt.textContent = g;
+        select.appendChild(opt);
+      });
+    } else if (msg.type === "welcome") {
+      joined = true;
+      el("join-panel").hidden = true;
+      el("status-panel").hidden = false;
+    } else if (msg.type === "state") {
+      applyStatus(msg.status);
+      if (playerNode && msg.status === "STANDBY") playerNode.port.postMessage({ clear: true });
+    } else if (msg.type === "error") {
+      setHint(msg.message);
+    }
+  };
+
+  ws.onclose = () => {
+    el("conn-dot").classList.add("off");
+    el("conn-text").textContent = "Disconnected";
+    el("btn-connect").disabled = true;
+    setHint("Connection lost. Retrying...");
+    applyStatus("STANDBY");
+    setTimeout(connectSocket, 2000);
+  };
+
+  ws.onerror = () => { setHint("Cannot reach the server."); };
+}
+
+async function startAudio() {
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+  await ctx.audioWorklet.addModule(moduleUrl(recorderCode));
+  await ctx.audioWorklet.addModule(moduleUrl(playerCode));
+
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  });
+
+  const source = ctx.createMediaStreamSource(micStream);
+  recorderNode = new AudioWorkletNode(ctx, "recorder");
+  const silent = ctx.createGain();
+  silent.gain.value = 0;
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  source.connect(analyser);
+  source.connect(recorderNode);
+  recorderNode.connect(silent).connect(ctx.destination);
+
+  recorderNode.port.onmessage = (event) => {
+    if (status === "ACTIVE" && ws && ws.readyState === WebSocket.OPEN) ws.send(event.data);
+  };
+
+  playerNode = new AudioWorkletNode(ctx, "player");
+  playerNode.connect(ctx.destination);
+
+  await ctx.resume();
+  requestAnimationFrame(drawLevel);
+}
+
+function drawLevel() {
+  if (!analyser) return;
+  const data = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(data);
+  let peak = 0;
+  for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i] - 128));
+  const pct = status === "ACTIVE" ? Math.min(100, (peak / 128) * 300) : 0;
+  el("level").style.width = pct + "%";
+  requestAnimationFrame(drawLevel);
+}
+
+el("btn-connect").addEventListener("click", async () => {
+  const name = el("name").value.trim();
+  const group = el("group").value;
+  if (!name) { setHint("Please enter your name."); return; }
+  if (!group) { setHint("No teams available."); return; }
+  el("btn-connect").disabled = true;
+  try {
+    if (!ctx) await startAudio();
+  } catch (err) {
+    el("btn-connect").disabled = false;
+    setHint("Microphone access is required.");
+    return;
+  }
+  ws.send(JSON.stringify({ type: "hello", role: "client", name: name, group: group }));
+});
+
+el("btn-leave").addEventListener("click", () => { location.reload(); });
+
+applyStatus("STANDBY");
+connectSocket();
+</script>
+</body>
+</html>

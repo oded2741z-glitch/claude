@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import struct
+import sys
 import threading
 
 try:
@@ -12,7 +13,10 @@ try:
 except ImportError:
     from websockets.server import serve
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GROUPS_FILE = os.path.join(BASE_DIR, "groups.txt")
 HTTP_PORT = 8000
 WS_PORT = 8001

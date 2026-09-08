@@ -48,10 +48,6 @@ input:focus, select:focus { outline:none; border-color:var(--primary-accent); }
 .status-value.active { color:#10b981; }
 .status-value.broadcast { color:var(--primary-accent); }
 .status-meta { font-size:0.95rem; color:var(--text-gray); }
-.team-list { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:0.75rem; }
-.team-btn { background:white; color:var(--text-dark); border:1px solid var(--border-color); border-radius:8px; padding:0.75rem 1rem; font-weight:700; font-size:0.95rem; cursor:pointer; transition:border-color 0.2s, background 0.2s, color 0.2s; }
-.team-btn:hover { border-color:var(--primary-accent); }
-.team-btn.on { background:var(--primary-accent); border-color:var(--primary-accent); color:#fff; }
 .level-track { width:100%; height:8px; background:#eff6ff; border-radius:999px; overflow:hidden; }
 .level-fill { height:100%; width:0%; background:var(--primary-accent); transition:width 0.1s linear; }
 .site-footer { padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; }
@@ -93,10 +89,11 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   </div>
 
   <div class="panel" id="team-panel" hidden>
-    <label>Team</label>
-    <div class="team-list" id="team-list"></div>
+    <div class="field">
+      <label for="team-select">Team</label>
+      <select id="team-select"></select>
+    </div>
     <p class="hint" id="team-hint">Select a team to start receiving.</p>
-    <button class="btn-outline" id="btn-clear-team" hidden>Leave Team</button>
   </div>
 </main>
 
@@ -200,26 +197,23 @@ function applyStatus(value) {
 }
 
 function buildTeams() {
-  const host = el("team-list");
-  host.innerHTML = "";
+  const select = el("team-select");
+  select.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "No team";
+  select.appendChild(none);
   groups.forEach((g) => {
-    const btn = document.createElement("button");
-    btn.className = "team-btn";
-    btn.id = "team-" + g;
-    btn.textContent = g;
-    btn.addEventListener("click", () => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "team", group: g }));
-    });
-    host.appendChild(btn);
+    const opt = document.createElement("option");
+    opt.value = g;
+    opt.textContent = g;
+    select.appendChild(opt);
   });
+  select.value = myGroup;
 }
 
 function renderTeams() {
-  groups.forEach((g) => {
-    const btn = el("team-" + g);
-    if (btn) btn.classList.toggle("on", myGroup === g);
-  });
-  el("btn-clear-team").hidden = !myGroup;
+  el("team-select").value = myGroup;
   el("team-hint").textContent = myGroup
     ? "Switching team takes effect immediately. If the new team is active, your microphone opens at once."
     : "Select a team to start receiving. Commander broadcasts reach you either way.";
@@ -330,8 +324,10 @@ el("btn-connect").addEventListener("click", async () => {
   ws.send(JSON.stringify({ type: "hello", role: "client", name: name }));
 });
 
-el("btn-clear-team").addEventListener("click", () => {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "team", group: "" }));
+el("team-select").addEventListener("change", (event) => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "team", group: event.target.value }));
+  }
 });
 
 el("btn-leave").addEventListener("click", () => { location.reload(); });

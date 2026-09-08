@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>מדריך למשתמש - מערכת אינטרקום</title>
+<style>
+:root {
+  --primary-accent: #2563eb;
+  --bg-light: #f9fafb;
+  --text-dark: #111827;
+  --text-gray: #64748b;
+  --border-color: #e2e8f0;
+}
+@page { size: A4; margin: 16mm 14mm; }
+* { margin:0; padding:0; box-sizing:border-box; font-family:"DejaVu Sans", "FreeSans", sans-serif; }
+body { color:var(--text-dark); font-size:10.5pt; line-height:1.65; background:white; }
+.ltr { direction:ltr; unicode-bidi:isolate; display:inline-block; }
+code { font-family:"DejaVu Sans Mono", monospace; direction:ltr; unicode-bidi:isolate; display:inline-block;
+       background:#eff6ff; border:1px solid #bfdbfe; color:#1d4ed8; border-radius:4px; padding:0 5px; font-size:9.5pt; }
+
+.cover { text-align:center; padding-top:55mm; page-break-after:always; }
+.cover .mark { font-size:30pt; font-weight:800; letter-spacing:-1px; direction:ltr; }
+.cover .mark span { color:var(--primary-accent); }
+.cover h1 { font-size:23pt; font-weight:800; margin-top:14mm; letter-spacing:-0.5px; }
+.cover .sub { font-size:12pt; color:var(--text-gray); margin-top:4mm; }
+.cover .rule { width:60px; height:2px; background:var(--primary-accent); margin:9mm auto; }
+.cover .meta { font-size:9.5pt; color:var(--text-gray); margin-top:30mm; line-height:2; }
+
+h2 { font-size:15pt; font-weight:800; letter-spacing:-0.5px; margin:0 0 4mm;
+     padding-bottom:2.5mm; border-bottom:2px solid var(--primary-accent); }
+h3 { font-size:11.5pt; font-weight:800; margin:6mm 0 2.5mm; color:var(--text-dark); }
+section { page-break-inside:avoid; margin-bottom:9mm; }
+p { margin-bottom:2.5mm; color:#334155; }
+ul, ol { padding-right:6mm; margin-bottom:3mm; color:#334155; }
+li { margin-bottom:1.6mm; }
+
+.num { display:inline-block; width:6.5mm; height:6.5mm; line-height:6.5mm; text-align:center;
+       background:var(--primary-accent); color:#fff; border-radius:50%; font-size:9pt; font-weight:800;
+       margin-left:2mm; vertical-align:middle; }
+.step { margin-bottom:3.5mm; }
+.step .title { font-weight:800; font-size:11pt; }
+.step .body { padding-right:8.5mm; }
+
+table { width:100%; border-collapse:collapse; margin:3mm 0; font-size:9.5pt; }
+th { background:#f1f5f9; text-align:right; font-weight:800; padding:2.4mm 3mm; border:1px solid var(--border-color); }
+td { padding:2.4mm 3mm; border:1px solid var(--border-color); vertical-align:top; color:#334155; }
+
+.callout { background:#f8fafc; border-right:4px solid var(--primary-accent); padding:3.5mm 4mm; margin:3.5mm 0; }
+.callout.warn { border-right-color:#b45309; background:#fffbeb; }
+.callout .h { font-weight:800; display:block; margin-bottom:1.2mm; font-size:10pt; }
+
+.badge { display:inline-block; padding:0.6mm 2.6mm; border-radius:4px; font-size:9pt; font-weight:800;
+         direction:ltr; border:1px solid; }
+.b-standby { color:var(--text-gray); border-color:var(--border-color); background:#f8fafc; }
+.b-active { color:#065f46; border-color:#a7f3d0; background:#ecfdf5; }
+.b-broadcast { color:#1d4ed8; border-color:#bfdbfe; background:#eff6ff; }
+
+.diagram { border:1px solid var(--border-color); border-radius:8px; padding:5mm; margin:4mm 0; background:#fbfcfe; }
+.node { display:inline-block; border:1px solid var(--border-color); background:white; border-radius:6px;
+        padding:2.2mm 3.5mm; font-size:9pt; text-align:center; min-width:34mm; }
+.node.server { border-color:var(--primary-accent); border-width:2px; }
+.node b { display:block; font-size:10pt; }
+.node em { font-style:normal; color:var(--text-gray); font-size:8.5pt; direction:ltr; display:block; }
+.tier { text-align:center; margin:2mm 0; }
+.link { text-align:center; color:var(--primary-accent); font-size:13pt; line-height:1; margin:1mm 0; }
+.row3 { display:flex; gap:3mm; justify-content:center; }
+
+.foot { margin-top:10mm; padding-top:3mm; border-top:1px solid var(--border-color);
+        text-align:center; color:var(--text-gray); font-size:8.5pt; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="mark">Inter<span>com</span></div>
+  <h1>מדריך למשתמש</h1>
+  <div class="sub">מערכת קשר קולי ברשת מקומית</div>
+  <div class="rule"></div>
+  <div class="sub" style="font-size:10.5pt;">מדריך הפעלה לעמדת לקוח, לעמדת מפקד ולמנהל המערכת</div>
+  <div class="meta">
+    גרסה 1.0<br>
+    ספטמבר 2026
+  </div>
+</div>
+
+<section>
+  <h2>1. מה המערכת עושה</h2>
+  <p>המערכת מאפשרת קשר קולי בזמן אמת בין מספר עמדות מחשב ברשת מקומית, ללא חיבור לאינטרנט וללא התקנת תוכנה על העמדות. כל עמדה משתמשת בדפדפן בלבד.</p>
+  <p>יש שני סוגי מסכים: <b>עמדת לקוח</b> — לחברי הצוותים בשטח, ו<b>עמדת מפקד</b> — למי שמנהל את הקשר ומחליט מי מדבר עם מי.</p>
+
+  <h3>מבנה המערכת</h3>
+  <div class="diagram">
+    <div class="tier">
+      <div class="node server"><b>מחשב השרת</b><em>192.168.1.11</em></div>
+    </div>
+    <div class="link">▲ ▲ ▲</div>
+    <div class="tier row3">
+      <div class="node"><b>מפקד</b><em>manager.html</em></div>
+      <div class="node"><b>לקוח</b><em>client.html</em></div>
+      <div class="node"><b>לקוח</b><em>client.html</em></div>
+    </div>
+  </div>
+  <p>כל הקול עובר דרך מחשב השרת. אם השרת כבוי — אין קשר. העמדות עצמן רק פותחות דפדפן, אין עליהן שום התקנה.</p>
+</section>
+
+<section>
+  <h2>2. הפעלת השרת</h2>
+  <p>שלב זה מבוצע פעם אחת, על מחשב השרת בלבד, על ידי מנהל המערכת.</p>
+
+  <div class="step">
+    <div class="title"><span class="num">1</span>הכנת הקבצים</div>
+    <div class="body">ודא ששלושת הקבצים נמצאים באותה תיקייה: <code>server.py</code>, <code>client.html</code>, <code>manager.html</code>.</div>
+  </div>
+  <div class="step">
+    <div class="title"><span class="num">2</span>התקנה חד-פעמית</div>
+    <div class="body">פתח שורת פקודה בתיקייה והרץ: <code>pip install websockets</code></div>
+  </div>
+  <div class="step">
+    <div class="title"><span class="num">3</span>הפעלה</div>
+    <div class="body">הרץ <code>python server.py</code>. החלון יציג את כתובות הגישה — השאר אותו פתוח כל זמן שהמערכת בשימוש.</div>
+  </div>
+  <div class="step">
+    <div class="title"><span class="num">4</span>חומת אש</div>
+    <div class="body">אשר את הבקשה שתקפוץ מ-Windows Firewall, או פתח ידנית את הפורטים <code>8000</code> ו-<code>8001</code> עבור רשת פרטית. בלי זה עמדות אחרות לא יצליחו להתחבר.</div>
+  </div>
+
+  <div class="callout">
+    <span class="h">כתובות הגישה</span>
+    עמדת לקוח: <code>http://192.168.1.11:8000/client.html</code><br>
+    עמדת מפקד: <code>http://192.168.1.11:8000/manager.html</code><br>
+    בכל העמדות הכתובת היא זו של <b>מחשב השרת</b> — לא של המחשב שיושבים עליו.
+  </div>
+</section>
+
+<section>
+  <h2>3. הגדרה חד-פעמית בכל עמדה</h2>
+  <p>דפדפן כרום חוסם גישה למיקרופון בכתובות רשת פנימיות. יש לבצע את ההגדרה הבאה פעם אחת בכל עמדה חדשה, אחרת המיקרופון לא ייפתח.</p>
+  <ol>
+    <li>בשורת הכתובת של כרום הזן: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code></li>
+    <li>בתיבת הטקסט הזן את כתובת השרת: <code>http://192.168.1.11:8000</code></li>
+    <li>שנה את התיבה הנפתחת שלידה מ-<span class="ltr">Disabled</span> ל-<span class="ltr">Enabled</span></li>
+    <li>לחץ על <span class="ltr">Relaunch</span> בתחתית המסך. הדפדפן ייסגר וייפתח מחדש</li>
+  </ol>
+  <div class="callout warn">
+    <span class="h">שים לב</span>
+    בפעם הראשונה שתתחבר, הדפדפן יבקש אישור גישה למיקרופון. יש ללחוץ <span class="ltr">Allow</span>. אם נלחץ בטעות <span class="ltr">Block</span>, יש ללחוץ על סמל המנעול שליד שורת הכתובת ולאפשר מיקרופון ידנית.
+  </div>
+</section>
+
+<section>
+  <h2>4. עמדת לקוח</h2>
+  <h3>התחברות</h3>
+  <ol>
+    <li>פתח את כתובת הלקוח בדפדפן</li>
+    <li>הזן את שמך בשדה <span class="ltr">Your Name</span> — השם יופיע אצל המפקד</li>
+    <li>בחר את הצוות שלך מהרשימה <span class="ltr">Team</span></li>
+    <li>לחץ <span class="ltr">Connect</span></li>
+  </ol>
+  <p>מרגע זה העמדה מחוברת. אין צורך לעשות דבר נוסף — המערכת ממתינה להוראות מהמפקד.</p>
+
+  <h3>משמעות מצבי התצוגה</h3>
+  <table>
+    <tr><th style="width:32mm;">מצב</th><th>מה זה אומר</th><th style="width:38mm;">המיקרופון שלך</th></tr>
+    <tr>
+      <td><span class="badge b-standby">STANDBY</span></td>
+      <td>אין קשר פעיל. אתה מחובר וממתין.</td>
+      <td>סגור</td>
+    </tr>
+    <tr>
+      <td><span class="badge b-active">ACTIVE</span></td>
+      <td>הצוות שלך פעיל. אתה שומע את חברי הצוות והם שומעים אותך.</td>
+      <td><b>פתוח ומשדר</b></td>
+    </tr>
+    <tr>
+      <td><span class="badge b-broadcast">BROADCAST</span></td>
+      <td>המפקד משדר הודעה לכל העמדות. הקשב בלבד.</td>
+      <td>מושתק</td>
+    </tr>
+  </table>
+
+  <div class="callout warn">
+    <span class="h">חשוב לדעת</span>
+    כאשר המסך מציג <span class="ltr">ACTIVE</span>, המיקרופון פתוח ומשדר <b>ברציפות</b> — אין לחצן דיבור. כל מה שנאמר ליד המחשב נשמע אצל חברי הצוות. הפס הכחול בתחתית המסך מראה את עוצמת המיקרופון שלך, והוא הדרך לוודא שאתה אכן משודר.
+  </div>
+
+  <h3>ניתוק</h3>
+  <p>לחיצה על <span class="ltr">Disconnect</span> מנתקת את העמדה. סגירת חלון הדפדפן מנתקת גם היא, והשם ייעלם מרשימת המפקד תוך שניות.</p>
+</section>
+
+<section>
+  <h2>5. עמדת מפקד</h2>
+  <p>פתח את כתובת המפקד ולחץ <span class="ltr">Take Command</span>. אשר גישה למיקרופון. לוח הבקרה ייפתח עם שורה לכל צוות.</p>
+
+  <h3>שלושת הפקדים</h3>
+  <table>
+    <tr><th style="width:34mm;">פקד</th><th>פעולה</th></tr>
+    <tr>
+      <td><b>Commander Broadcast</b></td>
+      <td>שידור חד-כיווני שלך <b>לכל</b> העמדות בכל הצוותים, ללא קשר למצבן. בזמן שידור כללי כל פקדי הצוותים ננעלים, והלקוחות אינם יכולים לדבר. זהו המצב לשימוש בהודעות דחופות.</td>
+    </tr>
+    <tr>
+      <td><b>ACTIVE / INACTIVE</b></td>
+      <td>פותח ערוץ דיבור <b>בין חברי הצוות לבין עצמם</b>. הם שומעים זה את זה. אתה עצמך לא בערוץ ולא שומע אותם.</td>
+    </tr>
+    <tr>
+      <td><b>JOIN / LEAVE</b></td>
+      <td>מכניס <b>אותך</b> לערוץ דיבור דו-כיווני עם הצוות. אתה שומע אותם והם שומעים אותך. אפשר להיות מחובר לצוות אחד בכל רגע — לחיצה על צוות אחר תעביר אותך אליו אוטומטית.</td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    <span class="h">ההבדל בין ACTIVE ל-JOIN</span>
+    <span class="ltr">ACTIVE</span> מפעיל את הצוות <b>בלעדיך</b> — הם מדברים ביניהם.
+    <span class="ltr">JOIN</span> מכניס <b>אותך</b> לשיחה איתם.
+    אפשר להשתמש בשניהם יחד: הפעל את הצוות, והצטרף אליו כשאתה רוצה לדבר.
+  </div>
+
+  <h3>רשימת המחוברים</h3>
+  <p>מתחת לשם כל צוות מוצגים שמות העמדות המחוברות באותו רגע. השורה מתעדכנת מיד כשמישהו מתחבר או מתנתק, וזו הדרך לוודא שהעמדות פעילות לפני תחילת פעילות.</p>
+</section>
+
+<section>
+  <h2>6. עריכת רשימת הצוותים</h2>
+  <p>שמות הצוותים נשמרים בקובץ <code>groups.txt</code> בתיקיית השרת — שם צוות אחד בכל שורה. הקובץ נוצר אוטומטית בהפעלה הראשונה.</p>
+  <div class="callout">
+    <span class="h">לשינוי הרשימה</span>
+    ערוך את הקובץ בכל עורך טקסט, שמור, ולאחר מכן <b>הפעל מחדש את השרת</b>. שינוי בלי הפעלה מחדש לא ייכנס לתוקף. לאחר ההפעלה מחדש, כל העמדות צריכות לרענן את הדף.
+  </div>
+</section>
+
+<section>
+  <h2>7. פתרון תקלות</h2>
+  <table>
+    <tr><th style="width:52mm;">התופעה</th><th>הסיבה והפתרון</th></tr>
+    <tr>
+      <td>הדף לא נפתח בכלל</td>
+      <td>השרת אינו פועל, או שחומת האש חוסמת. ודא שחלון השרת פתוח, ושהפורטים <code>8000</code> ו-<code>8001</code> פתוחים במחשב השרת.</td>
+    </tr>
+    <tr>
+      <td>הודעת <span class="ltr">Microphone access is required</span></td>
+      <td>לא בוצעה ההגדרה החד-פעמית של כרום (פרק 3), או שגישת המיקרופון נחסמה. בצע את פרק 3 ואשר את בקשת המיקרופון.</td>
+    </tr>
+    <tr>
+      <td>המסך מציג <span class="ltr">Disconnected</span> או <span class="ltr">Offline</span></td>
+      <td>הקשר לשרת נותק. המערכת מנסה להתחבר מחדש לבד כל שתי שניות. אם המצב נמשך — בדוק שהשרת עדיין פועל ושכבל הרשת מחובר.</td>
+    </tr>
+    <tr>
+      <td>שם העמדה לא מופיע אצל המפקד</td>
+      <td>הלקוח לא לחץ <span class="ltr">Connect</span>, או שנבחר צוות אחר. בדוק בעמדת הלקוח שהמסך מציג מצב ולא את טופס הכניסה.</td>
+    </tr>
+    <tr>
+      <td>המצב <span class="ltr">ACTIVE</span> מוצג אך לא שומעים דבר</td>
+      <td>ברוב המקרים המיקרופון של הצד השני מושתק או שנבחר התקן שגוי. בדוק את הפס הכחול בעמדה המשדרת — אם הוא אינו זז, הבעיה במיקרופון שלה.</td>
+    </tr>
+    <tr>
+      <td>הד או צפצוף</td>
+      <td>שתי עמדות קרובות פיזית זו לזו, או שימוש ברמקולים במקום אוזניות. השתמש באוזניות בעמדות שנמצאות באותו חדר.</td>
+    </tr>
+    <tr>
+      <td>הקול קטוע</td>
+      <td>עומס רשת, בדרך כלל בעמדות אלחוטיות. חבר בכבל רשת, או הקטן את מספר העמדות הפעילות בו-זמנית באותו צוות.</td>
+    </tr>
+  </table>
+</section>
+
+<section>
+  <h2>8. דגשים לתפעול</h2>
+  <ul>
+    <li>המערכת פועלת <b>ברשת המקומית בלבד</b>. אין גישה מבחוץ ואין תלות באינטרנט.</li>
+    <li>מחשב השרת חייב להישאר דולק ועם חלון השרת פתוח לאורך כל הפעילות.</li>
+    <li>במצב <span class="ltr">ACTIVE</span> המיקרופון פתוח כל הזמן. סגור את הצוות בסיום השימוש כדי למנוע האזנה לא מכוונת.</li>
+    <li>עמדות באותו חדר — חובה באוזניות, אחרת ייווצר הד.</li>
+    <li>עמדות קריטיות עדיף לחבר ברשת קווית ולא אלחוטית.</li>
+    <li>בכל שינוי בתוכנה או בקובץ הצוותים — הפעל מחדש את השרת ורענן את כל העמדות.</li>
+  </ul>
+</section>
+
+<div class="foot">מדריך למשתמש · מערכת אינטרקום · גרסה 1.0</div>
+
+</body>
+</html>

@@ -293,8 +293,7 @@ class IntercomClient:
             draw.rectangle([8, 8, 56, 56], outline=ACCENT_COLOR, width=6)
             draw.rectangle([24, 24, 40, 40], fill=ACCENT_COLOR)
             menu = pystray.Menu(
-                pystray.MenuItem("Show", self.tray_show, default=True),
-                pystray.MenuItem("Hide", self.tray_hide),
+                pystray.MenuItem("Show / Hide", self.tray_toggle, default=True),
                 pystray.MenuItem("Quit", self.tray_quit))
             self.tray = pystray.Icon("intercom_client", image, "Intercom Client", menu)
             threading.Thread(target=self.tray_run, daemon=True).start()
@@ -307,11 +306,8 @@ class IntercomClient:
         except Exception:
             self.tray = None
 
-    def tray_show(self, icon=None, item=None):
-        self.root.after(0, self.show_window)
-
-    def tray_hide(self, icon=None, item=None):
-        self.root.after(0, self.root.withdraw)
+    def tray_toggle(self, icon=None, item=None):
+        self.root.after(0, self.toggle_visibility)
 
     def tray_quit(self, icon=None, item=None):
         self.root.after(0, self.on_quit)

@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 groups.txt
 manager.txt
+client_settings.txt

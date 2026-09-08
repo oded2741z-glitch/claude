@@ -11,6 +11,13 @@ import json
 import random
 import time
 
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+    TRAY_AVAILABLE = True
+except Exception:
+    TRAY_AVAILABLE = False
+
 BG_COLOR = "#121212"
 PANEL_COLOR = "#1E1E1E"
 ACCENT_COLOR = "#B3600A"
@@ -197,33 +204,59 @@ class AudioEngine:
 
 
 STATE_COLORS = {"STANDBY": MUTED_COLOR, "ACTIVE": ACCENT_COLOR, "BROADCAST": BROADCAST_COLOR}
+SETTINGS_FILE = "client_settings.txt"
 
 
 class IntercomClient:
     def __init__(self, root):
         self.root = root
-        self.root.geometry("300x150")
+        self.root.geometry("300x185")
         self.root.configure(fg_color=BG_COLOR)
         self.root.overrideredirect(True)
 
         try:
             keyboard.add_hotkey("f4", self.toggle_visibility)
+            self.hotkey_ok = True
         except Exception:
-            pass
+            self.hotkey_ok = False
 
         self.manager_ip = self.get_manager_ip()
+        self.start_minimized = self.load_start_minimized()
         self.state = "STANDBY"
         self.peers = set()
         self.running = True
+        self.tray = None
 
         self.audio = AudioEngine(self.tx_targets, self.rx_accept)
 
         self.build_topbar()
         self.add_watermark()
         self.build_ui()
+        self.build_tray()
+
+        if self.start_minimized and (self.tray is not None or self.hotkey_ok):
+            self.root.withdraw()
 
         threading.Thread(target=self.ctrl_loop, daemon=True).start()
         self.audio.start()
+
+    def load_start_minimized(self):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                for line in f:
+                    key, _, value = line.partition("=")
+                    if key.strip() == "start_minimized":
+                        return value.strip() == "1"
+        except OSError:
+            pass
+        return False
+
+    def save_start_minimized(self, value):
+        try:
+            with open(SETTINGS_FILE, "w") as f:
+                f.write("start_minimized=%d\n" % (1 if value else 0))
+        except OSError:
+            pass
 
     def get_manager_ip(self):
         if not os.path.exists("manager.txt"):
@@ -239,14 +272,49 @@ class IntercomClient:
             pass
         return "192.168.1.100"
 
+    def show_window(self):
+        self.root.deiconify()
+        self.root.attributes("-topmost", True)
+        self.root.focus_force()
+        self.root.after(100, lambda: self.root.attributes("-topmost", False))
+
     def toggle_visibility(self):
         if self.root.winfo_viewable():
             self.root.withdraw()
         else:
-            self.root.deiconify()
-            self.root.attributes("-topmost", True)
-            self.root.focus_force()
-            self.root.after(100, lambda: self.root.attributes("-topmost", False))
+            self.show_window()
+
+    def build_tray(self):
+        if not TRAY_AVAILABLE:
+            return
+        try:
+            image = Image.new("RGB", (64, 64), BG_COLOR)
+            draw = ImageDraw.Draw(image)
+            draw.rectangle([8, 8, 56, 56], outline=ACCENT_COLOR, width=6)
+            draw.rectangle([24, 24, 40, 40], fill=ACCENT_COLOR)
+            menu = pystray.Menu(
+                pystray.MenuItem("Show", self.tray_show, default=True),
+                pystray.MenuItem("Hide", self.tray_hide),
+                pystray.MenuItem("Quit", self.tray_quit))
+            self.tray = pystray.Icon("intercom_client", image, "Intercom Client", menu)
+            threading.Thread(target=self.tray_run, daemon=True).start()
+        except Exception:
+            self.tray = None
+
+    def tray_run(self):
+        try:
+            self.tray.run()
+        except Exception:
+            self.tray = None
+
+    def tray_show(self, icon=None, item=None):
+        self.root.after(0, self.show_window)
+
+    def tray_hide(self, icon=None, item=None):
+        self.root.after(0, self.root.withdraw)
+
+    def tray_quit(self, icon=None, item=None):
+        self.root.after(0, self.on_quit)
 
     def build_topbar(self):
         topbar = ctk.CTkFrame(self.root, height=30, fg_color=BG_COLOR, corner_radius=0)
@@ -271,6 +339,20 @@ class IntercomClient:
     def build_ui(self):
         self.status_lbl = ctk.CTkLabel(self.root, text="STANDBY", font=("Arial", 22, "bold"), text_color=MUTED_COLOR)
         self.status_lbl.pack(expand=True)
+
+        self.minimized_var = ctk.BooleanVar(value=self.start_minimized)
+        self.chk_minimized = ctk.CTkCheckBox(self.root, text="Start minimized to tray",
+                                             variable=self.minimized_var, command=self.on_minimized_toggle,
+                                             font=("Arial", 11), text_color=TEXT_COLOR,
+                                             fg_color=ACCENT_COLOR, hover_color=ACCENT_COLOR,
+                                             border_color=MUTED_COLOR, checkmark_color="#000000",
+                                             checkbox_width=18, checkbox_height=18,
+                                             corner_radius=0, border_width=2)
+        self.chk_minimized.pack(side="bottom", pady=(0, 14))
+
+    def on_minimized_toggle(self):
+        self.start_minimized = bool(self.minimized_var.get())
+        self.save_start_minimized(self.start_minimized)
 
     def update_status(self, text, color):
         self.root.after(0, lambda: self.status_lbl.configure(text=text, text_color=color))
@@ -330,6 +412,11 @@ class IntercomClient:
     def on_quit(self):
         self.running = False
         self.audio.stop()
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         self.root.destroy()
         os._exit(0)
 

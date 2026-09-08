@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>תיעוד טכני - מערכת אינטרקום</title>
+<style>
+:root {
+  --primary-accent: #2563eb;
+  --text-dark: #111827;
+  --text-gray: #64748b;
+  --border-color: #e2e8f0;
+}
+@page { size: A4; margin: 15mm 13mm; }
+* { margin:0; padding:0; box-sizing:border-box; font-family:"DejaVu Sans","FreeSans",sans-serif; }
+body { color:var(--text-dark); font-size:10pt; line-height:1.6; background:white; }
+.ltr { direction:ltr; unicode-bidi:isolate; display:inline-block; }
+code { font-family:"DejaVu Sans Mono",monospace; direction:ltr; unicode-bidi:isolate; display:inline-block;
+       background:#eff6ff; border:1px solid #bfdbfe; color:#1d4ed8; border-radius:3px; padding:0 4px; font-size:8.8pt; }
+pre { direction:ltr; text-align:left; font-family:"DejaVu Sans Mono",monospace; font-size:8.3pt; line-height:1.55;
+      background:#f8fafc; border:1px solid var(--border-color); border-radius:6px; padding:3mm 4mm; margin:3mm 0;
+      white-space:pre; overflow:hidden; }
+pre .c { color:var(--text-gray); }
+
+.cover { text-align:center; padding-top:52mm; page-break-after:always; }
+.cover .mark { font-size:28pt; font-weight:800; letter-spacing:-1px; direction:ltr; }
+.cover .mark span { color:var(--primary-accent); }
+.cover h1 { font-size:22pt; font-weight:800; margin-top:13mm; letter-spacing:-0.5px; }
+.cover .sub { font-size:11.5pt; color:var(--text-gray); margin-top:4mm; }
+.cover .rule { width:60px; height:2px; background:var(--primary-accent); margin:8mm auto; }
+.cover .meta { font-size:9pt; color:var(--text-gray); margin-top:26mm; line-height:1.9; }
+.cover .files { display:inline-block; text-align:right; margin-top:8mm; font-size:9.5pt; color:#334155; }
+
+h2 { font-size:14pt; font-weight:800; letter-spacing:-0.5px; margin:0 0 3.5mm;
+     padding-bottom:2mm; border-bottom:2px solid var(--primary-accent); }
+h3 { font-size:11pt; font-weight:800; margin:5mm 0 2mm; }
+h4 { font-size:9.8pt; font-weight:800; margin:3.5mm 0 1.5mm; color:#334155; }
+section { margin-bottom:8mm; }
+h2, h3, h4 { page-break-after:avoid; }
+table, .callout, pre, .diagram, .frame { page-break-inside:avoid; }
+tr { page-break-inside:avoid; }
+p { margin-bottom:2mm; color:#334155; }
+ul, ol { padding-right:6mm; margin-bottom:2.5mm; color:#334155; }
+li { margin-bottom:1.3mm; }
+
+table { width:100%; border-collapse:collapse; margin:2.5mm 0; font-size:8.8pt; }
+th { background:#f1f5f9; text-align:right; font-weight:800; padding:2mm 2.5mm; border:1px solid var(--border-color); }
+td { padding:2mm 2.5mm; border:1px solid var(--border-color); vertical-align:top; color:#334155; }
+td code, th code { font-size:8.2pt; }
+
+.callout { background:#f8fafc; border-right:4px solid var(--primary-accent); padding:3mm 3.5mm; margin:3mm 0; font-size:9.3pt; }
+.callout.warn { border-right-color:#b45309; background:#fffbeb; }
+.callout .h { font-weight:800; display:block; margin-bottom:1mm; }
+
+.diagram { border:1px solid var(--border-color); border-radius:8px; padding:4.5mm; margin:3.5mm 0; background:#fbfcfe; }
+.node { display:inline-block; border:1px solid var(--border-color); background:white; border-radius:6px;
+        padding:2mm 3mm; font-size:8.6pt; text-align:center; min-width:36mm; }
+.node.acc { border-color:var(--primary-accent); border-width:2px; }
+.node b { display:block; font-size:9.4pt; }
+.node em { font-style:normal; color:var(--text-gray); font-size:8pt; direction:ltr; display:block; }
+.tier { text-align:center; margin:1.5mm 0; }
+.row { display:flex; gap:3mm; justify-content:center; }
+.link { text-align:center; color:var(--primary-accent); font-size:8.4pt; margin:1.5mm 0; direction:ltr; }
+
+.frame { display:flex; margin:3mm 0; direction:ltr; font-size:8.4pt; }
+.frame div { border:1px solid var(--border-color); padding:2mm; text-align:center; }
+.frame .hd { background:#eff6ff; border-color:#bfdbfe; color:#1d4ed8; font-weight:800; flex:0 0 34%; }
+.frame .pl { background:#f8fafc; flex:1; }
+.frame small { display:block; color:var(--text-gray); font-weight:400; }
+
+.foot { margin-top:8mm; padding-top:2.5mm; border-top:1px solid var(--border-color);
+        text-align:center; color:var(--text-gray); font-size:8.3pt; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="mark">Inter<span>com</span></div>
+  <h1>תיעוד טכני</h1>
+  <div class="sub">מערכת קשר קולי מבוססת דפדפן ברשת מקומית</div>
+  <div class="rule"></div>
+  <div class="sub" style="font-size:10pt;">מסמך העברה למפתח</div>
+  <div class="files">
+    <code>server.py</code> — 226 שורות<br>
+    <code>client.html</code> — 307 שורות<br>
+    <code>manager.html</code> — 375 שורות
+  </div>
+  <div class="meta">גרסה 1.0 · ספטמבר 2026</div>
+</div>
+
+<section>
+  <h2>1. סקירה</h2>
+  <p>מערכת אינטרקום לרשת מקומית סגורה. שרת Python יחיד מגיש שני דפי HTML סטטיים ומנתב ביניהם אודיו גולמי מעל WebSocket. אין בסיס נתונים, אין תלויות חיצוניות פרט ל-<code>websockets</code>, ואין תהליך בנייה. בעמדות הקצה רץ דפדפן בלבד.</p>
+
+  <table>
+    <tr><th style="width:30mm;">קובץ</th><th>אחריות</th></tr>
+    <tr><td><code>server.py</code></td><td>שרת HTTP סטטי (פורט 8000) + שרת WebSocket (פורט 8001), ניהול מצב גלובלי וניתוב פריימי אודיו</td></tr>
+    <tr><td><code>client.html</code></td><td>עמדת קצה: הצטרפות לצוות, לכידת מיקרופון, ניגון ומיקס של דוברים מרובים</td></tr>
+    <tr><td><code>manager.html</code></td><td>לוח בקרה: הפעלת צוותים, שידור כללי, הצטרפות לערוץ צוות, תצוגת מחוברים</td></tr>
+  </table>
+
+  <div class="diagram">
+    <div class="tier"><div class="node acc"><b>server.py</b><em>asyncio + thread</em></div></div>
+    <div class="link">HTTP :8000 (static) &nbsp;&nbsp;|&nbsp;&nbsp; WebSocket :8001 (JSON + binary)</div>
+    <div class="tier row">
+      <div class="node"><b>manager.html</b><em>role: manager</em></div>
+      <div class="node"><b>client.html</b><em>role: client</em></div>
+      <div class="node"><b>client.html</b><em>role: client</em></div>
+    </div>
+  </div>
+  <p>כל האודיו עובר דרך השרת — טופולוגיית כוכב, ללא P2P. השרת אינו מפענח, מערבב או ממיר אודיו; הוא מעביר בייטים ומחליט למי.</p>
+</section>
+
+<section>
+  <h2>2. הפרוטוקול</h2>
+  <p>ערוץ WebSocket יחיד נושא שני סוגי פריימים. פריים טקסט הוא JSON של בקרה, פריים בינארי הוא אודיו. ההפרדה נעשית ב-<code>isinstance(message, bytes)</code> בשרת ובבדיקת <code>typeof event.data</code> בדפדפן.</p>
+
+  <h3>2.1 הודעות בקרה</h3>
+  <h4>מהדפדפן לשרת</h4>
+  <table>
+    <tr><th style="width:46mm;">הודעה</th><th>הערות</th></tr>
+    <tr><td><code>{type:"hello", role:"client", name, group}</code></td><td>רישום לקוח. <code>group</code> חייב להימצא ברשימה, אחרת מוחזר <code>error</code></td></tr>
+    <tr><td><code>{type:"hello", role:"manager"}</code></td><td>רישום מפקד</td></tr>
+    <tr><td><code>{type:"broadcast", on}</code></td><td>מפקד בלבד</td></tr>
+    <tr><td><code>{type:"group", group, on}</code></td><td>מפקד בלבד. מפעיל ערוץ פנים-צוותי</td></tr>
+    <tr><td><code>{type:"join", group, on}</code></td><td>מפקד בלבד. צוות אחד בכל רגע</td></tr>
+  </table>
+
+  <h4>מהשרת לדפדפן</h4>
+  <table>
+    <tr><th style="width:46mm;">הודעה</th><th>הערות</th></tr>
+    <tr><td><code>{type:"groups", groups:[...]}</code></td><td>נשלח מיד עם פתיחת החיבור, <b>לפני</b> ה-<code>hello</code></td></tr>
+    <tr><td><code>{type:"welcome", id, role}</code></td><td>אישור רישום</td></tr>
+    <tr><td><code>{type:"state", status}</code></td><td>ללקוח: <code>STANDBY</code> / <code>ACTIVE</code> / <code>BROADCAST</code></td></tr>
+    <tr><td><code>{type:"state", broadcast, active, joined, members}</code></td><td>למפקד: תמונת מצב מלאה</td></tr>
+    <tr><td><code>{type:"error", message}</code></td><td>כשלון רישום</td></tr>
+  </table>
+  <div class="callout">
+    <span class="h">שידור מצב</span>
+    <code>push_state()</code> (שורה 102) נקרא אחרי <b>כל</b> שינוי מצב ואחרי כל התחברות או ניתוק, ומשדר לכל המחוברים במקביל דרך <code>asyncio.gather</code>. אין דלתאות — תמיד נשלחת תמונה מלאה. זה מייתר סנכרון עדין בצד הלקוח.
+  </div>
+
+  <h3>2.2 פריים אודיו</h3>
+  <p>הדפדפן שולח PCM גולמי ללא כותרת. השרת מוסיף מזהה שולח לפני ההעברה, כדי שהמקבל יוכל להפריד בין דוברים ולמקסס אותם:</p>
+  <div class="frame">
+    <div class="hd">peer id<small>uint32 little-endian · 4B</small></div>
+    <div class="pl">Float32 PCM mono<small>1024 samples · 4096B</small></div>
+  </div>
+  <p>גודל הפריים היוצא מהשרת הוא 4100 בייט. היישור ל-4 בייטים מכוון: הוא מאפשר <code>new Float32Array(buffer)</code> על התוצאה של <code>slice(4)</code> ללא העתקה נוספת.</p>
+  <table>
+    <tr><th style="width:34mm;">פרמטר</th><th style="width:24mm;">ערך</th><th>נגזרת</th></tr>
+    <tr><td>קצב דגימה</td><td><code>48000 Hz</code></td><td>נדרש מ-<code>AudioContext</code> בשני הדפים</td></tr>
+    <tr><td>גודל מנה</td><td><code>1024</code> דגימות</td><td>21.3ms · 46.9 פריימים לשנייה</td></tr>
+    <tr><td>רוחב פס לזרם</td><td><code>1.54 Mbps</code></td><td>192 KB/s, ללא הפסקה</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>3. מודל המצב</h2>
+  <p>כל המצב יושב במופע יחיד של <code>State</code> (שורה 30) בזיכרון התהליך. אין התמדה — הפעלה מחדש מאפסת הכול.</p>
+  <pre>broadcast     : bool          <span class="c"># שידור כללי פעיל</span>
+active_groups : set[str]      <span class="c"># צוותים שערוץ הפנים שלהם פתוח</span>
+joined_group  : str | None    <span class="c"># הצוות שהמפקד מחובר אליו</span>
+peers         : dict[int, Peer]</pre>
+
+  <h3>גזירת המצב של הלקוח</h3>
+  <p><code>status_for()</code> (שורה 70) — הלקוח אינו מחזיק מצב משלו, הוא מקבל אותו מוכן:</p>
+  <table>
+    <tr><th style="width:34mm;">תנאי</th><th style="width:28mm;">מצב</th><th>משמעות</th></tr>
+    <tr><td><code>broadcast</code></td><td><code>BROADCAST</code></td><td>קליטה בלבד, מיקרופון מושתק</td></tr>
+    <tr><td><code>group in active_groups</code><br>או <code>joined_group == group</code></td><td><code>ACTIVE</code></td><td>משדר ברציפות</td></tr>
+    <tr><td>אחרת</td><td><code>STANDBY</code></td><td>לא משדר, לא קולט</td></tr>
+  </table>
+  <div class="callout warn">
+    <span class="h">מצב גלובלי, לא לכל מפקד</span>
+    יותר ממפקד אחד יכול להתחבר, אך כולם חולקים את אותו <code>State</code> ורואים אותו לוח בקרה. פעולה של מפקד אחד משפיעה על השאר מיד. אם נדרשים מפקדים עצמאיים, המצב צריך לעבור להיות פר-מפקד — זה שינוי מבני ולא פרמטר.
+  </div>
+</section>
+
+<section>
+  <h2>4. מטריצת ניתוב האודיו</h2>
+  <p>זהו לב המערכת: <code>audio_targets(sender)</code> (שורה 78). הפונקציה מקבלת את השולח ומחזירה את רשימת המקבלים. כל פריים בינארי עובר דרכה.</p>
+  <table>
+    <tr><th style="width:26mm;">מצב</th><th style="width:24mm;">שולח</th><th>מקבלים</th></tr>
+    <tr><td rowspan="2"><code>broadcast = True</code></td><td>מפקד</td><td><b>כל</b> המחוברים פרט לשולח</td></tr>
+    <tr><td>לקוח</td><td>רשימה ריקה — הפריים נזרק</td></tr>
+    <tr><td rowspan="2">רגיל</td><td>מפקד</td><td>לקוחות <code>joined_group</code> בלבד; ריק אם לא הצטרף</td></tr>
+    <tr><td>לקוח</td><td>חברי הצוות (אם הצוות ב-<code>active_groups</code>) <b>+</b> המפקדים (אם <code>joined_group</code> הוא הצוות שלו)</td></tr>
+  </table>
+  <div class="callout">
+    <span class="h">אכיפה כפולה, בכוונה</span>
+    גם הדפדפן מגביל שליחה (<code>status === "ACTIVE"</code> בלקוח, <code>transmitting()</code> במפקד) וגם השרת מסנן קליטה. הגבלת הדפדפן חוסכת רוחב פס; הסינון בשרת הוא זה שקובע. לקוח ששולח כשאסור לו — הפריים שלו פשוט נזרק.
+  </div>
+  <p>שים לב לתוצאה הריבועית: בצוות פעיל בן K חברים, כל פריים נכנס משוכפל ל-K−1 יוצאים. תעבורת השרת גדלה כ-<code>K(K-1)</code>, ולא ליניארית.</p>
+</section>
+
+<section>
+  <h2>5. server.py</h2>
+  <h3>מודל ההרצה</h3>
+  <p>שני מנגנוני מקביליות חיים זה לצד זה:</p>
+  <ul>
+    <li><b>לולאת asyncio</b> — כל תעבורת ה-WebSocket. משימה אחת לכל חיבור, נוצרת על ידי <code>serve()</code>.</li>
+    <li><b>thread נפרד</b> — <code>ThreadingHTTPServer</code> (שורה 203) מגיש את קובצי ה-HTML מ-<code>BASE_DIR</code>. daemon thread, נסגר עם התהליך.</li>
+  </ul>
+  <p>שני העולמות אינם חולקים מצב, ולכן אין צורך בנעילות. <code>QuietHandler</code> קיים רק כדי להשתיק את לוג הגישות.</p>
+
+  <h3>מחזור חיי חיבור</h3>
+  <p><code>handler()</code> (שורה 166):</p>
+  <pre>1. יצירת Peer עם id רץ, רישום ב-state.peers
+2. שליחת {type:"groups"}                <span class="c"># עוד לפני זיהוי</span>
+3. לולאת הודעות:
+     bytes -&gt; struct.pack("&lt;I", id) + data -&gt; audio_targets()
+     str   -&gt; handle_control()
+4. finally: הסרה מ-peers, ואם לא נותרו מפקדים -
+            joined_group = None, broadcast = False
+5. push_state()</pre>
+  <p>איפוס המצב ביציאת המפקד האחרון הוא הגנה מכוונת: בלעדיו נפילת דפדפן המפקד הייתה משאירה את כל הלקוחות ב-<code>ACTIVE</code> עם מיקרופון פתוח ללא הגבלת זמן.</p>
+
+  <div class="callout warn">
+    <span class="h">לחץ חוזר (backpressure)</span>
+    העברת הפריים היא <code>await asyncio.gather(*[t.ws.send(frame) for t in targets])</code>. אם מקבל אחד איטי ומאגר השליחה שלו מתמלא, ה-<code>await</code> מעכב את משימת <b>השולח</b> — כלומר האודיו שלו נעצר לכולם, לא רק למקבל התקוע. תיקון אפשרי: תור פר-מקבל עם השלכת פריימים ישנים במקום המתנה.
+  </div>
+
+  <h3>תאימות גרסאות</h3>
+  <p>הייבוא מנסה <code>websockets.asyncio.server</code> ונופל חזרה ל-<code>websockets.server</code>. חתימת <code>handler(ws, path=None)</code> מכסה גם את ה-API הישן שהעביר <code>path</code> וגם את החדש שאינו מעביר.</p>
+
+  <h3>קובץ הצוותים</h3>
+  <p><code>groups.txt</code> — שם צוות בכל שורה, נוצר עם ברירת מחדל אם חסר. נקרא <b>פעם אחת</b> ב-<code>main()</code>. שינוי דורש הפעלה מחדש של השרת.</p>
+</section>
+
+<section>
+  <h2>6. צינור האודיו בדפדפן</h2>
+  <p>זהה בשני הדפים. שני <code>AudioWorkletProcessor</code> נטענים כ-Blob URL, כדי לשמור על קובץ בודד ללא קבצי לוואי.</p>
+  <div class="diagram">
+    <div class="link" style="font-size:8.8pt;">
+      getUserMedia → MediaStreamSource → <b>recorder worklet</b> → ws.send()<br>
+      <span style="color:#94a3b8;">▼</span><br>
+      ws.onmessage → split(4) → <b>player worklet</b> (mix) → destination
+    </div>
+  </div>
+
+  <h3>recorder</h3>
+  <p>ה-worklet מקבל מנות של 128 דגימות מהמנוע וצובר אותן ל-1024 לפני <code>postMessage</code>. ה-<code>ArrayBuffer</code> מועבר ב-transfer list ולא מועתק. הצומת מחובר ל-<code>GainNode</code> עם <code>gain = 0</code> אל היעד, כי צומת ללא חיבור יציאה לא מובטח שיעובד.</p>
+
+  <h3>player</h3>
+  <p>מחזיק <code>Map</code> של תור מנות לכל מזהה שולח. בכל <code>process()</code> נשלפות 128 דגימות מכל תור והן מסוכמות לתוך פס יציאה יחיד, עם <code>clamp</code> ל-±1. זהו המקבילה למיקסר של הגרסה המקורית ב-Python.</p>
+  <p>כל תור מוגבל ל-<b>12288 דגימות</b> (כ-256ms). בחריגה נזרקות המנות הישנות. זו ההגנה היחידה מפני הצטברות השהיה — אין jitter buffer אדפטיבי ואין תיקון סחיפת שעונים.</p>
+  <div class="callout">
+    <span class="h">מדוע אין אובדן מנות</span>
+    WebSocket רץ מעל TCP, ולכן אין אובדן — אבל יש <span class="ltr">head-of-line blocking</span>: מנה שנתקעת מעכבת את כל שאחריה. במימוש UDP המקורי התנהגות זו הייתה הפוכה. בפועל, ברשת מקומית תקינה ההבדל אינו מורגש.
+  </div>
+
+  <h3>התחברות מחדש</h3>
+  <p><code>ws.onclose</code> מתזמן <code>connectSocket()</code> מחדש כל 2 שניות, ללא הגבלה. ה-<code>AudioContext</code> וההרשאה למיקרופון נוצרים פעם אחת ושורדים ניתוקים — רק ה-socket נבנה מחדש.</p>
+</section>
+
+<section>
+  <h2>7. קבועים</h2>
+  <table>
+    <tr><th style="width:34mm;">קבוע</th><th style="width:20mm;">ערך</th><th>מיקום</th></tr>
+    <tr><td><code>HTTP_PORT</code></td><td>8000</td><td><code>server.py:17</code></td></tr>
+    <tr><td><code>WS_PORT</code></td><td>8001</td><td><code>server.py:18</code> · משוכפל בקשיח ב-<code>WS_URL</code> בשני דפי ה-HTML</td></tr>
+    <tr><td><code>SAMPLE_RATE</code></td><td>48000</td><td>שני דפי ה-HTML · חייב להיות זהה בכולם</td></tr>
+    <tr><td><code>CHUNK</code></td><td>1024</td><td>שני דפי ה-HTML · מוטבע בקוד ה-worklet דרך template literal</td></tr>
+    <tr><td>תקרת תור</td><td>12288</td><td>קוד ה-player worklet</td></tr>
+  </table>
+  <div class="callout warn">
+    <span class="h">שכפול קבועים</span>
+    מספר הפורט 8001 מופיע בשלושה מקומות. שינוי דורש עדכון בכל השלושה. חלופה נקייה: לשרת את <code>WS_PORT</code> מהשרת כנקודת קצה קטנה, או להשתמש באותו פורט ל-HTTP ול-WebSocket דרך <code>process_request</code>.
+  </div>
+</section>
+
+<section>
+  <h2>8. מגבלות ידועות</h2>
+  <table>
+    <tr><th style="width:38mm;">נושא</th><th>פירוט</th></tr>
+    <tr><td>אין אימות</td><td>כל מי שמגיע לפורט יכול להתחבר, לבחור שם כרצונו ולקבל תפקיד <code>manager</code>. מתאים לרשת סגורה בלבד.</td></tr>
+    <tr><td>אין הצפנה</td><td><code>ws://</code> ו-<code>http://</code> בלבד. תעבורה גלויה.</td></tr>
+    <tr><td>הקשר מאובטח</td><td>דפדפנים חוסמים <code>getUserMedia</code> מחוץ ל-<code>localhost</code> ב-HTTP. נדרשת הגדרת דגל בכל עמדה, או מעבר ל-HTTPS.</td></tr>
+    <tr><td>רוחב פס</td><td>Float32 לא דחוס — 1.54 Mbps לזרם. ריבועי בגודל הצוות.</td></tr>
+    <tr><td>קצב דגימה</td><td>48000 מבוקש ולא מנוהל משא ומתן. דפדפן שלא יכבד אותו יגרום לעיוות גובה צליל.</td></tr>
+    <tr><td>אין VAD</td><td>המיקרופון משדר גם בשקט מוחלט.</td></tr>
+    <tr><td>שקיפות ניטור</td><td>אין לוג, אין מדדים, אין ניטור. לאבחון — הדפסות ידניות.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>9. נקודות הרחבה</h2>
+  <table>
+    <tr><th style="width:30mm;">שינוי</th><th style="width:22mm;">היקף</th><th>השפעה</th></tr>
+    <tr><td>Int16 במקום Float32</td><td>דפדפן בלבד</td><td>חצי מרוחב הפס. השרת אינו מושפע — הוא מעביר בייטים אטומים</td></tr>
+    <tr><td>הורדה ל-16kHz</td><td>דפדפן בלבד</td><td>פי 3 נוסף. דורש דגימה מחדש (resampling) בצד השולח</td></tr>
+    <tr><td>Push-to-talk / VAD</td><td>דפדפן בלבד</td><td>החיסכון הגדול ביותר — מבטל את התעבורה בזמן שקט</td></tr>
+    <tr><td>אימות</td><td>שדה ב-<code>hello</code></td><td>אימות לפני הרישום ב-<code>peers</code>; השם והצוות נלקחים מהאסימון ולא מהטופס</td></tr>
+    <tr><td>מצב widget</td><td><code>client.html</code></td><td>גרסה מצומצמת ב-iframe, זהות מגיעה ב-<code>postMessage</code>. דורש <code>allow="microphone"</code> במארח</td></tr>
+    <tr><td>TLS</td><td>שרת + דפים</td><td><code>ssl_context</code> ב-<code>serve()</code>, מעבר ל-<code>wss://</code>, ותעודה מהימנה בעמדות</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>10. הרצה מקומית</h2>
+  <pre>pip install websockets
+python server.py
+
+<span class="c"># http://&lt;server-ip&gt;:8000/client.html</span>
+<span class="c"># http://&lt;server-ip&gt;:8000/manager.html</span></pre>
+  <p>הפעלה ראשונה יוצרת <code>groups.txt</code> עם שלושה צוותים לדוגמה. יש לפתוח את פורטים 8000 ו-8001 בחומת האש של מחשב השרת.</p>
+  <p>לבדיקה מהירה על מחשב אחד: פתח שתי לשוניות <code>localhost</code> — אחת מפקד ואחת לקוח. <code>localhost</code> נחשב הקשר מאובטח ולכן המיקרופון עובד ללא הגדרות נוספות.</p>
+</section>
+
+<div class="foot">תיעוד טכני · מערכת אינטרקום · גרסה 1.0</div>
+
+</body>
+</html>

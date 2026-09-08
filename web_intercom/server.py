@@ -74,6 +74,8 @@ def clients_in(group):
 def status_for(peer):
     if st.broadcast:
         return "BROADCAST"
+    if not peer.group:
+        return "STANDBY"
     if peer.group in st.active_groups or st.joined_group == peer.group:
         return "ACTIVE"
     return "STANDBY"
@@ -87,6 +89,8 @@ def audio_targets(sender):
     if sender.role == "manager":
         if st.joined_group:
             return clients_in(st.joined_group)
+        return []
+    if not sender.group:
         return []
     targets = []
     if sender.group in st.active_groups:
@@ -105,22 +109,32 @@ async def send_json(peer, payload):
 
 async def push_state():
     members = {g: [] for g in st.groups}
+    unassigned = []
     for p in st.peers.values():
-        if p.role == "client" and p.group in members:
+        if p.role != "client":
+            continue
+        if p.group in members:
             members[p.group].append(p.name)
+        else:
+            unassigned.append(p.name)
     manager_payload = {
         "type": "state",
         "broadcast": st.broadcast,
         "active": sorted(st.active_groups),
         "joined": st.joined_group,
         "members": members,
+        "unassigned": unassigned,
     }
     tasks = []
     for p in list(st.peers.values()):
         if p.role == "manager":
             tasks.append(send_json(p, manager_payload))
         elif p.role == "client":
-            tasks.append(send_json(p, {"type": "state", "status": status_for(p)}))
+            tasks.append(
+                send_json(
+                    p, {"type": "state", "status": status_for(p), "group": p.group}
+                )
+            )
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -133,16 +147,24 @@ async def handle_control(peer, data):
             peer.role = "manager"
             peer.name = "Commander"
         elif role == "client":
-            group = data.get("group", "")
-            if group not in st.groups:
-                await send_json(peer, {"type": "error", "message": "Unknown team"})
-                return
             peer.role = "client"
             peer.name = (data.get("name") or "Unnamed").strip()[:32]
-            peer.group = group
+            peer.group = ""
         else:
             return
         await send_json(peer, {"type": "welcome", "id": peer.id, "role": peer.role})
+        await push_state()
+        return
+    if kind == "team":
+        if peer.role != "client":
+            return
+        group = data.get("group") or ""
+        if group and group not in st.groups:
+            await send_json(peer, {"type": "error", "message": "Unknown team"})
+            return
+        if group == peer.group:
+            return
+        peer.group = group
         await push_state()
         return
     if peer.role != "manager":

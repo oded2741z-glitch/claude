@@ -48,6 +48,10 @@ input:focus, select:focus { outline:none; border-color:var(--primary-accent); }
 .status-value.active { color:#10b981; }
 .status-value.broadcast { color:var(--primary-accent); }
 .status-meta { font-size:0.95rem; color:var(--text-gray); }
+.team-list { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:0.75rem; }
+.team-btn { background:white; color:var(--text-dark); border:1px solid var(--border-color); border-radius:8px; padding:0.75rem 1rem; font-weight:700; font-size:0.95rem; cursor:pointer; transition:border-color 0.2s, background 0.2s, color 0.2s; }
+.team-btn:hover { border-color:var(--primary-accent); }
+.team-btn.on { background:var(--primary-accent); border-color:var(--primary-accent); color:#fff; }
 .level-track { width:100%; height:8px; background:#eff6ff; border-radius:999px; overflow:hidden; }
 .level-fill { height:100%; width:0%; background:var(--primary-accent); transition:width 0.1s linear; }
 .site-footer { padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; }
@@ -69,16 +73,12 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
 
 <main class="work-wrap">
   <h1>Client Station</h1>
-  <p class="subtitle">Join your team and stay on standby for the commander.</p>
+  <p class="subtitle">Connect with your name, then pick a team when you are ready.</p>
 
   <div class="panel" id="join-panel">
     <div class="field">
       <label for="name">Your Name</label>
       <input id="name" type="text" placeholder="Enter your name" maxlength="32" autocomplete="off">
-    </div>
-    <div class="field">
-      <label for="group">Team</label>
-      <select id="group"></select>
     </div>
     <button class="btn-primary" id="btn-connect" disabled>Connect</button>
     <p class="hint" id="hint">Connecting to server...</p>
@@ -90,6 +90,13 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     <div class="status-meta" id="meta"></div>
     <div class="level-track"><div class="level-fill" id="level"></div></div>
     <button class="btn-outline" id="btn-leave">Disconnect</button>
+  </div>
+
+  <div class="panel" id="team-panel" hidden>
+    <label>Team</label>
+    <div class="team-list" id="team-list"></div>
+    <p class="hint" id="team-hint">Select a team to start receiving.</p>
+    <button class="btn-outline" id="btn-clear-team" hidden>Leave Team</button>
   </div>
 </main>
 
@@ -170,7 +177,8 @@ let recorderNode = null;
 let playerNode = null;
 let analyser = null;
 let status = "STANDBY";
-let joined = false;
+let groups = [];
+let myGroup = "";
 
 const el = (id) => document.getElementById(id);
 
@@ -187,7 +195,34 @@ function applyStatus(value) {
   node.className = "status-value" + (value === "ACTIVE" ? " active" : value === "BROADCAST" ? " broadcast" : "");
   if (value === "BROADCAST") el("meta").textContent = "Commander broadcast in progress. Microphone muted.";
   else if (value === "ACTIVE") el("meta").textContent = "Microphone is live.";
+  else if (!myGroup) el("meta").textContent = "No team selected.";
   else el("meta").textContent = "Waiting for the commander.";
+}
+
+function buildTeams() {
+  const host = el("team-list");
+  host.innerHTML = "";
+  groups.forEach((g) => {
+    const btn = document.createElement("button");
+    btn.className = "team-btn";
+    btn.id = "team-" + g;
+    btn.textContent = g;
+    btn.addEventListener("click", () => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "team", group: g }));
+    });
+    host.appendChild(btn);
+  });
+}
+
+function renderTeams() {
+  groups.forEach((g) => {
+    const btn = el("team-" + g);
+    if (btn) btn.classList.toggle("on", myGroup === g);
+  });
+  el("btn-clear-team").hidden = !myGroup;
+  el("team-hint").textContent = myGroup
+    ? "Switching team takes effect immediately. If the new team is active, your microphone opens at once."
+    : "Select a team to start receiving. Commander broadcasts reach you either way.";
 }
 
 function connectSocket() {
@@ -209,21 +244,20 @@ function connectSocket() {
     }
     const msg = JSON.parse(event.data);
     if (msg.type === "groups") {
-      const select = el("group");
-      select.innerHTML = "";
-      msg.groups.forEach((g) => {
-        const opt = document.createElement("option");
-        opt.value = g;
-        opt.textContent = g;
-        select.appendChild(opt);
-      });
+      groups = msg.groups;
+      buildTeams();
+      renderTeams();
     } else if (msg.type === "welcome") {
-      joined = true;
       el("join-panel").hidden = true;
       el("status-panel").hidden = false;
+      el("team-panel").hidden = false;
+      renderTeams();
     } else if (msg.type === "state") {
+      const switched = msg.group !== myGroup;
+      myGroup = msg.group;
       applyStatus(msg.status);
-      if (playerNode && msg.status === "STANDBY") playerNode.port.postMessage({ clear: true });
+      renderTeams();
+      if (playerNode && (switched || msg.status === "STANDBY")) playerNode.port.postMessage({ clear: true });
     } else if (msg.type === "error") {
       setHint(msg.message);
     }
@@ -284,9 +318,7 @@ function drawLevel() {
 
 el("btn-connect").addEventListener("click", async () => {
   const name = el("name").value.trim();
-  const group = el("group").value;
   if (!name) { setHint("Please enter your name."); return; }
-  if (!group) { setHint("No teams available."); return; }
   el("btn-connect").disabled = true;
   try {
     if (!ctx) await startAudio();
@@ -295,7 +327,11 @@ el("btn-connect").addEventListener("click", async () => {
     setHint("Microphone access is required.");
     return;
   }
-  ws.send(JSON.stringify({ type: "hello", role: "client", name: name, group: group }));
+  ws.send(JSON.stringify({ type: "hello", role: "client", name: name }));
+});
+
+el("btn-clear-team").addEventListener("click", () => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "team", group: "" }));
 });
 
 el("btn-leave").addEventListener("click", () => { location.reload(); });

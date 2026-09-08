@@ -92,6 +92,13 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     <div class="section-label" style="margin-top:2rem;">Teams</div>
     <div id="rows"></div>
 
+    <div class="row" id="unassigned-row" hidden>
+      <div class="row-info">
+        <span class="row-title">Unassigned</span>
+        <span class="row-meta" id="unassigned-meta"></span>
+      </div>
+    </div>
+
     <div class="panel">
       <span class="row-meta">Microphone Level</span>
       <div class="level-track"><div class="level-fill" id="level"></div></div>
@@ -176,7 +183,7 @@ let playerNode = null;
 let analyser = null;
 let inCommand = false;
 let groups = [];
-let state = { broadcast: false, active: [], joined: null, members: {} };
+let state = { broadcast: false, active: [], joined: null, members: {}, unassigned: [] };
 
 const el = (id) => document.getElementById(id);
 
@@ -257,6 +264,12 @@ function render() {
     groupBtn.disabled = state.broadcast;
     meta.textContent = members.length ? members.length + " online: " + members.join(", ") : "No stations online";
   });
+
+  const waiting = state.unassigned;
+  el("unassigned-row").hidden = waiting.length === 0;
+  el("unassigned-meta").textContent = waiting.length
+    ? waiting.length + " connected without a team: " + waiting.join(", ")
+    : "";
 }
 
 function send(payload) {
@@ -294,7 +307,7 @@ function connectSocket() {
       el("console").hidden = false;
     } else if (msg.type === "state") {
       const wasJoined = state.joined;
-      state = { broadcast: msg.broadcast, active: msg.active, joined: msg.joined, members: msg.members };
+      state = { broadcast: msg.broadcast, active: msg.active, joined: msg.joined, members: msg.members, unassigned: msg.unassigned || [] };
       if (playerNode && wasJoined !== msg.joined) playerNode.port.postMessage({ clear: true });
       render();
     }
@@ -304,7 +317,7 @@ function connectSocket() {
     el("conn-dot").classList.add("off");
     el("conn-text").textContent = "Offline";
     el("btn-start").disabled = true;
-    state = { broadcast: false, active: [], joined: null, members: {} };
+    state = { broadcast: false, active: [], joined: null, members: {}, unassigned: [] };
     render();
     setTimeout(connectSocket, 2000);
   };

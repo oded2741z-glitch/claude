@@ -18,14 +18,13 @@ try:
 except Exception:
     TRAY_AVAILABLE = False
 
-BG_COLOR = "#121212"
-PANEL_COLOR = "#1E1E1E"
-ACCENT_COLOR = "#B3600A"
+BG_COLOR = "#2E2E2E"
+ACCENT_COLOR = "#389379"
 TEXT_COLOR = "#FFFFFF"
 MUTED_COLOR = "#888888"
 BTN_COLOR = "#333333"
-QUIT_COLOR = "#9E3B32"
-BROADCAST_COLOR = "#9E3B32"
+QUIT_COLOR = "#FF0000"
+BROADCAST_COLOR = "#FF9900"
 
 CTRL_PORT = 5001
 AUDIO_PORT = 6000
@@ -203,7 +202,7 @@ class AudioEngine:
         s.close()
 
 
-STATE_COLORS = {"STANDBY": MUTED_COLOR, "ACTIVE": ACCENT_COLOR, "BROADCAST": BROADCAST_COLOR}
+STATE_COLORS = {"STANDBY": TEXT_COLOR, "ACTIVE": ACCENT_COLOR, "BROADCAST": BROADCAST_COLOR}
 SETTINGS_FILE = "client_settings.txt"
 
 
@@ -333,7 +332,7 @@ class IntercomClient:
         ctk.CTkLabel(self.root, text="oT", font=("Arial", 10), text_color=MUTED_COLOR).place(relx=0.99, rely=0.99, anchor="se")
 
     def build_ui(self):
-        self.status_lbl = ctk.CTkLabel(self.root, text="STANDBY", font=("Arial", 22, "bold"), text_color=MUTED_COLOR)
+        self.status_lbl = ctk.CTkLabel(self.root, text="STANDBY", font=("Arial", 22, "bold"), text_color=TEXT_COLOR)
         self.status_lbl.pack(expand=True)
 
         self.minimized_var = ctk.BooleanVar(value=self.start_minimized)

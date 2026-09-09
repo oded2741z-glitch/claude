@@ -11,14 +11,13 @@ import json
 import random
 import time
 
-BG_COLOR = "#121212"
-PANEL_COLOR = "#1E1E1E"
-ACCENT_COLOR = "#B3600A"
+BG_COLOR = "#2E2E2E"
+ACCENT_COLOR = "#389379"
 TEXT_COLOR = "#FFFFFF"
 MUTED_COLOR = "#888888"
 BTN_COLOR = "#333333"
-QUIT_COLOR = "#9E3B32"
-BROADCAST_COLOR = "#9E3B32"
+QUIT_COLOR = "#FF0000"
+BROADCAST_COLOR = "#FF9900"
 
 CTRL_PORT = 5001
 AUDIO_PORT = 6000
@@ -300,7 +299,7 @@ class IntercomManager:
         container = ctk.CTkFrame(self.root, fg_color=BG_COLOR)
         container.pack(fill="both", expand=True, padx=20, pady=10)
 
-        broadcast_row = ctk.CTkFrame(container, fg_color=PANEL_COLOR, border_width=2, border_color=BROADCAST_COLOR, corner_radius=0)
+        broadcast_row = ctk.CTkFrame(container, fg_color=BG_COLOR, border_width=2, border_color=BROADCAST_COLOR, corner_radius=0)
         broadcast_row.pack(fill="x", pady=(0, 15))
 
         ctk.CTkLabel(broadcast_row, text="Commandar BROADCAST", font=("Arial", 14, "bold"), text_color=BROADCAST_COLOR).pack(side="left", padx=15, pady=12)
@@ -309,7 +308,7 @@ class IntercomManager:
         self.btn_broadcast.pack(side="right", padx=15, pady=12)
 
         for gname in self.groups:
-            row = ctk.CTkFrame(container, fg_color=PANEL_COLOR, border_width=1, border_color=ACCENT_COLOR, corner_radius=0)
+            row = ctk.CTkFrame(container, fg_color=BG_COLOR, border_width=1, border_color=ACCENT_COLOR, corner_radius=0)
             row.pack(fill="x", pady=5)
 
             ctk.CTkLabel(row, text=gname, font=("Arial", 14), text_color=TEXT_COLOR).pack(side="left", padx=15, pady=12)
@@ -463,7 +462,7 @@ class IntercomManager:
             self.is_broadcasting = not self.is_broadcasting
             broadcasting = self.is_broadcasting
         if broadcasting:
-            self.btn_broadcast.configure(text="ACTIVE", fg_color=BROADCAST_COLOR, text_color=TEXT_COLOR)
+            self.btn_broadcast.configure(text="ACTIVE", fg_color=BROADCAST_COLOR, text_color="#000000")
         else:
             self.btn_broadcast.configure(text="INACTIVE", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
         for btn in list(self.group_buttons.values()) + list(self.join_buttons.values()):

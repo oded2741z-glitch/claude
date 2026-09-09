@@ -212,6 +212,7 @@ class IntercomManager:
         self.all_ips = set()
         self.active_groups = set()
         self.joined_group = None
+        self.all_active = False
         self.join_buttons = {}
         self.group_buttons = {}
 
@@ -293,7 +294,7 @@ class IntercomManager:
     def build_ui(self):
         self.load_groups()
 
-        win_height = 60 + (len(self.groups) * 60) + 90
+        win_height = 60 + ((len(self.groups) + 1) * 60) + 90
         self.root.geometry(f"550x{win_height}")
 
         container = ctk.CTkFrame(self.root, fg_color=BG_COLOR)
@@ -306,6 +307,14 @@ class IntercomManager:
 
         self.btn_broadcast = ctk.CTkButton(broadcast_row, text="INACTIVE", width=100, fg_color=BTN_COLOR, text_color=TEXT_COLOR, corner_radius=0, command=self.toggle_broadcast)
         self.btn_broadcast.pack(side="right", padx=15, pady=12)
+
+        all_row = ctk.CTkFrame(container, fg_color=BG_COLOR, border_width=2, border_color=ACCENT_COLOR, corner_radius=0)
+        all_row.pack(fill="x", pady=(0, 15))
+
+        ctk.CTkLabel(all_row, text="ALL STATIONS", font=("Arial", 14, "bold"), text_color=ACCENT_COLOR).pack(side="left", padx=15, pady=12)
+
+        self.btn_all = ctk.CTkButton(all_row, text="INACTIVE", width=100, fg_color=BTN_COLOR, text_color=TEXT_COLOR, corner_radius=0, command=self.toggle_all)
+        self.btn_all.pack(side="right", padx=15, pady=12)
 
         for gname in self.groups:
             row = ctk.CTkFrame(container, fg_color=BG_COLOR, border_width=1, border_color=ACCENT_COLOR, corner_radius=0)
@@ -328,16 +337,22 @@ class IntercomManager:
         with self.state_lock:
             if self.is_broadcasting:
                 return "BROADCAST", []
-            peers = set()
-            active = False
-            for gname in self.active_groups:
-                members = self.groups.get(gname, set())
-                if ip in members:
+            if self.all_active:
+                peers = set(self.all_ips) | {self.my_ip}
+                active = ip in self.all_ips
+            else:
+                peers = set()
+                active = False
+                for gname in self.active_groups:
+                    members = self.groups.get(gname, set())
+                    if ip in members:
+                        active = True
+                        peers |= members - {ip}
+                if self.joined_group and ip in self.groups.get(self.joined_group, set()):
                     active = True
-                    peers |= members - {ip}
-            if self.joined_group and ip in self.groups.get(self.joined_group, set()):
-                active = True
-                peers.add(self.my_ip)
+                    peers.add(self.my_ip)
+        if not active:
+            peers = set()
         peers.discard(ip)
         return ("ACTIVE" if active else "STANDBY"), sorted(peers)
 
@@ -412,7 +427,7 @@ class IntercomManager:
 
     def tx_targets(self):
         with self.state_lock:
-            if self.is_broadcasting:
+            if self.is_broadcasting or self.all_active:
                 return [ip for ip in self.all_ips if ip != self.my_ip]
             if self.joined_group:
                 return [ip for ip in self.groups.get(self.joined_group, set()) if ip != self.my_ip]
@@ -422,13 +437,41 @@ class IntercomManager:
         with self.state_lock:
             if self.is_broadcasting:
                 return False
+            if self.all_active:
+                return ip in self.all_ips
             if self.joined_group:
                 return ip in self.groups.get(self.joined_group, set())
             return False
 
-    def toggle_group(self, gname):
+    def set_group_controls(self, enabled):
+        state = "normal" if enabled else "disabled"
+        for btn in list(self.group_buttons.values()) + list(self.join_buttons.values()):
+            btn.configure(state=state)
+
+    def toggle_all(self):
         with self.state_lock:
             if self.is_broadcasting:
+                return
+            self.all_active = not self.all_active
+            active = self.all_active
+            if active:
+                self.active_groups.clear()
+                self.joined_group = None
+        if active:
+            self.btn_all.configure(text="ACTIVE", fg_color=ACCENT_COLOR, text_color="#000000")
+            for btn in self.group_buttons.values():
+                btn.configure(text="INACTIVE", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
+            for btn in self.join_buttons.values():
+                btn.configure(text="JOIN", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
+        else:
+            self.btn_all.configure(text="INACTIVE", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
+        self.set_group_controls(not active)
+        self.audio.clear()
+        self.push_state()
+
+    def toggle_group(self, gname):
+        with self.state_lock:
+            if self.is_broadcasting or self.all_active:
                 return
             if gname in self.active_groups:
                 self.active_groups.discard(gname)
@@ -445,7 +488,7 @@ class IntercomManager:
 
     def toggle_join(self, gname):
         with self.state_lock:
-            if self.is_broadcasting:
+            if self.is_broadcasting or self.all_active:
                 return
             self.joined_group = None if self.joined_group == gname else gname
             joined = self.joined_group
@@ -465,15 +508,17 @@ class IntercomManager:
             self.btn_broadcast.configure(text="ACTIVE", fg_color=BROADCAST_COLOR, text_color="#000000")
         else:
             self.btn_broadcast.configure(text="INACTIVE", fg_color=BTN_COLOR, text_color=TEXT_COLOR)
-        for btn in list(self.group_buttons.values()) + list(self.join_buttons.values()):
-            btn.configure(state="disabled" if broadcasting else "normal")
+        self.btn_all.configure(state="disabled" if broadcasting else "normal")
+        self.set_group_controls(not broadcasting and not self.all_active)
         self.audio.clear()
         self.push_state()
 
     def on_quit(self):
-        self.is_broadcasting = False
-        self.active_groups.clear()
-        self.joined_group = None
+        with self.state_lock:
+            self.is_broadcasting = False
+            self.all_active = False
+            self.active_groups.clear()
+            self.joined_group = None
         self.push_state()
         time.sleep(0.2)
         self.root.destroy()

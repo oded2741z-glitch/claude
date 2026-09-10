@@ -712,7 +712,9 @@ class IntercomGUI:
             if self._mark_headphones(client_id, connected, addr):
                 if connected:
                     self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
-                    self.start_ring()
+                    # לא מצלצלים באמצע שיחה - הביפ ייכנס לאודיו החי
+                    if not self.is_running:
+                        self.start_ring()
                 else:
                     self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
                     self.stop_ring()
@@ -735,7 +737,8 @@ class IntercomGUI:
         # רישום להצמדה. לקוח שנרשם בהכרח מחזיק אוזניות תקינות.
         if self._mark_headphones(client_id, True, addr):
             self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
-            self.start_ring()
+            if not self.is_running:
+                self.start_ring()
         if client_id not in clients:
             self.log(f"[Server] {client_id}: registered, waiting for a match.", "purple")
         clients[client_id] = (addr, now)

@@ -96,6 +96,14 @@ It exits 0 once the node's status file agrees, 1 if nothing picked the change
 up — so a script can tell "switched" from "nobody is listening". It is
 standalone: copy it next to the node and it works.
 
+`toggle_gui.py` is the same thing as a window: one big ON/OFF button that
+follows the node's live state. It needs `toggle_call.py` beside it. This is an
+operator tool on someone's desktop — the node itself stays headless.
+
+```bash
+python toggle_gui.py
+```
+
 The node creates this file on first start, next to the control file, holding
 whatever state it is already in. `on`/`off`/`start`/`stop`/`1`/`0`/`true`/`false`
 all work. The other settings are never touched, and whichever of the two files
@@ -141,6 +149,7 @@ python tests/selftest.py
 | `signalling.py` | UDP rendezvous server — matches two peers, never carries audio |
 | `txt_bridge.py` | control/status TXT files |
 | `toggle_call.py` | standalone on/off utility for the deployed machine |
+| `toggle_gui.py` | the same, as a one-button window |
 | `deploy/` | installers for Windows and Linux |
 | `docs/USER_GUIDE.he.md` | operator guide, in Hebrew |
 | `legacy_gui/` | the original Tkinter version, kept for reference only |

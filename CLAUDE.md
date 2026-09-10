@@ -4,10 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A two-machine P2P voice intercom over UDP with NAT hole punching. **Console
-only — nothing in the active code imports tkinter**, and no code path may
-require a display or a keypress. Both target machines run headless; every
+A two-machine P2P voice intercom over UDP with NAT hole punching. **The node
+is console only — nothing it runs may import tkinter**, and no code path in it
+may require a display or a keypress. Both target machines run headless; every
 action the old GUI had behind a button is now a line in a TXT file.
+
+`toggle_gui.py` is the single, deliberate exception: an operator tool that a
+person starts on a desktop to click a button. The node never imports it and
+never depends on it, so the headless rule above is unaffected. Keep it that
+way — no GUI code may become part of a path the node needs.
 
 | File | Role |
 |---|---|
@@ -17,6 +22,7 @@ action the old GUI had behind a button is now a line in a TXT file.
 | `txt_bridge.py` | `ControlFile` / `StatusFile` — the TXT bridge |
 | `intercom_A.py`, `intercom_B.py` | **generated, never edit by hand** — one self-contained file per machine, which is what actually gets deployed |
 | `build_single_file.py` | regenerates those two |
+| `toggle_gui.py` | one-button operator window (tkinter). Imports `toggle_call` so the switch file has one writer; ships beside it |
 | `toggle_call.py` | operator utility that flips the switch file. **Standalone by design** — it imports nothing from this project, because a deployed machine holds only `intercom_<ROLE>.py` (or the .exe) |
 | `deploy/` | Windows (`schtasks`) and Linux (systemd **user** unit) installers. Both deliberately install into a login session, never as a true service — a Session 0 service has no audio device |
 | `docs/USER_GUIDE.he.md` | the operator-facing guide, in Hebrew. Update it when a control/status field changes |

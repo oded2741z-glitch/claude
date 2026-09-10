@@ -17,6 +17,7 @@ action the old GUI had behind a button is now a line in a TXT file.
 | `txt_bridge.py` | `ControlFile` / `StatusFile` — the TXT bridge |
 | `intercom_A.py`, `intercom_B.py` | **generated, never edit by hand** — one self-contained file per machine, which is what actually gets deployed |
 | `build_single_file.py` | regenerates those two |
+| `toggle_call.py` | operator utility that flips the switch file. **Standalone by design** — it imports nothing from this project, because a deployed machine holds only `intercom_<ROLE>.py` (or the .exe) |
 | `deploy/` | Windows (`schtasks`) and Linux (systemd **user** unit) installers. Both deliberately install into a login session, never as a true service — a Session 0 service has no audio device |
 | `docs/USER_GUIDE.he.md` | the operator-facing guide, in Hebrew. Update it when a control/status field changes |
 | `docs/build_pdf.py` | renders that guide to `USER_GUIDE.he.pdf` via headless Chromium. Rerun after editing the guide — the PDF is committed output, like the bundles |

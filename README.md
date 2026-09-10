@@ -84,6 +84,18 @@ echo on   > switch_A.txt      # opens it
 echo quit > switch_A.txt      # shuts the node down
 ```
 
+`toggle_call.py` does this for you, and waits for the node to confirm:
+
+```bash
+python toggle_call.py          # on <-> off
+python toggle_call.py off      # force
+python toggle_call.py --role B # act on switch_B.txt
+```
+
+It exits 0 once the node's status file agrees, 1 if nothing picked the change
+up — so a script can tell "switched" from "nobody is listening". It is
+standalone: copy it next to the node and it works.
+
 The node creates this file on first start, next to the control file, holding
 whatever state it is already in. `on`/`off`/`start`/`stop`/`1`/`0`/`true`/`false`
 all work. The other settings are never touched, and whichever of the two files
@@ -128,6 +140,7 @@ python tests/selftest.py
 | `intercom_core.py` | wire protocol, PortAudio guards, the peer/call loop |
 | `signalling.py` | UDP rendezvous server — matches two peers, never carries audio |
 | `txt_bridge.py` | control/status TXT files |
+| `toggle_call.py` | standalone on/off utility for the deployed machine |
 | `deploy/` | installers for Windows and Linux |
 | `docs/USER_GUIDE.he.md` | operator guide, in Hebrew |
 | `legacy_gui/` | the original Tkinter version, kept for reference only |

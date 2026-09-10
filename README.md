@@ -96,9 +96,10 @@ It exits 0 once the node's status file agrees, 1 if nothing picked the change
 up — so a script can tell "switched" from "nobody is listening". It is
 standalone: copy it next to the node and it works.
 
-`toggle_gui.py` is the same thing as a window: one big ON/OFF button that
-follows the node's live state. It needs `toggle_call.py` beside it. This is an
-operator tool on someone's desktop — the node itself stays headless.
+`toggle_gui.py` is a single-file window with one big ON/OFF button. Drop it
+into the folder next to `switch_A.txt` and run it — it looks for the file next
+to itself, so a desktop shortcut works from anywhere. This is an operator tool;
+the node itself stays headless.
 
 ```bash
 python toggle_gui.py

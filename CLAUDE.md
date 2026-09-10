@@ -22,7 +22,7 @@ way — no GUI code may become part of a path the node needs.
 | `txt_bridge.py` | `ControlFile` / `StatusFile` — the TXT bridge |
 | `intercom_A.py`, `intercom_B.py` | **generated, never edit by hand** — one self-contained file per machine, which is what actually gets deployed |
 | `build_single_file.py` | regenerates those two |
-| `toggle_gui.py` | one-button operator window (tkinter). Imports `toggle_call` so the switch file has one writer; ships beside it |
+| `toggle_gui.py` | one-button operator window (tkinter). **Standalone, one file** — the user asked for exactly that; drop it into the folder next to `switch_A.txt`. Finds the file next to itself, not in the cwd |
 | `toggle_call.py` | operator utility that flips the switch file. **Standalone by design** — it imports nothing from this project, because a deployed machine holds only `intercom_<ROLE>.py` (or the .exe) |
 | `deploy/` | Windows (`schtasks`) and Linux (systemd **user** unit) installers. Both deliberately install into a login session, never as a true service — a Session 0 service has no audio device |
 | `docs/USER_GUIDE.he.md` | the operator-facing guide, in Hebrew. Update it when a control/status field changes |

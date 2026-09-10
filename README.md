@@ -6,6 +6,24 @@ can rewrite while the node is running.
 
 ## Install
 
+Scripted, one command per machine:
+
+```bash
+deploy\windows\install.bat A                  # Windows, computer A
+deploy\windows\install.bat B 192.168.1.10     # Windows, computer B
+./deploy/linux/install.sh a                    # Linux, computer A
+./deploy/linux/install.sh b 192.168.1.10       # Linux, computer B
+```
+
+They install the dependencies, copy the single file for that role, create
+on/off shortcuts, and register it to start at logon (inside the user session,
+never as a Session 0 service — audio would be silent there).
+
+For the operator, not the developer: **[docs/USER_GUIDE.he.md](docs/USER_GUIDE.he.md)**
+(Hebrew) covers install, daily use, the status fields and troubleshooting.
+
+## Install by hand
+
 ```bash
 pip install sounddevice numpy
 # Linux also needs PortAudio:  sudo apt install libportaudio2
@@ -104,4 +122,6 @@ python tests/selftest.py
 | `intercom_core.py` | wire protocol, PortAudio guards, the peer/call loop |
 | `signalling.py` | UDP rendezvous server — matches two peers, never carries audio |
 | `txt_bridge.py` | control/status TXT files |
+| `deploy/` | installers for Windows and Linux |
+| `docs/USER_GUIDE.he.md` | operator guide, in Hebrew |
 | `legacy_gui/` | the original Tkinter version, kept for reference only |

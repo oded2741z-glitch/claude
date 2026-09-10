@@ -17,6 +17,8 @@ action the old GUI had behind a button is now a line in a TXT file.
 | `txt_bridge.py` | `ControlFile` / `StatusFile` — the TXT bridge |
 | `intercom_A.py`, `intercom_B.py` | **generated, never edit by hand** — one self-contained file per machine, which is what actually gets deployed |
 | `build_single_file.py` | regenerates those two |
+| `deploy/` | Windows (`schtasks`) and Linux (systemd **user** unit) installers. Both deliberately install into a login session, never as a true service — a Session 0 service has no audio device |
+| `docs/USER_GUIDE.he.md` | the operator-facing guide, in Hebrew. Update it when a control/status field changes |
 | `legacy_gui/` | the original Tkinter `server.py` + `clint.py`. **Reference only, not deployed** — do not fix bugs there, and do not import from it |
 
 **Edit the modules, then run `python build_single_file.py`.** The bundles are
@@ -140,3 +142,7 @@ Rules that must survive any edit here:
 Inline comments are in Hebrew and explain *why* a guard exists (crash modes,
 NAT quirks, race conditions); docstrings, log output and file contents are in
 English. Match that split when editing.
+
+The one exception is `deploy/windows/*.bat`: keep those pure ASCII. The CMD
+console runs under a non-UTF-8 codepage, so Hebrew there renders as garbage
+and can break parsing. Hebrew for users belongs in `docs/USER_GUIDE.he.md`.

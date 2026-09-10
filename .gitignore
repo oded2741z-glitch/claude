@@ -11,3 +11,8 @@ status_B.txt
 settings.txt
 settings_A.txt
 tests/_selftest_run/
+
+# PyInstaller output
+dist/
+build/
+*.spec

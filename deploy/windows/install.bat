@@ -33,6 +33,16 @@ echo.
 echo === P2P Intercom installer - role %ROLE% ===
 echo.
 
+REM A prebuilt .exe (see build_exe.bat) needs no Python on this machine.
+set "EXE="
+if exist "%SRC%\dist\intercom_%ROLE%.exe" set "EXE=%SRC%\dist\intercom_%ROLE%.exe"
+if exist "%SRC%\intercom_%ROLE%.exe" set "EXE=%SRC%\intercom_%ROLE%.exe"
+if defined EXE (
+    echo [1/6] Found a prebuilt executable - skipping the Python setup.
+    echo [2/6] No dependencies needed.
+    goto files
+)
+
 REM --- 1. Python -------------------------------------------------------------
 where python >nul 2>&1
 if errorlevel 1 (
@@ -56,14 +66,19 @@ if errorlevel 1 (
 )
 
 REM --- 3. Files --------------------------------------------------------------
+:files
 echo [3/6] Copying to %DEST% ...
 if not exist "%DEST%" mkdir "%DEST%"
-if not exist "%SRC%\intercom_%ROLE%.py" (
-    echo [X] Cannot find "%SRC%\intercom_%ROLE%.py".
-    echo     Run this from the deploy\windows folder of the project.
-    exit /b 1
+if defined EXE (
+    copy /Y "%EXE%" "%DEST%\" >nul
+) else (
+    if not exist "%SRC%\intercom_%ROLE%.py" (
+        echo [X] Cannot find "%SRC%\intercom_%ROLE%.py".
+        echo     Run this from the deploy\windows folder of the project.
+        exit /b 1
+    )
+    copy /Y "%SRC%\intercom_%ROLE%.py" "%DEST%\" >nul
 )
-copy /Y "%SRC%\intercom_%ROLE%.py" "%DEST%\" >nul
 
 REM --- 4. Launcher and shortcuts --------------------------------------------
 echo [4/6] Writing launcher and on/off shortcuts...
@@ -71,9 +86,12 @@ set "ARGS=--log-file %DEST%\node.log"
 if /I "%ROLE%"=="B" if not "%SERVER_IP%"=="" set "ARGS=--server-ip %SERVER_IP% %ARGS%"
 
 REM pythonw runs without a console window; the log file is where output goes
+set "LAUNCH=pythonw intercom_%ROLE%.py"
+if defined EXE set "LAUNCH=intercom_%ROLE%.exe"
+
 > "%DEST%\run.bat" echo @echo off
 >>"%DEST%\run.bat" echo cd /d "%DEST%"
->>"%DEST%\run.bat" echo pythonw intercom_%ROLE%.py %ARGS%
+>>"%DEST%\run.bat" echo %LAUNCH% %ARGS%
 
 REM No space before the > : "echo on > file" would write "on " with a trailing space
 > "%DEST%\on.bat"  echo @echo on^> "%DEST%\switch_%ROLE%.txt"

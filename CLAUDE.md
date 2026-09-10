@@ -19,6 +19,7 @@ action the old GUI had behind a button is now a line in a TXT file.
 | `build_single_file.py` | regenerates those two |
 | `deploy/` | Windows (`schtasks`) and Linux (systemd **user** unit) installers. Both deliberately install into a login session, never as a true service — a Session 0 service has no audio device |
 | `docs/USER_GUIDE.he.md` | the operator-facing guide, in Hebrew. Update it when a control/status field changes |
+| `docs/build_pdf.py` | renders that guide to `USER_GUIDE.he.pdf` via headless Chromium. Rerun after editing the guide — the PDF is committed output, like the bundles |
 | `legacy_gui/` | the original Tkinter `server.py` + `clint.py`. **Reference only, not deployed** — do not fix bugs there, and do not import from it |
 
 **Edit the modules, then run `python build_single_file.py`.** The bundles are
@@ -142,6 +143,13 @@ Rules that must survive any edit here:
 Inline comments are in Hebrew and explain *why* a guard exists (crash modes,
 NAT quirks, race conditions); docstrings, log output and file contents are in
 English. Match that split when editing.
+
+Two notes for the Hebrew guide and its PDF: the PDF goes through headless
+Chromium, not a PDF library, because the browser does bidi reordering and
+shaping correctly where ReportLab and friends lay Hebrew runs out backwards.
+And never put Hebrew inside a fenced code block there — the block is LTR, so
+an annotation next to a command comes out scrambled. Put the command in the
+block and the Hebrew in a list or table beside it.
 
 The one exception is `deploy/windows/*.bat`: keep those pure ASCII. The CMD
 console runs under a non-UTF-8 codepage, so Hebrew there renders as garbage

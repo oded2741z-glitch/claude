@@ -19,8 +19,14 @@ They install the dependencies, copy the single file for that role, create
 on/off shortcuts, and register it to start at logon (inside the user session,
 never as a Session 0 service — audio would be silent there).
 
+To skip Python on the target machines entirely, build standalone executables
+once on any Windows box that has Python — `deploy\windows\build_exe.bat`
+produces `dist\intercom_A.exe` and `dist\intercom_B.exe`, and `install.bat`
+uses them automatically when it finds them.
+
 For the operator, not the developer: **[docs/USER_GUIDE.he.md](docs/USER_GUIDE.he.md)**
-(Hebrew) covers install, daily use, the status fields and troubleshooting.
+(Hebrew, also as [PDF](docs/USER_GUIDE.he.pdf)) covers install, daily use, the
+status fields and troubleshooting.
 
 ## Install by hand
 

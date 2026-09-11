@@ -83,7 +83,7 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
 
 ### Config files (all plain text, in the working directory)
 
-- `displays_map.txt`: header lines `CONFIG: SIZE, w, h`, `CONFIG: GRID, rows, cols`, `CONFIG: LINK, a, b`;
+- `displays_map.txt`: header lines `CONFIG: GRID, rows, cols` and `CONFIG: LINK, a, b` (an old `CONFIG: SIZE` line is ignored);
   then one CSV row per node with 10 fields: `label, type(Screen|GPU), info1, info2, res, offset, primary,
   row, col, span`. `offset` is `X:0 Y:0` and `res` is `1920x1080`; the controller parses both.
 - `targets.txt`: `name|url` per line.

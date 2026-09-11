@@ -23,8 +23,9 @@ The controller normally launches viewers itself as subprocesses (`viewer.py`, or
 executable when frozen). Dependencies: `customtkinter`, `PyQt5`, `PyQtWebEngine`, `python-socketio`,
 `eventlet`, `keyboard`. `winsound`, `ctypes.windll`, `os.startfile` and `taskkill` make the code Windows-only.
 
-Hotkeys: F4 hides/shows the controller and every viewer; F8 hides/shows the configurator. The `oT`
-watermark in the viewer's bottom-right corner closes it on click.
+Hotkey: F8 hides/shows the configurator. There is no viewer/controller hotkey; the `oT` watermark in the
+viewer's bottom-right corner closes it on click, and the controller has a Quit button. The controller
+appends every log line to `controller.log` next to the scripts.
 
 ## Architecture
 
@@ -32,8 +33,9 @@ watermark in the viewer's bottom-right corner closes it on click.
 
 `display_controller.py` starts a `socketio.Server` (eventlet, port 5000) in a daemon thread and then
 connects to it as a *client* like any viewer. All state flows through the server; the controller never
-talks to a viewer directly. `shared.py` holds `SERVER_URL` (127.0.0.1) plus the loaders for `config.txt`
-and `targets.txt`; to run viewers on other machines, change `SERVER_URL` in the viewer's copy.
+talks to a viewer directly. `shared.py` holds the loaders for `config.txt` and `targets.txt` and derives
+`SERVER_URL` from the `server_url` key in `config.txt` (default 127.0.0.1:5000); a viewer on another
+machine needs its own `config.txt` pointing at the controller's IP.
 
 Server-side dicts: `room_state` (per-screen payload), `networked_viewers` (label -> layout),
 `sid_to_target`. Events:
@@ -54,7 +56,9 @@ Server-side dicts: `room_state` (per-screen payload), `networked_viewers` (label
 `"fullscreen"` = quad index or `"-1"`, `"blackout"` = `"True"`/`"False"`. Updates are merges, so a
 partial payload (e.g. only `blackout`) is valid. The viewer resolves a URL without `://` by prefixing
 `http://`; an empty URL shows the placeholder HTML (Lottie from `loading.json` if present, else a CSS spinner,
-or plain text when `show_animation=False`).
+or plain text when `show_animation=False`), and blackout shows a plain black page. Every state update is
+applied to both the grid frames and the fullscreen frame (`ContentFrame.show_content` only reloads when
+the URL actually changed).
 
 ### Identity is the screen label string
 
@@ -83,16 +87,20 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
   then one CSV row per node with 10 fields: `label, type(Screen|GPU), info1, info2, res, offset, primary,
   row, col, span`. `offset` is `X:0 Y:0` and `res` is `1920x1080`; the controller parses both.
 - `targets.txt`: `name|url` per line.
-- `config.txt`: `key=value`; booleans are the strings `True`/`False`.
+- `config.txt`: `key=value`; booleans are the strings `True`/`False`. Keys in use: `show_header`,
+  `show_animation`, `server_url`, `default_scene`. Always write it through `shared.update_config` so
+  keys set by another tool (the controller's `default_scene`) survive.
 - `viewer_layouts.json`: viewer-side per-layout window size, saved by the resize grip.
 
 ## Gotchas
 
-- `display_configurator.py`'s `__main__` block and `on_close` reference `DisplayController` / `self.destroy`,
-  which do not exist there; the working entry point is `DisplayConfigurator(ctk.CTk())` + `root.mainloop()`.
 - `COLORS`, the frameless drag-header code and the help popup are duplicated in the controller and the
   configurator; keep them in sync when changing the look. The accent is `#389379` in both.
 - All windows use `overrideredirect(True)`; there is no native title bar, so every window needs its own
   Quit button and drag handle.
 - The Lottie placeholder loads `lottie.min.js` from cdnjs, so viewers without internet fall back to the
   static spinner only if `loading.json` is absent.
+- Snapshots grab the quad's rectangle from the screen compositor (`QScreen.grabWindow`) because
+  `QWebEngineView.grab()` returns black for GPU-rendered video; the viewer must be visible for this to work.
+- Hotkeys from the `keyboard` library fire on a background thread; always hop to the tkinter thread with
+  `root.after(0, ...)` as the configurator's F8 handler does.

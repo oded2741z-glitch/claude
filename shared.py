@@ -1,12 +1,13 @@
 import os
 
-SERVER_URL = "http://127.0.0.1:5000"
 CONFIG_FILE = "config.txt"
 TARGETS_FILE = "targets.txt"
 SNAPSHOTS_DIR = "snapshots"
+DEFAULT_SERVER_URL = "http://127.0.0.1:5000"
+
 
 def load_config():
-    config = {"width": "1200", "height": "800", "show_header": "True", "target_display": "0"}
+    config = {"show_header": "True", "show_animation": "True", "server_url": DEFAULT_SERVER_URL}
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -14,17 +15,23 @@ def load_config():
                     if "=" in line:
                         k, v = line.strip().split("=", 1)
                         config[k] = v
-        except: pass
+        except Exception:
+            pass
     return config
 
-def update_config(updates):
+
+def update_config(updates, remove=()):
     config = load_config()
     config.update(updates)
+    for k in remove:
+        config.pop(k, None)
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             for k, v in config.items():
                 f.write(f"{k}={v}\n")
-    except: pass
+    except Exception:
+        pass
+
 
 def load_targets():
     targets = []
@@ -35,5 +42,9 @@ def load_targets():
                     if "|" in line:
                         name, url = line.strip().split("|", 1)
                         targets.append({"name": name, "url": url})
-        except: pass
+        except Exception:
+            pass
     return targets
+
+
+SERVER_URL = load_config().get("server_url", DEFAULT_SERVER_URL).strip() or DEFAULT_SERVER_URL

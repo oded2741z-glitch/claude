@@ -7,6 +7,8 @@ import ctypes
 from ctypes import wintypes
 import re
 
+import shared
+
 # ===== GUI CONFIGURATION & STYLE =====
 ctk.set_appearance_mode("Dark")
 
@@ -18,15 +20,15 @@ COLORS = {
     "TEXT_WHITE": "#FFFFFF",
     "GRID_LINE": "#1A1A1A",
     "CELL_BG": "#222222",
-    "GPU_BG": "#1A2E35",     
+    "GPU_BG": "#1A2E35",
     "LINK_SRC": "#FFFFFF",
-    "SELECTED": "#2A6B56"  
+    "SELECTED": "#2A6B56"
 }
 
 FILE = "displays_map.txt"
-TARGETS_FILE = "targets.txt"
-CONFIG_FILE = "config.txt"
+TARGETS_FILE = shared.TARGETS_FILE
 CELL_W, CELL_H = 150, 90
+OBSOLETE_CONFIG_KEYS = ("hide_controls", "stretch_video", "single_screen", "target_display", "default_resolution", "width", "height")
 
 # --- WINDOWS API FOR MONITOR DETECTION ---
 user32 = ctypes.windll.user32
@@ -68,10 +70,16 @@ def get_local_monitors():
                 "primary": is_primary
             })
         return True
-    
+
     cb = MONITORENUMPROC(callback)
     user32.EnumDisplayMonitors(None, None, cb, 0)
     return monitors
+
+def beep():
+    try:
+        winsound.MessageBeep()
+    except Exception:
+        pass
 
 class DisplayConfigurator:
     def __init__(self, root):
@@ -79,18 +87,15 @@ class DisplayConfigurator:
         self.root.geometry("1200x700")
         self.root.configure(fg_color=COLORS["BG_MAIN"], highlightbackground=COLORS["ACCENT"], highlightthickness=1)
         self.root.overrideredirect(True)
-        
-        self.rows, self.cols = 6, 5
-        self.connections = set() 
-        self.link_source = None  
 
-        self.win_w_var = ctk.StringVar(value="1250")
-        self.win_h_var = ctk.StringVar(value="750")
+        self.rows, self.cols = 6, 5
+        self.connections = set()
+        self.link_source = None
 
         try:
             import keyboard
-            keyboard.add_hotkey("f8", self.toggle_visibility)
-        except:
+            keyboard.add_hotkey("f8", lambda: self.root.after(0, self.toggle_visibility))
+        except Exception:
             self.root.bind_all("<F8>", self.toggle_visibility)
 
         self._setup_ui()
@@ -101,7 +106,7 @@ class DisplayConfigurator:
         self.header = ctk.CTkFrame(self.root, height=45, fg_color=COLORS["BG_MAIN"], corner_radius=0)
         self.header.pack(side="top", fill="x")
         ctk.CTkLabel(self.header, text="SYSTEM CONFIGURATOR", font=("Consolas", 12, "bold"), text_color=COLORS["ACCENT"]).pack(side="left", padx=20)
-        
+
         ctk.CTkButton(self.header, text="Quit", width=60, height=30, command=self.on_close, fg_color=COLORS["QUIT_BTN"], hover_color="red", corner_radius=0, font=("Consolas", 11, "bold")).pack(side="right", padx=10)
         ctk.CTkButton(self.header, text="Help", width=60, height=30, command=self.show_help, fg_color=COLORS["BTN_BASE"], text_color="white", corner_radius=0, font=("Consolas", 11, "bold")).pack(side="right", padx=5)
 
@@ -111,7 +116,7 @@ class DisplayConfigurator:
 
         self.tabview = ctk.CTkTabview(self.root, fg_color="transparent", segmented_button_selected_color=COLORS["ACCENT"], segmented_button_selected_hover_color=COLORS["SELECTED"], text_color="white")
         self.tabview.pack(fill="both", expand=True, padx=10, pady=5)
-        
+
         self.tab_disp = self.tabview.add("Displays Map")
         self.tab_tgt = self.tabview.add("Stream Targets")
         self.tab_set = self.tabview.add("Settings")
@@ -125,18 +130,18 @@ class DisplayConfigurator:
     def _setup_displays_tab(self, parent_frame):
         ctrl = ctk.CTkFrame(parent_frame, fg_color="transparent")
         ctrl.pack(fill="x", padx=10, pady=(10, 5))
-        
+
         row1 = ctk.CTkFrame(ctrl, fg_color="transparent")
         row1.pack(fill="x", pady=(0, 5))
-        
+
         self.scan_btn = ctk.CTkButton(row1, text="DETECT MONITORS", command=self.detect_displays, fg_color=COLORS["BTN_BASE"], corner_radius=0, width=150, text_color="white", font=("Consolas", 11, "bold"))
         self.scan_btn.pack(side="left", padx=5)
-        
+
         ctk.CTkLabel(row1, text="Automatically loads physical screens connected to this PC.", text_color="#888888", font=("Consolas", 10)).pack(side="left", padx=10)
 
         row2 = ctk.CTkFrame(ctrl, fg_color="transparent")
         row2.pack(fill="x", pady=(5, 0))
-        
+
         ctk.CTkLabel(row2, text="Type:", text_color="white", font=("Consolas", 12)).pack(side="left", padx=(0, 2))
         self.man_type = ctk.CTkComboBox(row2, width=80, corner_radius=0, fg_color="#202020", border_width=0, text_color="white", dropdown_fg_color="#222222", button_color=COLORS["BTN_BASE"], button_hover_color=COLORS["ACCENT"], values=["Screen", "GPU"])
         self.man_type.set("Screen")
@@ -145,19 +150,19 @@ class DisplayConfigurator:
         ctk.CTkLabel(row2, text="Lbl:", text_color="white", font=("Consolas", 12)).pack(side="left", padx=2)
         self.man_lbl = ctk.CTkEntry(row2, width=80, corner_radius=0, fg_color="#202020", border_width=0, text_color="white", placeholder_text="Alias")
         self.man_lbl.pack(side="left", padx=2)
-        
+
         ctk.CTkLabel(row2, text="Info 1:", text_color="white", font=("Consolas", 12)).pack(side="left", padx=2)
         self.man_port = ctk.CTkEntry(row2, width=90, corner_radius=0, fg_color="#202020", border_width=0, text_color="white", placeholder_text="Port/Model")
         self.man_port.pack(side="left", padx=2)
-        
+
         ctk.CTkLabel(row2, text="Info 2:", text_color="white", font=("Consolas", 12)).pack(side="left", padx=2)
         self.man_os = ctk.CTkEntry(row2, width=90, corner_radius=0, fg_color="#202020", border_width=0, text_color="white", placeholder_text="OS ID/Ports#")
         self.man_os.pack(side="left", padx=2)
-        
+
         ctk.CTkLabel(row2, text="Res:", text_color="white", font=("Consolas", 12)).pack(side="left", padx=2)
         self.man_res = ctk.CTkEntry(row2, width=90, corner_radius=0, fg_color="#202020", border_width=0, text_color="white", placeholder_text="1920x1080")
         self.man_res.pack(side="left", padx=2)
-        
+
         self.man_prim = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(row2, text="Primary", variable=self.man_prim, fg_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 11), width=60, corner_radius=0).pack(side="left", padx=15)
 
@@ -165,13 +170,6 @@ class DisplayConfigurator:
 
         footer = ctk.CTkFrame(parent_frame, fg_color="transparent")
         footer.pack(side="bottom", fill="x", padx=10, pady=10)
-        
-        size_frame = ctk.CTkFrame(footer, fg_color="transparent")
-        size_frame.pack(side="left", padx=(0, 20))
-        ctk.CTkLabel(size_frame, text="Dash W:", text_color="white", font=("Consolas", 12, "bold")).pack(side="left", padx=2)
-        ctk.CTkEntry(size_frame, textvariable=self.win_w_var, width=50, corner_radius=0, fg_color="#202020", border_width=0, text_color="white").pack(side="left")
-        ctk.CTkLabel(size_frame, text="H:", text_color="white", font=("Consolas", 12, "bold")).pack(side="left", padx=(10, 2))
-        ctk.CTkEntry(size_frame, textvariable=self.win_h_var, width=50, corner_radius=0, fg_color="#202020", border_width=0, text_color="white").pack(side="left")
 
         ctk.CTkButton(footer, text="VISUAL EDITOR", command=self.open_visual_editor, height=45, fg_color=COLORS["BTN_BASE"], text_color="white", font=("Consolas", 14, "bold"), corner_radius=0, hover_color=COLORS["ACCENT"]).pack(side="left", padx=5)
         ctk.CTkButton(footer, text="CLEAR ALL", command=self.clear_selected, height=45, fg_color="#552222", text_color="white", corner_radius=0, font=("Consolas", 12, "bold")).pack(side="left", padx=15)
@@ -196,7 +194,7 @@ class DisplayConfigurator:
         self.tree.heading("Row", text="R")
         self.tree.heading("Col", text="C")
         self.tree.heading("Span", text="S")
-        
+
         self.tree.column("Label", width=100)
         self.tree.column("Type", width=70, anchor="center")
         self.tree.column("Info1", width=90)
@@ -207,32 +205,32 @@ class DisplayConfigurator:
         self.tree.column("Row", width=40, anchor="center")
         self.tree.column("Col", width=40, anchor="center")
         self.tree.column("Span", width=40, anchor="center")
-        
+
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
     def detect_displays(self):
-        for i in self.tree.get_children(): 
-            if self.tree.item(i)['values'][1] != "GPU": 
+        for i in self.tree.get_children():
+            if self.tree.item(i)['values'][1] != "GPU":
                 self.tree.delete(i)
-                
+
         current_labels = [str(self.tree.item(i)['values'][0]) for i in self.tree.get_children()]
         self.connections = {conn for conn in self.connections if conn[0] in current_labels and conn[1] in current_labels}
-        
+
         monitors = get_local_monitors()
-        
+
         if not monitors:
             self.tree.insert("", "end", values=("Screen 1", "Screen", "UNKNOWN", "DISPLAY1", "1920x1080", "X:0 Y:0", "YES", 0, 0, 1))
-            
+
         for idx, m in enumerate(monitors):
             label = f"Screen {idx + 1}"
             port = "UNKNOWN"
             resolution = f"{m['w']}x{m['h']}"
-            offset = f"X:{m['x']} Y:{m['y']}" 
+            offset = f"X:{m['x']} Y:{m['y']}"
             is_primary = "YES" if m['primary'] else "NO"
-            
+
             self.tree.insert("", "end", values=(label, "Screen", port, m['name'], resolution, offset, is_primary, 0, idx, 1))
-        
+
         self.save_data()
 
     def add_manual(self):
@@ -248,7 +246,7 @@ class DisplayConfigurator:
             info2 = self.man_os.get().strip() or "DISPLAY_X"
             res = self.man_res.get().strip() or "1920x1080"
             prim = "YES" if self.man_prim.get() else "NO"
-            
+
         self.tree.insert("", "end", values=(lbl, dev_type, info1, info2, res, "X:0 Y:0", prim, 0, 0, 1))
         self.man_lbl.delete(0, 'end'); self.man_port.delete(0, 'end')
         self.man_os.delete(0, 'end'); self.man_res.delete(0, 'end')
@@ -256,7 +254,7 @@ class DisplayConfigurator:
 
     def clear_selected(self):
         sel = self.tree.selection()
-        if sel: 
+        if sel:
             name_to_delete = str(self.tree.item(sel[0])['values'][0])
             self.connections = {conn for conn in self.connections if name_to_delete not in conn}
             self.tree.delete(sel[0])
@@ -276,35 +274,35 @@ class DisplayConfigurator:
     def open_visual_edit_popup(self, event, item):
         values = list(self.tree.item(item, 'values'))
         is_gpu = str(values[1]) == "GPU"
-        
+
         popup = ctk.CTkToplevel(self.root)
         popup.geometry("340x330")
         popup.configure(fg_color=COLORS["BG_MAIN"], highlightbackground=COLORS["ACCENT"], highlightthickness=1)
         popup.overrideredirect(True)
         popup.geometry(f"+{event.x_root}+{event.y_root}")
-        
+
         p_header = ctk.CTkFrame(popup, height=35, fg_color=COLORS["BG_MAIN"], corner_radius=0)
         p_header.pack(side="top", fill="x")
         title_txt = "EDIT GPU NODE" if is_gpu else "EDIT DISPLAY NODE"
         ctk.CTkLabel(p_header, text=title_txt, font=("Consolas", 12, "bold"), text_color=COLORS["ACCENT"]).pack(side="left", padx=10)
         ctk.CTkButton(p_header, text="Quit", width=30, height=30, command=popup.destroy, fg_color=COLORS["QUIT_BTN"], hover_color="red", corner_radius=0, font=("Consolas", 11, "bold")).pack(side="right")
-        
+
         def p_start(e): popup.x, popup.y = e.x, e.y
         def p_move(e): popup.geometry(f"+{popup.winfo_x() + e.x - popup.x}+{popup.winfo_y() + e.y - popup.y}")
         p_header.bind("<ButtonPress-1>", p_start); p_header.bind("<B1-Motion>", p_move)
-        
+
         cont = ctk.CTkFrame(popup, fg_color="transparent")
         cont.pack(fill="both", expand=True, padx=20, pady=10)
-        
+
         ctk.CTkLabel(cont, text="ALIAS (LABEL):", font=("Consolas", 11, "bold"), text_color="white").pack(anchor="w")
         name_var = ctk.StringVar(value=values[0])
         ctk.CTkEntry(cont, textvariable=name_var, height=30, corner_radius=0, text_color="white", fg_color="#202020", border_width=0).pack(fill="x", pady=(0, 10))
-        
+
         lbl_info1 = "MODEL (e.g. RTX 4090):" if is_gpu else "INPUT PORT (e.g. HDMI 1):"
         ctk.CTkLabel(cont, text=lbl_info1, font=("Consolas", 11, "bold"), text_color="white").pack(anchor="w")
         port_var = ctk.StringVar(value=values[2])
         ctk.CTkEntry(cont, textvariable=port_var, height=30, corner_radius=0, text_color="white", fg_color="#202020", border_width=0).pack(fill="x", pady=(0, 15))
-        
+
         if is_gpu:
             ctk.CTkLabel(cont, text=f"Ports: {values[3]}", font=("Consolas", 10), text_color="#888888", justify="left").pack(anchor="w", pady=(0, 15))
         else:
@@ -314,7 +312,7 @@ class DisplayConfigurator:
             new_name = name_var.get().strip()
             new_port = port_var.get().strip()
             old_name = str(values[0])
-            
+
             if new_name != old_name:
                 new_conns = set()
                 for n1, n2 in self.connections:
@@ -322,22 +320,22 @@ class DisplayConfigurator:
                     c2 = new_name if n2 == old_name else n2
                     new_conns.add(tuple(sorted([c1, c2])))
                 self.connections = new_conns
-                
+
             self.tree.item(item, values=(new_name, values[1], new_port, values[3], values[4], values[5], values[6], values[7], values[8], values[9]))
             if hasattr(self, 'canvas') and self.canvas.winfo_exists(): self.draw_grid()
             self.save_data(); popup.destroy()
-            
+
         ctk.CTkButton(cont, text="SAVE", height=35, command=apply_changes, fg_color=COLORS["ACCENT"], text_color="black", font=("Consolas", 11, "bold"), corner_radius=0).pack(fill="x")
 
     def open_visual_editor(self):
         self.vb = ctk.CTkToplevel(self.root); self.vb.geometry("1100x700"); self.vb.overrideredirect(True)
         self.vb.configure(fg_color=COLORS["BG_MAIN"], highlightbackground=COLORS["ACCENT"], highlightthickness=1)
         self.link_source = None
-        
+
         top = ctk.CTkFrame(self.vb, height=50, fg_color=COLORS["BG_MAIN"], corner_radius=0); top.pack(fill="x")
         ctk.CTkLabel(top, text="SCREEN LAYOUT EDITOR", font=("Consolas", 12, "bold"), text_color=COLORS["ACCENT"]).pack(side="left", padx=15)
         ctk.CTkLabel(top, text="[ SHIFT + Click: Link Data Flow ]  [ Right-Click: Edit ]", font=("Consolas", 10), text_color="#888888").pack(side="left", padx=10)
-        
+
         ctk.CTkLabel(top, text="Grid R:", text_color="white").pack(side="left", padx=(20,2))
         ctk.CTkButton(top, text="+", width=30, corner_radius=0, command=lambda: self._update_grid(r=1), fg_color=COLORS["BTN_BASE"], text_color="white").pack(side="left")
         ctk.CTkButton(top, text="-", width=30, corner_radius=0, command=lambda: self._update_grid(r=-1), fg_color=COLORS["BTN_BASE"], text_color="white").pack(side="left", padx=2)
@@ -358,7 +356,7 @@ class DisplayConfigurator:
         for r in range(self.rows):
             for c in range(self.cols):
                 self.canvas.create_rectangle(c*CELL_W, r*CELL_H, (c+1)*CELL_W, (r+1)*CELL_H, outline=COLORS["GRID_LINE"], dash=(2,2))
-        
+
         scr_data = {}
         for item in self.tree.get_children():
             v = self.tree.item(item)['values']
@@ -373,7 +371,7 @@ class DisplayConfigurator:
                 d1, d2 = scr_data[n1], scr_data[n2]
                 is_d1_gpu = d1['v'][1] == "GPU"
                 is_d2_gpu = d2['v'][1] == "GPU"
-                
+
                 if is_d1_gpu and not is_d2_gpu: src, tgt = d1, d2
                 elif is_d2_gpu and not is_d1_gpu: src, tgt = d2, d1
                 else: src, tgt = (d1, d2) if d1['cx'] <= d2['cx'] else (d2, d1)
@@ -381,17 +379,17 @@ class DisplayConfigurator:
                 sx_l, sy_l = src['x2'], src['cy']
                 ex_l, ey_l = tgt['x1'], tgt['cy']
                 offset = max(abs(ex_l - sx_l) * 0.6, 60)
-                
+
                 self.canvas.create_line(sx_l, sy_l, sx_l + offset, sy_l, ex_l - offset, ey_l, ex_l, ey_l, fill="#FFFFFF", width=3, smooth=True, splinesteps=36, arrow=tk.LAST, arrowshape=(12, 14, 5))
-        
+
         for lbl, d in scr_data.items():
             tag = f"btn_{d['item']}"; v = d['v']
             dev_type = str(v[1])
             is_link_src = (self.link_source == lbl)
             is_primary = (str(v[6]) == "YES")
-            
+
             outline_color, outline_width = (COLORS["LINK_SRC"], 2) if is_link_src else (COLORS["ACCENT"], 1)
-            
+
             if dev_type == "GPU":
                 bg_color = COLORS["GPU_BG"]
                 display_text = f"[GPU]\n{v[0]}\n{v[2]}\n({v[3]})"
@@ -401,7 +399,7 @@ class DisplayConfigurator:
                 if is_primary: display_text += "\n[PRIMARY]"
 
             self.canvas.create_rectangle(d['x1'], d['y1'], d['x2'], d['y2'], fill=bg_color, outline=outline_color, width=outline_width, tags=tag)
-            
+
             port_r = 4
             if dev_type == "GPU":
                 num_ports = 4
@@ -413,9 +411,9 @@ class DisplayConfigurator:
                     self.canvas.create_oval(d['x2']-port_r, py-port_r, d['x2']+port_r, py+port_r, fill="#444", outline=COLORS["ACCENT"], tags=tag)
             else:
                 self.canvas.create_oval(d['x1']-port_r, d['cy']-port_r, d['x1']+port_r, d['cy']+port_r, fill="#444", outline=COLORS["ACCENT"], tags=tag)
-            
+
             self.canvas.create_text(d['cx'], d['cy'], text=display_text, fill="white", font=("Consolas", 10, "bold"), justify="center", tags=tag)
-            
+
             self.canvas.tag_bind(tag, "<Button-1>", lambda e, i=d['item']: self.start_drag(e, i))
             self.canvas.tag_bind(tag, "<B1-Motion>", self.do_drag)
             self.canvas.tag_bind(tag, "<ButtonRelease-1>", self.stop_drag)
@@ -443,20 +441,18 @@ class DisplayConfigurator:
         if not os.path.exists(FILE): return
         for i in self.tree.get_children(): self.tree.delete(i)
         self.connections.clear()
-        
+
         with open(FILE, "r") as f:
             for line in f:
                 l = line.strip()
                 if not l: continue
-                if "CONFIG: SIZE" in l:
+                if "CONFIG: GRID" in l:
                     p = l.split(",")
                     if len(p) >= 3:
-                        self.win_w_var.set(p[1].strip())
-                        self.win_h_var.set(p[2].strip())
-                elif "CONFIG: GRID" in l: 
-                    p = l.split(",")
-                    if len(p) >= 3:
-                        self.rows, self.cols = int(p[1]), int(p[2])
+                        try:
+                            self.rows, self.cols = int(p[1]), int(p[2])
+                        except ValueError:
+                            pass
                 elif "CONFIG: LINK" in l:
                     p = [x.strip() for x in l.split(",")]
                     if len(p) >= 3: self.connections.add(tuple(sorted([p[1], p[2]])))
@@ -464,45 +460,43 @@ class DisplayConfigurator:
                     p = [x.strip() for x in l.split(",")]
                     if len(p) == 9:
                         try: self.tree.insert("", "end", values=(p[0], "Screen", p[1], p[2], p[3], p[4], p[5], int(p[6]), int(p[7]), int(p[8])))
-                        except: pass
+                        except ValueError: pass
                     elif len(p) >= 10:
                         try: self.tree.insert("", "end", values=(p[0], p[1], p[2], p[3], p[4], p[5], p[6], int(p[7]), int(p[8]), int(p[9])))
-                        except: pass
+                        except ValueError: pass
 
     def save_data(self):
         with open(FILE, "w") as f:
-            f.write(f"CONFIG: SIZE, {self.win_w_var.get()}, {self.win_h_var.get()}\n")
             f.write(f"CONFIG: GRID, {self.rows}, {self.cols}\n")
             for c1, c2 in self.connections: f.write(f"CONFIG: LINK, {c1}, {c2}\n")
             f.write("\n")
-            for i in self.tree.get_children(): 
+            for i in self.tree.get_children():
                 v = self.tree.item(i)['values']
                 f.write(f"{v[0]}, {v[1]}, {v[2]}, {v[3]}, {v[4]}, {v[5]}, {v[6]}, {v[7]}, {v[8]}, {v[9]}\n")
-        try: winsound.MessageBeep()
-        except: pass
+        beep()
 
     # ==========================================
-    # TAB 2: STREAM TARGETS 
+    # TAB 2: STREAM TARGETS
     # ==========================================
     def _setup_targets_tab(self, parent_frame):
         ctk.CTkLabel(parent_frame, text="STREAM TARGETS MANAGEMENT (targets.txt)", font=("Consolas", 14, "bold"), text_color=COLORS["ACCENT"]).pack(pady=10)
 
         top_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
         top_frame.pack(fill="x", padx=10, pady=5)
-        
+
         ctk.CTkLabel(top_frame, text="Target Name:", text_color="white", font=("Consolas", 12)).pack(side="left", padx=(0, 5))
         self.tgt_name = ctk.CTkEntry(top_frame, width=150, corner_radius=0, fg_color="#202020", border_width=0, text_color="white", placeholder_text="e.g., Camera 1")
         self.tgt_name.pack(side="left", padx=5)
-        
+
         ctk.CTkLabel(top_frame, text="Stream URL:", text_color="white", font=("Consolas", 12)).pack(side="left", padx=(15, 5))
         self.tgt_url = ctk.CTkEntry(top_frame, width=400, corner_radius=0, fg_color="#202020", border_width=0, text_color="white", placeholder_text="http://...")
         self.tgt_url.pack(side="left", padx=5)
-        
+
         ctk.CTkButton(top_frame, text="+ ADD / UPDATE", command=self.add_target, fg_color=COLORS["BTN_BASE"], corner_radius=0, width=120, text_color="white", font=("Consolas", 11, "bold")).pack(side="left", padx=10)
 
         body_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
         body_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        
+
         self.target_tree = ttk.Treeview(body_frame, columns=("Name", "URL"), show="headings")
         self.target_tree.heading("Name", text="Target Name")
         self.target_tree.heading("URL", text="Stream URL")
@@ -510,32 +504,28 @@ class DisplayConfigurator:
         self.target_tree.column("URL", width=600)
         self.target_tree.pack(side="left", fill="both", expand=True)
         self.target_tree.bind("<Double-1>", self.on_target_double_click)
-        
+
         footer = ctk.CTkFrame(parent_frame, fg_color="transparent")
         footer.pack(fill="x", padx=10, pady=10)
-        
+
         ctk.CTkButton(footer, text="DELETE SELECTED", command=self.delete_target, height=35, fg_color="#552222", text_color="white", corner_radius=0, font=("Consolas", 11, "bold")).pack(side="left")
 
     def _load_targets(self):
         for i in self.target_tree.get_children(): self.target_tree.delete(i)
-        if not os.path.exists(TARGETS_FILE): return
-        with open(TARGETS_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                if "|" in line:
-                    name, url = line.strip().split("|", 1)
-                    self.target_tree.insert("", "end", values=(name, url))
+        for t in shared.load_targets():
+            self.target_tree.insert("", "end", values=(t["name"], t["url"]))
 
     def add_target(self):
         name = self.tgt_name.get().strip()
         url = self.tgt_url.get().strip()
         if not name or not url: return
-        
+
         for i in self.target_tree.get_children():
-            if self.target_tree.item(i)['values'][0] == name:
+            if str(self.target_tree.item(i)['values'][0]) == name:
                 self.target_tree.item(i, values=(name, url))
                 self.save_targets()
                 return
-        
+
         self.target_tree.insert("", "end", values=(name, url))
         self.tgt_name.delete(0, 'end')
         self.tgt_url.delete(0, 'end')
@@ -552,9 +542,8 @@ class DisplayConfigurator:
             for i in self.target_tree.get_children():
                 v = self.target_tree.item(i)['values']
                 f.write(f"{v[0]}|{v[1]}\n")
-        try: winsound.MessageBeep()
-        except: pass
-        
+        beep()
+
     def on_target_double_click(self, event):
         sel = self.target_tree.selection()
         if sel:
@@ -570,61 +559,36 @@ class DisplayConfigurator:
     def _setup_settings_tab(self, parent_frame):
         ctk.CTkLabel(parent_frame, text="GLOBAL VIEWER SETTINGS (config.txt)", font=("Consolas", 14, "bold"), text_color=COLORS["ACCENT"]).pack(pady=10)
 
-        self.app_config = {}
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if "=" in line:
-                            k, v = line.strip().split("=", 1)
-                            self.app_config[k] = v
-            except: pass
+        app_config = shared.load_config()
 
-        self.cfg_show_header = ctk.BooleanVar(value=(self.app_config.get("show_header", "True") == "True"))
-        self.cfg_show_animation = ctk.BooleanVar(value=(self.app_config.get("show_animation", "True") == "True"))
-        
-        self.cfg_stretch = ctk.BooleanVar(value=(self.app_config.get("stretch_video") == "True"))
-        self.cfg_single = ctk.BooleanVar(value=(self.app_config.get("single_screen") == "True"))
-        self.cfg_target_disp = ctk.StringVar(value=self.app_config.get("target_display", "0"))
-        self.cfg_def_res = ctk.StringVar(value=self.app_config.get("default_resolution", "Default"))
+        self.cfg_show_header = ctk.BooleanVar(value=(app_config.get("show_header", "True") == "True"))
+        self.cfg_show_animation = ctk.BooleanVar(value=(app_config.get("show_animation", "True") == "True"))
+        self.cfg_server_url = ctk.StringVar(value=app_config.get("server_url", shared.DEFAULT_SERVER_URL))
 
         form_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
         form_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
         ctk.CTkCheckBox(form_frame, text="Show Viewer Header / Resize Grip (Shows top resize bar)", variable=self.cfg_show_header, fg_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 12)).pack(anchor="w", pady=10)
         ctk.CTkCheckBox(form_frame, text="Show Loading Animation (Animated Spinner vs. Plain Text)", variable=self.cfg_show_animation, fg_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 12)).pack(anchor="w", pady=10)
-        ctk.CTkCheckBox(form_frame, text="Stretch Video to Fill Screens (Ignore Aspect Ratio)", variable=self.cfg_stretch, fg_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 12)).pack(anchor="w", pady=10)
-        ctk.CTkCheckBox(form_frame, text="Single Screen Mode (Hide splits, show only Screen 1)", variable=self.cfg_single, fg_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 12)).pack(anchor="w", pady=10)
 
-        disp_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
-        disp_frame.pack(fill="x", pady=10)
-        ctk.CTkLabel(disp_frame, text="Target Display Index (0 = Primary):", font=("Consolas", 12), text_color="white").pack(side="left")
-        ctk.CTkEntry(disp_frame, textvariable=self.cfg_target_disp, width=50, corner_radius=0, fg_color="#202020", border_width=0, text_color="white").pack(side="left", padx=10)
+        url_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
+        url_frame.pack(fill="x", pady=10)
+        ctk.CTkLabel(url_frame, text="Controller Server URL (viewers connect here):", font=("Consolas", 12), text_color="white").pack(side="left")
+        ctk.CTkEntry(url_frame, textvariable=self.cfg_server_url, width=260, corner_radius=0, fg_color="#202020", border_width=0, text_color="white").pack(side="left", padx=10)
 
-        res_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
-        res_frame.pack(fill="x", pady=10)
-        ctk.CTkLabel(res_frame, text="Global Default Resolution:", font=("Consolas", 12), text_color="white").pack(side="left")
-        
-        res_options = ["Default", "800x600", "1024x768", "1280x720", "1920x1080"]
-        ctk.CTkOptionMenu(res_frame, variable=self.cfg_def_res, values=res_options, width=120, fg_color="#202020", button_color=COLORS["BTN_BASE"], button_hover_color=COLORS["ACCENT"]).pack(side="left", padx=10)
+        ctk.CTkLabel(form_frame, text="Changes take effect the next time the Controller and Viewers are started.", font=("Consolas", 10), text_color="#888888").pack(anchor="w", pady=(10, 0))
 
         ctk.CTkButton(parent_frame, text="SAVE SETTINGS", command=self.save_settings, height=45, fg_color=COLORS["ACCENT"], text_color="black", font=("Consolas", 14, "bold"), corner_radius=0).pack(side="bottom", pady=20)
 
     def save_settings(self):
-        self.app_config["show_header"] = str(self.cfg_show_header.get())
-        self.app_config["show_animation"] = str(self.cfg_show_animation.get())
-        self.app_config["stretch_video"] = str(self.cfg_stretch.get())
-        self.app_config["single_screen"] = str(self.cfg_single.get())
-        self.app_config["target_display"] = self.cfg_target_disp.get()
-        self.app_config["default_resolution"] = self.cfg_def_res.get()
-        self.app_config.pop("hide_controls", None)
-
-        try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                for k, v in self.app_config.items():
-                    f.write(f"{k}={v}\n")
-            winsound.MessageBeep()
-        except: pass
+        server_url = self.cfg_server_url.get().strip() or shared.DEFAULT_SERVER_URL
+        shared.update_config({
+            "show_header": str(self.cfg_show_header.get()),
+            "show_animation": str(self.cfg_show_animation.get()),
+            "server_url": server_url
+        }, remove=OBSOLETE_CONFIG_KEYS)
+        self.cfg_server_url.set(server_url)
+        beep()
 
     def toggle_visibility(self, event=None):
         if self.root.winfo_viewable(): self.root.withdraw()
@@ -641,15 +605,16 @@ class DisplayConfigurator:
         pop.geometry(f"+{x}+{y}")
         hdr = ctk.CTkFrame(pop, height=35, fg_color=COLORS["BG_MAIN"], corner_radius=0)
         hdr.pack(fill="x")
-        ctk.CTkLabel(hdr, text="HELP - CONTROLLER", font=("Consolas", 12, "bold"), text_color=COLORS["ACCENT"]).pack(side="left", padx=10)
+        ctk.CTkLabel(hdr, text="HELP - CONFIGURATOR", font=("Consolas", 12, "bold"), text_color=COLORS["ACCENT"]).pack(side="left", padx=10)
         ctk.CTkButton(hdr, text="Quit", width=40, height=30, command=pop.destroy, fg_color=COLORS["QUIT_BTN"], hover_color="red", corner_radius=0, font=("Consolas", 11, "bold")).pack(side="right")
         help_text = "- Double-click a row to Edit its details.\n- Use 'Visual Editor' to map connections & layout.\n- Shift+Click in Editor to link source to display.\n- Switch to 'Stream Targets' tab to manage URLs.\n- Configure global rules in 'Settings' tab.\n- Press F8 anytime to show/hide this window."
         ctk.CTkLabel(pop, text=help_text, font=("Consolas", 11), text_color="white", justify="left").pack(pady=20, padx=20, anchor="w")
 
     def on_close(self):
-        self.destroy()
+        self.root.destroy()
         os._exit(0)
 
 if __name__ == "__main__":
-    app = DisplayController()
-    app.mainloop()
+    root = ctk.CTk()
+    app = DisplayConfigurator(root)
+    root.mainloop()

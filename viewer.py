@@ -6,7 +6,7 @@ import threading
 import socketio
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QStackedWidget,
-                             QSplitter, QFrame, QDesktopWidget)
+                             QSplitter, QFrame)
 from PyQt5.QtCore import Qt, QUrl, QObject, pyqtSignal
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
@@ -440,6 +440,34 @@ class MainWindow(QWidget):
             QPushButton#Watermark { background: transparent; color: rgba(255,255,255,0.2); }
         """)
 
+def resolve_target_screen(app, screen_label):
+    screens = app.screens()
+    if not screens:
+        return None, "no screens"
+
+    node = shared.load_display_nodes().get(screen_label)
+
+    if node:
+        device_name = node.get("info2", "").strip().lower()
+        if device_name:
+            for scr in screens:
+                if scr.name().strip().lower() == device_name:
+                    return scr, f"device name '{scr.name()}'"
+
+        offset = shared.parse_offset(node.get("offset", ""))
+        if offset:
+            for scr in screens:
+                if scr.geometry().contains(offset[0], offset[1]):
+                    return scr, f"offset X:{offset[0]} Y:{offset[1]}"
+
+    digits = ''.join(filter(str.isdigit, screen_label))
+    if digits:
+        index = int(digits) - 1
+        if 0 <= index < len(screens):
+            return screens[index], f"label digit {index + 1}"
+
+    return app.primaryScreen(), "fallback to primary"
+
 if __name__ == '__main__':
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
 
@@ -448,14 +476,14 @@ if __name__ == '__main__':
 
     window = MainWindow(target_screen_name)
 
-    desktop = QDesktopWidget()
-    try:
-        screen_index = int(''.join(filter(str.isdigit, target_screen_name))) - 1
-        if 0 <= screen_index < desktop.screenCount():
-            rect = desktop.screenGeometry(screen_index)
-            window.move(rect.left(), rect.top())
-    except ValueError:
-        pass
+    screen, reason = resolve_target_screen(app, target_screen_name)
+    if screen is not None:
+        rect = screen.geometry()
+        window.move(rect.left(), rect.top())
+        handle = window.windowHandle()
+        if handle is not None:
+            handle.setScreen(screen)
+        print(f"Viewer '{target_screen_name}' -> {screen.name()} at {rect.x()},{rect.y()} ({reason})")
 
     window.showFullScreen()
     sys.exit(app.exec_())

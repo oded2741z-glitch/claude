@@ -63,7 +63,10 @@ the URL actually changed).
 ### Identity is the screen label string
 
 Everything is keyed by the free-text label from `displays_map.txt` (default `"Screen N"`). The viewer
-derives which physical monitor to open on from the digits in its label (`"Screen 2"` -> monitor index 1).
+picks its physical monitor in `resolve_target_screen`: it reads its own row from `displays_map.txt` (via
+`shared.load_display_nodes`) and matches, in order, the Windows device name in `info2` against
+`QScreen.name()`, then the `offset` point against screen geometries, then falls back to the digits in the
+label (`"Screen 2"` -> monitor index 1). It prints which rule won at startup.
 The controller refuses to launch a viewer on the monitor its own window currently sits on
 (`is_controller_on_screen`, computed from the node's `offset`/`res` fields). Renaming a screen in the
 configurator rewrites the `CONFIG: LINK` entries but not saved scenes.

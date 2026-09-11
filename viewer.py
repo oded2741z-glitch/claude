@@ -32,13 +32,14 @@ HTML_ANIMATED_FALLBACK = """
 </body>
 """
 
-LOTTIE_FILE = "loading.json"
+LOTTIE_FILE = shared.resource_path("loading.json")
 HTML_ANIMATED = HTML_ANIMATED_FALLBACK
 
-if os.path.exists(LOTTIE_FILE):
+if LOTTIE_FILE:
     try:
         with open(LOTTIE_FILE, "r", encoding="utf-8") as f:
             lottie_data = f.read()
+        print(f"Loading animation: {LOTTIE_FILE}")
 
         HTML_ANIMATED = f"""
         <body style='background-color: #121212; margin: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh;'>
@@ -59,6 +60,8 @@ if os.path.exists(LOTTIE_FILE):
         """
     except Exception as e:
         print(f"Failed to load Lottie JSON: {e}")
+else:
+    print("Loading animation: loading.json not found, using default spinner")
 
 HTML_STATIC = "<body style='background-color: #121212; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh;'><h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; font-size: 14px;'>WAITING FOR SIGNAL...</h2></body>"
 HTML_BLACK = "<body style='background-color: #000000; margin: 0;'></body>"

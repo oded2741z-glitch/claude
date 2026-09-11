@@ -1,10 +1,31 @@
 import os
+import sys
 
 CONFIG_FILE = "config.txt"
 TARGETS_FILE = "targets.txt"
 SNAPSHOTS_DIR = "snapshots"
 DISPLAYS_FILE = "displays_map.txt"
 DEFAULT_SERVER_URL = "http://127.0.0.1:5000"
+
+
+def app_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def resource_path(name):
+    candidates = [
+        os.path.join(app_dir(), name),
+        os.path.join(os.getcwd(), name),
+    ]
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        candidates.append(os.path.join(bundle_dir, name))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def load_config():

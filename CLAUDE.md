@@ -102,7 +102,10 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
 - All windows use `overrideredirect(True)`; there is no native title bar, so every window needs its own
   Quit button and drag handle.
 - The Lottie placeholder loads `lottie.min.js` from cdnjs, so viewers without internet fall back to the
-  static spinner only if `loading.json` is absent.
+  static spinner only if `loading.json` is absent. `loading.json` is located with `shared.resource_path`
+  (exe/script directory first, then the working directory, then a PyInstaller bundle), so it works when
+  `viewer.exe` is started from another working directory; the other config files still use the working
+  directory.
 - Snapshots grab the quad's rectangle from the screen compositor (`QScreen.grabWindow`) because
   `QWebEngineView.grab()` returns black for GPU-rendered video; the viewer must be visible for this to work.
 - Hotkeys from the `keyboard` library fire on a background thread; always hop to the tkinter thread with

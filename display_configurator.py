@@ -173,6 +173,7 @@ class DisplayConfigurator:
 
         ctk.CTkButton(footer, text="VISUAL EDITOR", command=self.open_visual_editor, height=45, fg_color=COLORS["BTN_BASE"], text_color="white", font=("Consolas", 14, "bold"), corner_radius=0, hover_color=COLORS["ACCENT"]).pack(side="left", padx=5)
         ctk.CTkButton(footer, text="CLEAR ALL", command=self.clear_selected, height=45, fg_color="#552222", text_color="white", corner_radius=0, font=("Consolas", 12, "bold")).pack(side="left", padx=15)
+        ctk.CTkButton(footer, text="SET AS PRIMARY", command=self.set_primary, height=45, fg_color=COLORS["BTN_BASE"], text_color="white", corner_radius=0, font=("Consolas", 12, "bold"), hover_color=COLORS["SELECTED"]).pack(side="left", padx=5)
         ctk.CTkButton(footer, text="SAVE CONFIG", command=self.save_data, height=45, fg_color=COLORS["ACCENT"], text_color="black", font=("Consolas", 14, "bold"), corner_radius=0).pack(side="right", padx=5)
 
         main_body = ctk.CTkFrame(parent_frame, fg_color="transparent")
@@ -261,6 +262,23 @@ class DisplayConfigurator:
         else:
             for i in self.tree.get_children(): self.tree.delete(i)
             self.connections.clear()
+        self.save_data()
+
+    def set_primary(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        chosen = sel[0]
+        if str(self.tree.item(chosen)['values'][1]) == "GPU":
+            return
+        for i in self.tree.get_children():
+            v = list(self.tree.item(i)['values'])
+            if str(v[1]) == "GPU":
+                continue
+            v[6] = "YES" if i == chosen else "NO"
+            self.tree.item(i, values=v)
+        if hasattr(self, 'canvas') and self.canvas.winfo_exists():
+            self.draw_grid()
         self.save_data()
 
     def on_tree_double_click(self, event):

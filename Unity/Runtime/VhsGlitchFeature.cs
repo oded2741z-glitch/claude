@@ -60,13 +60,10 @@ public class VhsGlitchFeature : ScriptableRendererFeature
             tempTexture.Init("_VhsGlitchTemp");
         }
 
-        public void SetSource(RenderTargetIdentifier source)
-        {
-            this.source = source;
-        }
-
         public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
         {
+            source = renderingData.cameraData.renderer.cameraColorTarget;
+
             RenderTextureDescriptor descriptor = renderingData.cameraData.cameraTargetDescriptor;
             descriptor.depthBufferBits = 0;
             descriptor.msaaSamples = 1;
@@ -129,14 +126,6 @@ public class VhsGlitchFeature : ScriptableRendererFeature
 
         pass.renderPassEvent = settings.renderPassEvent;
         renderer.EnqueuePass(pass);
-    }
-
-    public override void SetupRenderPasses(ScriptableRenderer renderer, in RenderingData renderingData)
-    {
-        if (pass == null || settings.intensity <= 0f)
-            return;
-
-        pass.SetSource(renderer.cameraColorTarget);
     }
 
     protected override void Dispose(bool disposing)

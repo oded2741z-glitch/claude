@@ -52,7 +52,7 @@ public static class RedHorrorLookSetup
         }
 
         ColorAdjustments color = AddComponent<ColorAdjustments>(profile);
-        color.postExposure.Override(-0.5f);
+        color.postExposure.Override(-0.2f);
         color.contrast.Override(45f);
         color.colorFilter.Override(Color.white);
         color.hueShift.Override(0f);
@@ -70,7 +70,7 @@ public static class RedHorrorLookSetup
         mixer.blueOutBlueIn.Override(3f);
 
         LiftGammaGain lgg = AddComponent<LiftGammaGain>(profile);
-        lgg.lift.Override(new Vector4(1f, 0.8f, 0.8f, -0.18f));
+        lgg.lift.Override(new Vector4(1f, 0.8f, 0.8f, -0.08f));
         lgg.gamma.Override(new Vector4(1.1f, 0.85f, 0.85f, -0.05f));
         lgg.gain.Override(new Vector4(1.25f, 0.8f, 0.8f, 0.05f));
 
@@ -90,8 +90,8 @@ public static class RedHorrorLookSetup
         vignette.rounded.Override(false);
 
         Bloom bloom = AddComponent<Bloom>(profile);
-        bloom.threshold.Override(0.6f);
-        bloom.intensity.Override(0.8f);
+        bloom.threshold.Override(1.0f);
+        bloom.intensity.Override(0.35f);
         bloom.scatter.Override(0.75f);
         bloom.tint.Override(new Color(1f, 0.1f, 0.05f));
         bloom.highQualityFiltering.Override(true);
@@ -156,8 +156,8 @@ public static class RedHorrorLookSetup
         Undo.RecordObject(key, "Configure " + KeyLightName);
         key.type = LightType.Point;
         key.color = new Color(1f, 0.1f, 0.05f);
-        key.intensity = 12f;
-        key.range = 20f;
+        key.intensity = 3f;
+        key.range = 30f;
         key.shadows = LightShadows.Soft;
 
         Camera cam = Camera.main;
@@ -168,7 +168,7 @@ public static class RedHorrorLookSetup
         lightGo.transform.position = position;
 
         RenderSettings.ambientMode = AmbientMode.Flat;
-        RenderSettings.ambientLight = new Color(0.06f, 0.005f, 0.005f);
+        RenderSettings.ambientLight = new Color(0.14f, 0.01f, 0.01f);
         RenderSettings.fog = false;
     }
 

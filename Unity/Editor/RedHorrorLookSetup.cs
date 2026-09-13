@@ -154,18 +154,30 @@ public static class RedHorrorLookSetup
             key = Undo.AddComponent<Light>(lightGo);
 
         Undo.RecordObject(key, "Configure " + KeyLightName);
-        key.type = LightType.Point;
-        key.color = new Color(1f, 0.1f, 0.05f);
-        key.intensity = 3f;
-        key.range = 30f;
+        key.type = LightType.Spot;
+        key.color = new Color(1f, 0.12f, 0.06f);
+        key.intensity = 6f;
+        key.range = 25f;
+        key.spotAngle = 95f;
+        key.innerSpotAngle = 30f;
         key.shadows = LightShadows.Soft;
 
         Camera cam = Camera.main;
-        Vector3 position = cam != null
-            ? cam.transform.position + cam.transform.forward * 3f + Vector3.up * 2f
-            : new Vector3(0f, 3f, 0f);
         Undo.RecordObject(lightGo.transform, "Place " + KeyLightName);
-        lightGo.transform.position = position;
+        if (cam != null)
+        {
+            Vector3 origin = cam.transform.position;
+            Vector3 forward = cam.transform.forward;
+            Vector3 right = cam.transform.right;
+            Vector3 target = origin + forward * 6f;
+            lightGo.transform.position = origin + forward * 1.5f + right * 3.5f + Vector3.up * 2.5f;
+            lightGo.transform.rotation = Quaternion.LookRotation((target - lightGo.transform.position).normalized);
+        }
+        else
+        {
+            lightGo.transform.position = new Vector3(3.5f, 2.5f, 0f);
+            lightGo.transform.rotation = Quaternion.Euler(20f, -70f, 0f);
+        }
 
         RenderSettings.ambientMode = AmbientMode.Flat;
         RenderSettings.ambientLight = new Color(0.14f, 0.01f, 0.01f);

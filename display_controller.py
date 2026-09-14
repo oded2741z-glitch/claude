@@ -11,6 +11,11 @@ import threading
 import json
 import copy
 import eventlet
+import eventlet.hubs.epolls
+import eventlet.hubs.kqueue
+import eventlet.hubs.poll
+import eventlet.hubs.selects
+import engineio.async_drivers.eventlet
 import socketio
 
 import shared

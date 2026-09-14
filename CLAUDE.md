@@ -23,6 +23,13 @@ The controller normally launches viewers itself as subprocesses (`viewer.py`, or
 executable when frozen). Dependencies: `customtkinter`, `PyQt5`, `PyQtWebEngine`, `python-socketio`,
 `eventlet`, `keyboard`. `winsound`, `ctypes.windll`, `os.startfile` and `taskkill` make the code Windows-only.
 
+`build.bat` builds the three `--onefile` executables with PyInstaller into `dist/`. eventlet picks its hub
+and socketio its async driver via `importlib` at runtime, which PyInstaller cannot see, so
+`display_controller.py` imports `eventlet.hubs.{epolls,kqueue,poll,selects}` and
+`engineio.async_drivers.eventlet` explicitly (all four hubs import safely on every OS; only
+`is_available()` differs) and the batch file adds `--collect-submodules eventlet dns` as a belt-and-braces.
+`shared.py` is a module, not an entry point; do not build it.
+
 Hotkey: F8 hides/shows the configurator. There is no viewer/controller hotkey; the `oT` watermark in the
 viewer's bottom-right corner closes it on click, and the controller has a Quit button. The controller
 appends every log line to `controller.log` next to the scripts.

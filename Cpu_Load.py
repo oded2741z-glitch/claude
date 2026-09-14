@@ -864,6 +864,8 @@ RED = "#d03b3b"
 GREEN = "#0ca30c"
 AMBER = "#fab219"
 
+CHART_SERIES = {"cpu": BLUE, "gpu": AQUA, "cpu_temp": AMBER, "gpu_temp": RED}
+
 WINDOW_S = 60          # chart history window, seconds
 TICK_MS = 500          # GUI refresh interval
 
@@ -1002,8 +1004,7 @@ class App:
     def __init__(self, root, engine, sampler, gpu=None):
         self.root, self.engine, self.sampler = root, engine, sampler
         self.gpu = gpu or GpuBurner()
-        self.history = []                      # (timestamp, cpu %)
-        self.gpu_hist = []                     # (timestamp, gpu %)
+        self.hist = {k: [] for k in CHART_SERIES}   # key -> [(timestamp, value)]
         root.title("CPU Load Generator")
         root.configure(bg=PAGE)
         self._ctl = None               # the control column (set below)
@@ -1157,10 +1158,11 @@ class App:
         dash.columnconfigure((0, 1, 2, 3, 4), weight=1, uniform="tiles")
         dash.rowconfigure(1, weight=1)
 
-        self.tile_cpu = self._tile(dash, 0, "CPU USAGE")
-        self.tile_temp = self._tile(dash, 1, "CPU TEMP")
-        self.tile_gpu = self._tile(dash, 2, "GPU USAGE")
-        self.tile_gpu_temp = self._tile(dash, 3, "GPU TEMP")
+        self.series_on = {}
+        self.tile_cpu = self._tile(dash, 0, "CPU USAGE", "cpu")
+        self.tile_temp = self._tile(dash, 1, "CPU TEMP", "cpu_temp")
+        self.tile_gpu = self._tile(dash, 2, "GPU USAGE", "gpu")
+        self.tile_gpu_temp = self._tile(dash, 3, "GPU TEMP", "gpu_temp")
         self.tile_left = self._tile(dash, 4, "TIME LEFT")
 
         # shown in the temperature tile when Windows exposes no sensor
@@ -1172,27 +1174,16 @@ class App:
         root.after(4000, self._autostart_hw_monitor)
 
         chart_card = self._card(dash)
-        chart_card.grid(row=1, column=0, columnspan=4, sticky="nsew", pady=(12, 0))
+        chart_card.grid(row=1, column=0, columnspan=5, sticky="nsew", pady=(12, 0))
         chead = tk.Frame(chart_card, bg=CARD)
         chead.pack(fill="x", padx=14, pady=(10, 2))
-        tk.Label(chead, text="Usage — last 60 seconds",
+        tk.Label(chead, text="Usage & temperature — last 60 seconds  (%  /  °C)",
                  font=self.f_label, bg=CARD, fg=MUTED).pack(side="left")
-        self.legend_gpu = tk.Label(chead, text="— GPU", font=self.f_small, bg=CARD, fg=AQUA)
-        self.legend_cpu = tk.Label(chead, text="— CPU", font=self.f_small, bg=CARD, fg=BLUE)
-        self._legend_shown = False
         self.chart = tk.Canvas(chart_card, bg=CARD, highlightthickness=0, height=210)
         self.chart.pack(fill="both", expand=True, padx=14)
         self.bars = tk.Canvas(chart_card, bg=CARD, highlightthickness=0,
                               height=max(46, 24 * ((engine.cpu_count + 1) // 2)))
         self.bars.pack(fill="x", padx=14, pady=(6, 12))
-
-        # temperature bar chart (right of the usage chart)
-        temp_card = self._card(dash)
-        temp_card.grid(row=1, column=4, sticky="nsew", padx=(12, 0), pady=(12, 0))
-        tk.Label(temp_card, text="Temperature", font=self.f_label,
-                 bg=CARD, fg=MUTED).pack(anchor="w", padx=12, pady=(10, 2))
-        self.tchart = tk.Canvas(temp_card, bg=CARD, highlightthickness=0)
-        self.tchart.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         self._anim_win = None
         self._anim_lbl = None
@@ -1233,12 +1224,23 @@ class App:
         sp.var = var
         return sp
 
-    def _tile(self, parent, col, caption):
+    def _tile(self, parent, col, caption, series=None):
         card = self._card(parent)
         card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 12, 0))
         tk.Label(card, text=caption, font=self.f_small, bg=CARD, fg=MUTED).pack(anchor="w", padx=14, pady=(10, 0))
         val = tk.Label(card, text="—", font=(self.f_big[0], 22, "bold"), bg=CARD, fg=INK)
         val.pack(anchor="w", padx=14, pady=(0, 10))
+        if series:
+            color = CHART_SERIES[series]
+            var = tk.BooleanVar(value=True)
+            self.series_on[series] = var
+            tk.Checkbutton(card, text="— show", variable=var,
+                           font=self.f_small, bg=CARD, fg=color,
+                           activebackground=CARD, activeforeground=color,
+                           selectcolor=CARD2, bd=0, highlightthickness=0,
+                           cursor="hand2",
+                           command=lambda: self._draw_chart(time.time())
+                           ).pack(side="bottom", anchor="w", padx=10, pady=(0, 8))
         return val
 
     # -- actions --------------------------------------------------------------
@@ -1536,12 +1538,13 @@ class App:
     def _tick(self):
         s = self.sampler
         now = time.time()
-        if s.total is not None:
-            self.history.append((now, s.total))
-            self.history = [(t, v) for t, v in self.history if t >= now - WINDOW_S - 2]
-        if s.gpu_util is not None:
-            self.gpu_hist.append((now, s.gpu_util))
-            self.gpu_hist = [(t, v) for t, v in self.gpu_hist if t >= now - WINDOW_S - 2]
+        for key, value in (("cpu", s.total), ("cpu_temp", s.temp),
+                           ("gpu", s.gpu_util), ("gpu_temp", s.gpu_temp)):
+            if value is None:
+                continue
+            pts = self.hist[key]
+            pts.append((now, value))
+            self.hist[key] = [p for p in pts if p[0] >= now - WINDOW_S - 2]
 
         # the duration timer stops the CPU engine; follow it with the GPU
         if self.gpu.running and not self.engine.running:
@@ -1554,10 +1557,6 @@ class App:
         else:
             color = RED if s.gpu_temp >= 85 else AMBER if s.gpu_temp >= 70 else INK
             self.tile_gpu_temp.config(text=f"{s.gpu_temp:.0f}°C", fg=color)
-        if self.gpu_hist and not self._legend_shown:
-            self._legend_shown = True
-            self.legend_gpu.pack(side="right")
-            self.legend_cpu.pack(side="right", padx=(0, 10))
         if s.temp is None:
             self.tile_temp.config(text="—", fg=INK)
         else:
@@ -1579,7 +1578,6 @@ class App:
         self._paint_state()
         self._draw_chart(now)
         self._draw_bars(s.cores)
-        self._draw_temp_bars(s.temp, s.gpu_temp)
         self.root.after(TICK_MS, self._tick)
 
     # -- drawing ---------------------------------------------------------------
@@ -1603,21 +1601,19 @@ class App:
                           text="now" if sec == 0 else f"-{sec}s")
         c.create_line(pl, y(0), w - pr, y(0), fill=BASELINE)
 
-        pts = [(t, v) for t, v in self.history if t >= t0]
-        if len(pts) > 1:
-            line = [coord for t, v in pts for coord in (x(t), y(v))]
-            area = [x(pts[0][0]), y(0)] + line + [x(pts[-1][0]), y(0)]
-            c.create_polygon(*area, fill=BLUE_DIM, outline="")
-            c.create_line(*line, fill=BLUE, width=2, joinstyle="round")
-            lx, ly = x(pts[-1][0]), y(pts[-1][1])
-            c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4, fill=BLUE, outline=CARD, width=2)
-
-        gpts = [(t, v) for t, v in self.gpu_hist if t >= t0]
-        if len(gpts) > 1:
-            line = [coord for t, v in gpts for coord in (x(t), y(v))]
-            c.create_line(*line, fill=AQUA, width=2, joinstyle="round")
-            lx, ly = x(gpts[-1][0]), y(gpts[-1][1])
-            c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4, fill=AQUA, outline=CARD, width=2)
+        for key, color in CHART_SERIES.items():
+            if not self.series_on[key].get():
+                continue
+            pts = [(t, v) for t, v in self.hist[key] if t >= t0]
+            if len(pts) < 2:
+                continue
+            line = [coord for t, v in pts for coord in (x(t), y(min(100.0, v)))]
+            if key == "cpu":
+                area = [x(pts[0][0]), y(0)] + line + [x(pts[-1][0]), y(0)]
+                c.create_polygon(*area, fill=BLUE_DIM, outline="")
+            c.create_line(*line, fill=color, width=2, joinstyle="round")
+            lx, ly = line[-2], line[-1]
+            c.create_oval(lx - 4, ly - 4, lx + 4, ly + 4, fill=color, outline=CARD, width=2)
 
     def _draw_bars(self, cores):
         c = self.bars
@@ -1642,40 +1638,6 @@ class App:
                 c.create_rectangle(bar_x1, cy - 4, bar_x1 + fill_w, cy + 4, fill=BLUE, outline="")
             c.create_text(cx + col_w - gap, cy, text=f"{v:.0f}%", anchor="e",
                           fill=INK2, font=self.f_small)
-
-    def _draw_temp_bars(self, cpu_temp, gpu_temp):
-        c = self.tchart
-        c.delete("all")
-        w, h = c.winfo_width(), c.winfo_height()
-        if w < 40 or h < 40:
-            return
-        pl, pr, pt, pb = 30, 8, 18, 20
-        ph = h - pt - pb
-        ymax = 100.0
-        y = lambda v: pt + ph * (1 - min(v, ymax) / ymax)
-
-        for v in (0, 25, 50, 75, 100):        # scale + gridlines
-            c.create_line(pl, y(v), w - pr, y(v), fill=GRID)
-            c.create_text(pl - 6, y(v), text=str(v), anchor="e", fill=MUTED, font=self.f_small)
-        for thr, col in ((70, AMBER), (85, RED)):   # warning thresholds
-            c.create_line(pl, y(thr), w - pr, y(thr), fill=col, dash=(3, 3))
-
-        items = (("CPU", cpu_temp), ("GPU", gpu_temp))
-        slot = (w - pl - pr) / len(items)
-        bw = min(56, slot * 0.5)
-        for i, (name, temp) in enumerate(items):
-            cx = pl + slot * (i + 0.5)
-            x0, x1 = cx - bw / 2, cx + bw / 2
-            c.create_rectangle(x0, pt, x1, y(0), fill=CARD2, outline="")   # track
-            if temp is None:
-                c.create_text(cx, y(0) - 12, text="—", fill=MUTED, font=self.f_mid)
-            else:
-                col = RED if temp >= 85 else AMBER if temp >= 70 else GREEN
-                ty = y(temp)
-                c.create_rectangle(x0, ty, x1, y(0), fill=col, outline="")
-                c.create_text(cx, ty - 10, text="%.0f°C" % temp, fill=INK,
-                              font=(self.f_mid[0], 11, "bold"))
-            c.create_text(cx, h - pb + 4, text=name, anchor="n", fill=INK2, font=self.f_small)
 
 
 def main():

@@ -1,5 +1,7 @@
 import json
 import os
+import platform
+import subprocess
 import time
 import ctypes
 import tkinter as tk
@@ -40,6 +42,8 @@ class SetupWizard:
         self.root.resizable(False, False)
 
         self.before: Set[str] = set()
+        self.pnp_before: Set[str] = set()
+        self.pick_names: List[str] = []
         self.hp_device: str = ""
 
         self._build()
@@ -81,6 +85,12 @@ class SetupWizard:
         self.result_lbl.pack(fill="x", padx=20, pady=14, ipadx=8, ipady=8)
         self.result_lbl.pack_forget()
 
+        self.picker = tk.Listbox(self.root, bg=Theme.PANEL, fg=Theme.FG, font=Theme.FONT_SMALL,
+                                 selectbackground=Theme.ACCENT, selectforeground="#000000",
+                                 relief="flat", highlightthickness=0, height=8, activestyle="none")
+        self.picker.pack(fill="x", padx=20, pady=(0, 6))
+        self.picker.pack_forget()
+
         self.action_btn = tk.Button(self.root, text="", font=Theme.FONT_BTN,
                                     bg=Theme.ACCENT, fg="#000000", relief="flat",
                                     width=30, pady=6, activebackground="#e65c00",
@@ -117,6 +127,44 @@ class SetupWizard:
             name = name.replace(ch, " ")
         return name.split()
 
+    @staticmethod
+    def _identity(name: str) -> str:
+        """The device's own name: the text inside parentheses if present, else the whole name.
+        'Speakers (Oculus Virtual Audio Device)' -> 'Oculus Virtual Audio Device'."""
+        if "(" in name and ")" in name:
+            inside = name[name.index("(") + 1:name.rindex(")")].strip()
+            if inside:
+                return inside
+        return name.strip()
+
+    def _pnp_endpoints(self) -> Set[str]:
+        """Windows audio-endpoint names via PnP. Empty set on other platforms or on failure.
+        This is the fallback path: it sees jack-sensed devices that PortAudio never drops."""
+        if platform.system() != "Windows":
+            return set()
+        script = ("Get-PnpDevice -Class AudioEndpoint -Status OK | "
+                  "ForEach-Object { $_.FriendlyName }")
+        try:
+            result = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                                    capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return set()
+        if result.returncode != 0:
+            return set()
+        return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+    def _map_pnp_keyword(self, pnp_name: str) -> str:
+        """Turn a PnP endpoint name into a keyword that also matches a sounddevice name,
+        so hp_device works with the client. Falls back to the PnP identity itself."""
+        sd_names = [str(d.get("name", "")).lower() for d in self._devices()]
+        w = self._words(pnp_name)
+        for length in range(len(w), 0, -1):
+            for start in range(0, len(w) - length + 1):
+                cand = " ".join(w[start:start + length])
+                if any(cand.lower() in n for n in sd_names):
+                    return cand
+        return self._identity(pnp_name)
+
     # ------------------------------------------------------------------
     def _show_intro(self) -> None:
         self.state = "intro"
@@ -131,6 +179,7 @@ class SetupWizard:
     def _show_unplug(self) -> None:
         self.state = "unplug"
         self.before = self._snapshot()
+        self.pnp_before = self._pnp_endpoints()
         self.step_lbl.config(text="Step 2 of 2")
         self.info_lbl.config(
             text="Now UNPLUG the headset (or turn it off).\n\n"
@@ -141,11 +190,7 @@ class SetupWizard:
         after = self._snapshot()
         removed = self.before - after
         if not removed:
-            self.info_lbl.config(
-                text="No change detected. The headset endpoint did not disappear.\n\n"
-                     "Make sure you actually unplugged it, then click Detect again. "
-                     "Some built-in jacks never disappear - such a device cannot be "
-                     "tracked this way.")
+            self._detect_fallback()
             return
 
         names = [entry.split("|")[0] for entry in removed]
@@ -165,6 +210,74 @@ class SetupWizard:
             text=f'Detected headset -> hp_device = "{keyword}"\n\nDevices that disappeared:\n{detail}{note}')
         self.result_lbl.pack(fill="x", padx=20, pady=14, ipadx=8, ipady=8)
         self.info_lbl.config(text="Plug the headset back in, then click Save.")
+        self.step_lbl.config(text="Done")
+        self.state = "save"
+        self.action_btn.config(text="Save settings.txt")
+
+    def _detect_fallback(self) -> None:
+        """PortAudio saw no change. Try the Windows PnP diff, then a manual pick."""
+        pnp_removed = self._pnp_endpoints_removed()
+        if pnp_removed:
+            keyword = ""
+            for name in pnp_removed:
+                keyword = self._map_pnp_keyword(name)
+                if keyword:
+                    break
+            if keyword:
+                self.hp_device = keyword
+                detail = "\n".join(f"  - {n}" for n in sorted(pnp_removed))
+                self.result_lbl.config(
+                    text=f'Detected via Windows (PnP) -> hp_device = "{keyword}"\n\n'
+                         f'Endpoints that disappeared:\n{detail}\n\n'
+                         f'Note: a jack device may still not report unplug at runtime, '
+                         f'but the client will use the right device.')
+                self.result_lbl.pack(fill="x", padx=20, pady=14, ipadx=8, ipady=8)
+                self.info_lbl.config(text="Plug the headset back in, then click Save.")
+                self.step_lbl.config(text="Done")
+                self.state = "save"
+                self.action_btn.config(text="Save settings.txt")
+                return
+        self._show_pick()
+
+    def _pnp_endpoints_removed(self) -> Set[str]:
+        if not self.pnp_before:
+            return set()
+        return self.pnp_before - self._pnp_endpoints()
+
+    def _show_pick(self) -> None:
+        """Last resort: list current devices and let the user choose the headset."""
+        self.state = "pick"
+        self.result_lbl.pack_forget()
+        devices = self._devices()
+        self.pick_names = []
+        self.picker.delete(0, "end")
+        seen: Set[str] = set()
+        for d in devices:
+            name = str(d.get("name", ""))
+            ident = self._identity(name)
+            if not ident or ident in seen:
+                continue
+            seen.add(ident)
+            io = f"in{d.get('max_input_channels',0)}/out{d.get('max_output_channels',0)}"
+            self.pick_names.append(ident)
+            self.picker.insert("end", f"  {ident}    [{io}]")
+        self.step_lbl.config(text="Manual selection")
+        self.info_lbl.config(
+            text="Automatic detection did not find the headset. Plug it back in, "
+                 "then pick it from the list below and click Use selected.")
+        self.picker.pack(fill="x", padx=20, pady=(0, 6))
+        self.action_btn.config(text="Use selected")
+
+    def _use_selected(self) -> None:
+        sel = self.picker.curselection()
+        if not sel:
+            self.info_lbl.config(text="Select a device from the list first.")
+            return
+        self.hp_device = self.pick_names[sel[0]]
+        self.picker.pack_forget()
+        self.result_lbl.config(text=f'Selected -> hp_device = "{self.hp_device}"')
+        self.result_lbl.pack(fill="x", padx=20, pady=14, ipadx=8, ipady=8)
+        self.info_lbl.config(text="Click Save to write settings.txt.")
         self.step_lbl.config(text="Done")
         self.state = "save"
         self.action_btn.config(text="Save settings.txt")
@@ -227,6 +340,8 @@ class SetupWizard:
             self._show_unplug()
         elif self.state == "unplug":
             self._detect()
+        elif self.state == "pick":
+            self._use_selected()
         elif self.state == "save":
             self._save()
         elif self.state == "close":

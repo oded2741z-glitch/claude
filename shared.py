@@ -6,6 +6,33 @@ TARGETS_FILE = "targets.txt"
 SNAPSHOTS_DIR = "snapshots"
 DISPLAYS_FILE = "displays_map.txt"
 DEFAULT_SERVER_URL = "http://127.0.0.1:5000"
+DEFAULT_ANIMATION = "elta"
+
+ANIMATION_CHOICES = [
+    ("elta", "ELTA"),
+    ("elta_wave", "ELTA Wave"),
+    ("dots", "Dots"),
+    ("rings", "Dual Ring"),
+    ("radar", "Radar"),
+    ("waves", "Signal Waves"),
+    ("scan", "Scan Bar"),
+    ("spinner", "Spinner"),
+    ("none", "None (text only)"),
+]
+
+ANIMATION_LABELS = {key: label for key, label in ANIMATION_CHOICES}
+ANIMATION_KEYS = {label: key for key, label in ANIMATION_CHOICES}
+
+
+def load_animation_name(config=None):
+    if config is None:
+        config = load_config()
+    name = config.get("loading_animation", "").strip()
+    if name in ANIMATION_LABELS:
+        return name
+    if config.get("show_animation", "True") == "False":
+        return "none"
+    return DEFAULT_ANIMATION
 
 
 def app_dir():

@@ -22,15 +22,21 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
 )
 
 config_data = shared.load_config()
-show_anim = (config_data.get("show_animation", "True") == "True")
+animation_name = shared.load_animation_name(config_data)
 
-HTML_ANIMATED = """
-<!DOCTYPE html><html><head><meta charset='utf-8'><style>
+ANIM_SHELL = """<!DOCTYPE html><html><head><meta charset='utf-8'><style>
 html,body{height:100%}
 body{background:#121212;margin:0;display:flex;flex-direction:column;
  justify-content:center;align-items:center;overflow:hidden}
-svg{width:62%;max-width:420px;min-width:170px}
 h2{color:#555555;font-family:Consolas,sans-serif;letter-spacing:3px;font-size:14px;margin:26px 0 0}
+__CSS__
+</style></head><body>
+__SVG__
+<h2>WAITING FOR SIGNAL...</h2>
+</body></html>"""
+
+CSS_ELTA = """
+svg{width:62%;max-width:420px;min-width:170px}
 .sq,.rot,.elta{animation-duration:2.333s;animation-iteration-count:infinite;
  animation-timing-function:ease-in-out}
 .sq-a{transform-origin:-24px 68px;animation-name:flyLeftEarly}
@@ -110,7 +116,9 @@ h2{color:#555555;font-family:Consolas,sans-serif;letter-spacing:3px;font-size:14
  68.6%{transform:translate(0px,0px) scale(1,1)}
  73.6%{transform:translate(0px,0px) scale(1.2,0.8)}
  78.6%,100%{transform:translate(0px,0px) scale(1,1)}}
-</style></head><body>
+"""
+
+SVG_ELTA = """
 <svg viewBox='-62 24 244 52' xmlns='http://www.w3.org/2000/svg'>
  <g class='sq sq-a'><rect class='rot rot-a' x='-32' y='52' width='16' height='16' rx='2'/></g>
  <g class='sq sq-b'><rect class='rot rot-b' x='-6' y='52' width='16' height='16' rx='2'/></g>
@@ -118,14 +126,180 @@ h2{color:#555555;font-family:Consolas,sans-serif;letter-spacing:3px;font-size:14
  <g class='sq sq-d'><rect class='rot rot-d' x='136' y='52' width='16' height='16' rx='2'/></g>
  <g class='elta'><text x='62' y='70'>ELTA</text></g>
 </svg>
-<h2>WAITING FOR SIGNAL...</h2>
-</body></html>
 """
 
-HTML_STATIC = "<body style='background-color: #121212; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh;'><h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; font-size: 14px;'>WAITING FOR SIGNAL...</h2></body>"
-HTML_BLACK = "<body style='background-color: #000000; margin: 0;'></body>"
+CSS_ELTA_WAVE = """
+svg{width:58%;max-width:380px;min-width:160px}
+.w{animation:hop 2s ease-in-out infinite}
+.w1{transform-origin:144px 68px;animation-delay:0s}
+.w2{transform-origin:118px 68px;animation-delay:.09s}
+.w3{transform-origin:87px 70px;animation-delay:.18s}
+.w4{transform-origin:68px 70px;animation-delay:.27s}
+.w5{transform-origin:50px 70px;animation-delay:.36s}
+.w6{transform-origin:33px 70px;animation-delay:.45s}
+.w7{transform-origin:2px 68px;animation-delay:.54s}
+.w8{transform-origin:-24px 68px;animation-delay:.63s}
+.sqf{fill:#246CD0}
+.ltr{fill:#3787F6;font-family:'Segoe UI',Arial,Helvetica,sans-serif;font-weight:700;
+ font-size:26px;text-anchor:middle}
+@keyframes hop{
+ 0%,45%,100%{transform:translate(0px,0px) scale(1,1)}
+ 15%{transform:translate(0px,-16px) scale(1,1)}
+ 30%{transform:translate(0px,0px) scale(1,1)}
+ 37%{transform:translate(0px,0px) scale(1.2,0.8)}}
+"""
 
-PLACEHOLDER_HTML = HTML_ANIMATED if show_anim else HTML_STATIC
+SVG_ELTA_WAVE = """
+<svg viewBox='-38 32 194 44' xmlns='http://www.w3.org/2000/svg'>
+ <g class='w w8'><rect class='sqf' x='-32' y='52' width='16' height='16' rx='2'/></g>
+ <g class='w w7'><rect class='sqf' x='-6' y='52' width='16' height='16' rx='2'/></g>
+ <g class='w w6'><text class='ltr' x='33' y='70'>E</text></g>
+ <g class='w w5'><text class='ltr' x='50' y='70'>L</text></g>
+ <g class='w w4'><text class='ltr' x='68' y='70'>T</text></g>
+ <g class='w w3'><text class='ltr' x='87' y='70'>A</text></g>
+ <g class='w w2'><rect class='sqf' x='110' y='52' width='16' height='16' rx='2'/></g>
+ <g class='w w1'><rect class='sqf' x='136' y='52' width='16' height='16' rx='2'/></g>
+</svg>
+"""
+
+CSS_DOTS = """
+svg{width:26%;max-width:150px;min-width:90px}
+.dot{fill:#3787F6;transform-origin:center bottom;animation:dotHop 1.2s ease-in-out infinite}
+.d2{animation-delay:.16s;fill:#2E7BE4}
+.d3{animation-delay:.32s;fill:#246CD0}
+@keyframes dotHop{
+ 0%,55%,100%{transform:translate(0px,0px) scale(1,1)}
+ 22%{transform:translate(0px,-16px) scale(1,1)}
+ 42%{transform:translate(0px,0px) scale(1,1)}
+ 48%{transform:translate(0px,0px) scale(1.25,0.75)}}
+"""
+
+SVG_DOTS = """
+<svg viewBox='-32 -26 64 32' xmlns='http://www.w3.org/2000/svg'>
+ <circle class='dot d1' cx='-20' cy='0' r='7'/>
+ <circle class='dot d2' cx='0' cy='0' r='7'/>
+ <circle class='dot d3' cx='20' cy='0' r='7'/>
+</svg>
+"""
+
+CSS_RINGS = """
+svg{width:20%;max-width:120px;min-width:80px}
+.track{fill:none;stroke:rgba(55,135,246,0.14)}
+.r1,.r2{fill:none;stroke-linecap:round;transform-origin:0px 0px}
+.r1{stroke:#3787F6;animation:spinCw 1.4s linear infinite}
+.r2{stroke:#246CD0;animation:spinCcw 1s linear infinite}
+@keyframes spinCw{to{transform:rotate(360deg)}}
+@keyframes spinCcw{to{transform:rotate(-360deg)}}
+"""
+
+SVG_RINGS = """
+<svg viewBox='-34 -34 68 68' xmlns='http://www.w3.org/2000/svg'>
+ <circle class='track' cx='0' cy='0' r='26' stroke-width='5'/>
+ <circle class='track' cx='0' cy='0' r='16' stroke-width='5'/>
+ <circle class='r1' cx='0' cy='0' r='26' stroke-width='5' stroke-dasharray='58 106'/>
+ <circle class='r2' cx='0' cy='0' r='16' stroke-width='5' stroke-dasharray='34 67'/>
+</svg>
+"""
+
+CSS_RADAR = """
+svg{width:22%;max-width:130px;min-width:85px}
+.grid{fill:none;stroke:rgba(55,135,246,0.16);stroke-width:1.5}
+.sweep{transform-origin:0px 0px;animation:spinCw 2s linear infinite}
+.beam{fill:url(#beamGrad)}
+.edge{stroke:#3787F6;stroke-width:2;stroke-linecap:round}
+.pip{fill:#3787F6}
+@keyframes spinCw{to{transform:rotate(360deg)}}
+"""
+
+SVG_RADAR = """
+<svg viewBox='-36 -36 72 72' xmlns='http://www.w3.org/2000/svg'>
+ <defs><linearGradient id='beamGrad' x1='0' y1='0' x2='1' y2='0'>
+  <stop offset='0%' stop-color='#3787F6' stop-opacity='0'/>
+  <stop offset='100%' stop-color='#3787F6' stop-opacity='0.45'/>
+ </linearGradient></defs>
+ <circle class='grid' cx='0' cy='0' r='30'/>
+ <circle class='grid' cx='0' cy='0' r='20'/>
+ <circle class='grid' cx='0' cy='0' r='10'/>
+ <g class='sweep'>
+  <path class='beam' d='M0 0 L30 0 A30 30 0 0 0 21.21 -21.21 Z'/>
+  <line class='edge' x1='0' y1='0' x2='30' y2='0'/>
+ </g>
+ <circle class='pip' cx='0' cy='0' r='3'/>
+</svg>
+"""
+
+CSS_WAVES = """
+svg{width:22%;max-width:130px;min-width:85px}
+.ring{fill:none;stroke:#3787F6;stroke-width:3;transform-origin:0px 0px;
+ animation:ripple 1.8s ease-out infinite}
+.p2{animation-delay:.6s}
+.p3{animation-delay:1.2s}
+.core{fill:#3787F6}
+@keyframes ripple{
+ 0%{transform:scale(0.18);opacity:0.9}
+ 100%{transform:scale(1);opacity:0}}
+"""
+
+SVG_WAVES = """
+<svg viewBox='-34 -34 68 68' xmlns='http://www.w3.org/2000/svg'>
+ <circle class='ring p1' cx='0' cy='0' r='30'/>
+ <circle class='ring p2' cx='0' cy='0' r='30'/>
+ <circle class='ring p3' cx='0' cy='0' r='30'/>
+ <circle class='core' cx='0' cy='0' r='5'/>
+</svg>
+"""
+
+CSS_SCAN = """
+svg{width:36%;max-width:230px;min-width:130px}
+.rail{fill:rgba(55,135,246,0.14)}
+.knob{fill:#3787F6;animation:sweepX 1.1s ease-in-out infinite alternate}
+.glow{fill:rgba(55,135,246,0.25);animation:sweepX 1.1s ease-in-out infinite alternate}
+@keyframes sweepX{
+ 0%{transform:translate(-30px,0px)}
+ 100%{transform:translate(30px,0px)}}
+"""
+
+SVG_SCAN = """
+<svg viewBox='-46 -12 92 24' xmlns='http://www.w3.org/2000/svg'>
+ <rect class='rail' x='-40' y='-2' width='80' height='4' rx='2'/>
+ <rect class='glow' x='-14' y='-4' width='28' height='8' rx='4'/>
+ <rect class='knob' x='-7' y='-3' width='14' height='6' rx='3'/>
+</svg>
+"""
+
+CSS_SPINNER = """
+svg{width:18%;max-width:100px;min-width:70px}
+.track{fill:none;stroke:rgba(55,135,246,0.15);stroke-width:5}
+.arc{fill:none;stroke:#3787F6;stroke-width:5;stroke-linecap:round;
+ transform-origin:0px 0px;animation:spinCw 1s linear infinite}
+@keyframes spinCw{to{transform:rotate(360deg)}}
+"""
+
+SVG_SPINNER = """
+<svg viewBox='-30 -30 60 60' xmlns='http://www.w3.org/2000/svg'>
+ <circle class='track' cx='0' cy='0' r='22'/>
+ <circle class='arc' cx='0' cy='0' r='22' stroke-dasharray='42 96'/>
+</svg>
+"""
+
+ANIMATIONS = {
+    "elta": (CSS_ELTA, SVG_ELTA),
+    "elta_wave": (CSS_ELTA_WAVE, SVG_ELTA_WAVE),
+    "dots": (CSS_DOTS, SVG_DOTS),
+    "rings": (CSS_RINGS, SVG_RINGS),
+    "radar": (CSS_RADAR, SVG_RADAR),
+    "waves": (CSS_WAVES, SVG_WAVES),
+    "scan": (CSS_SCAN, SVG_SCAN),
+    "spinner": (CSS_SPINNER, SVG_SPINNER),
+    "none": ("", ""),
+}
+
+def build_animation_page(name):
+    css, svg = ANIMATIONS.get(name, ANIMATIONS[shared.DEFAULT_ANIMATION])
+    return ANIM_SHELL.replace("__CSS__", css).replace("__SVG__", svg)
+
+PLACEHOLDER_HTML = build_animation_page(animation_name)
+HTML_BLACK = "<body style='background-color: #000000; margin: 0;'></body>"
 BLACKOUT_KEY = "__blackout__"
 
 sio = socketio.Client()

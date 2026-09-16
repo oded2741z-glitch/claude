@@ -62,8 +62,8 @@ Server-side dicts: `room_state` (per-screen payload), `networked_viewers` (label
 `"0".."3"` = stream URL per quad, `"0_name".."3_name"` = target name shown in the quad header,
 `"fullscreen"` = quad index or `"-1"`, `"blackout"` = `"True"`/`"False"`. Updates are merges, so a
 partial payload (e.g. only `blackout`) is valid. The viewer resolves a URL without `://` by prefixing
-`http://`; an empty URL shows the placeholder HTML (a CSS-animated ELTA loader, or plain text when
-`show_animation=False`), and blackout shows a plain black page. Every state update is
+`http://`; an empty URL shows the placeholder HTML (the loader picked by `loading_animation`, or plain
+text when that key is `none`), and blackout shows a plain black page. Every state update is
 applied to both the grid frames and the fullscreen frame (`ContentFrame.show_content` only reloads when
 the URL actually changed).
 
@@ -98,7 +98,7 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
   row, col, span`. `offset` is `X:0 Y:0` and `res` is `1920x1080`; the controller parses both.
 - `targets.txt`: `name|url` per line.
 - `config.txt`: `key=value`; booleans are the strings `True`/`False`. Keys in use: `show_header`,
-  `show_animation`, `server_url`, `default_scene`. Always write it through `shared.update_config` so
+  `show_animation`, `loading_animation`, `server_url`, `default_scene`. Always write it through `shared.update_config` so
   keys set by another tool (the controller's `default_scene`) survive.
 - `viewer_layouts.json`: viewer-side per-layout window size, saved by the resize grip.
 
@@ -108,17 +108,24 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
   configurator; keep them in sync when changing the look. The accent is `#389379` in both.
 - All windows use `overrideredirect(True)`; there is no native title bar, so every window needs its own
   Quit button and drag handle.
-- The waiting page (`HTML_ANIMATED`) is a self-contained page with **no JavaScript and no external files**:
-  the ELTA loader is an inline SVG animated purely with CSS keyframes, hand-translated from the original
-  Lottie file (4 rounded squares that flip outward and squash on landing, the wordmark bouncing between
-  them; 140 frames at 60 fps, so a 2.333 s loop, and every keyframe percentage is `frame / 140`). The
-  wordmark is an SVG `<text>` in Segoe UI Bold, not the original's stroked letter paths, which looked
-  blobby at this size. Keep it
-  that way. JavaScript inside a page handed to `setHtml` does **not** run in this viewer: Qt percent-encodes
-  the whole string into a `data:` URL, and the page renders its markup but never executes its scripts. That
-  is why the earlier Lottie versions (inline player, then a local `placeholder.html` with `lottie.min.js`
-  beside it) both failed while the CSS spinner always worked. To change the loader, edit the keyframes; to
-  recolor it, the three blues are `#2766BE`, `#246CD0` and `#3787F6`.
+- The waiting page is a self-contained page with **no JavaScript and no external files**: every loader is
+  an inline SVG animated purely with CSS keyframes. JavaScript inside a page handed to `setHtml` does
+  **not** run in this viewer: Qt percent-encodes the whole string into a `data:` URL, and the page renders
+  its markup but never executes its scripts. That is why the earlier Lottie versions (inline player, then a
+  local `placeholder.html` with `lottie.min.js` beside it) both failed while the CSS spinner always worked.
+  Keep the page JS-free.
+- `viewer.py` holds nine loaders as `CSS_*` / `SVG_*` string pairs in the `ANIMATIONS` dict, keyed by the
+  names in `shared.ANIMATION_CHOICES`: `elta`, `elta_wave`, `dots`, `rings`, `radar`, `waves`, `scan`,
+  `spinner`, `none`. `build_animation_page(name)` pastes a pair into `ANIM_SHELL` with `.replace()` on the
+  `__CSS__` / `__SVG__` markers — never an f-string or `%`, because the CSS is full of braces and percent
+  signs. `shared.load_animation_name()` reads `loading_animation` from `config.txt`, falling back to `none`
+  when the legacy `show_animation=False` is set and to `elta` otherwise; the configurator's Settings tab
+  writes both keys. `elta` is hand-translated from the original Lottie (4 rounded squares that flip outward
+  and squash on landing, the wordmark bouncing between them; 140 frames at 60 fps, so a 2.333 s loop, and
+  every keyframe percentage is `frame / 140`); `elta_wave` is the same artwork with each square and letter
+  sharing one `hop` keyframe on a staggered `animation-delay`, right to left. The wordmark is an SVG
+  `<text>` in Segoe UI Bold, not the original's stroked letter paths, which looked blobby at this size.
+  Every loader uses the same three blues: `#2766BE`, `#246CD0` and `#3787F6`.
 - Snapshots grab the quad's rectangle from the screen compositor (`QScreen.grabWindow`) because
   `QWebEngineView.grab()` returns black for GPU-rendered video; the viewer must be visible for this to work.
 - Hotkeys from the `keyboard` library fire on a background thread; always hop to the tkinter thread with

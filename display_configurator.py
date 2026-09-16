@@ -580,14 +580,17 @@ class DisplayConfigurator:
         app_config = shared.load_config()
 
         self.cfg_show_header = ctk.BooleanVar(value=(app_config.get("show_header", "True") == "True"))
-        self.cfg_show_animation = ctk.BooleanVar(value=(app_config.get("show_animation", "True") == "True"))
+        self.cfg_animation = ctk.StringVar(value=shared.ANIMATION_LABELS[shared.load_animation_name(app_config)])
         self.cfg_server_url = ctk.StringVar(value=app_config.get("server_url", shared.DEFAULT_SERVER_URL))
 
         form_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
         form_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
         ctk.CTkCheckBox(form_frame, text="Show Viewer Header / Resize Grip (Shows top resize bar)", variable=self.cfg_show_header, fg_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 12)).pack(anchor="w", pady=10)
-        ctk.CTkCheckBox(form_frame, text="Show Loading Animation (Animated Spinner vs. Plain Text)", variable=self.cfg_show_animation, fg_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 12)).pack(anchor="w", pady=10)
+        anim_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
+        anim_frame.pack(fill="x", pady=10)
+        ctk.CTkLabel(anim_frame, text="Loading Animation (shown while a quad has no stream):", font=("Consolas", 12), text_color="white").pack(side="left")
+        ctk.CTkOptionMenu(anim_frame, variable=self.cfg_animation, values=[label for _, label in shared.ANIMATION_CHOICES], width=200, corner_radius=0, fg_color="#202020", button_color=COLORS["BTN_BASE"], button_hover_color=COLORS["ACCENT"], text_color="white", font=("Consolas", 12)).pack(side="left", padx=10)
 
         url_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
         url_frame.pack(fill="x", pady=10)
@@ -600,9 +603,11 @@ class DisplayConfigurator:
 
     def save_settings(self):
         server_url = self.cfg_server_url.get().strip() or shared.DEFAULT_SERVER_URL
+        animation = shared.ANIMATION_KEYS.get(self.cfg_animation.get(), shared.DEFAULT_ANIMATION)
         shared.update_config({
             "show_header": str(self.cfg_show_header.get()),
-            "show_animation": str(self.cfg_show_animation.get()),
+            "show_animation": str(animation != "none"),
+            "loading_animation": animation,
             "server_url": server_url
         }, remove=OBSOLETE_CONFIG_KEYS)
         self.cfg_server_url.set(server_url)

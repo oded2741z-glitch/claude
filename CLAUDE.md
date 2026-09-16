@@ -111,7 +111,9 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
 - The waiting page (`HTML_ANIMATED`) is a self-contained page with **no JavaScript and no external files**:
   the ELTA loader is an inline SVG animated purely with CSS keyframes, hand-translated from the original
   Lottie file (4 rounded squares that flip outward and squash on landing, the wordmark bouncing between
-  them; 140 frames at 60 fps, so a 2.333 s loop, and every keyframe percentage is `frame / 140`). Keep it
+  them; 140 frames at 60 fps, so a 2.333 s loop, and every keyframe percentage is `frame / 140`). The
+  wordmark is an SVG `<text>` in Segoe UI Bold, not the original's stroked letter paths, which looked
+  blobby at this size. Keep it
   that way. JavaScript inside a page handed to `setHtml` does **not** run in this viewer: Qt percent-encodes
   the whole string into a `data:` URL, and the page renders its markup but never executes its scripts. That
   is why the earlier Lottie versions (inline player, then a local `placeholder.html` with `lottie.min.js`

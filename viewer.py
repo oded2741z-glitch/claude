@@ -44,7 +44,8 @@ h2{color:#555555;font-family:Consolas,sans-serif;letter-spacing:3px;font-size:14
 .rot-b,.rot-c{fill:#2766BE}
 .rot-a,.rot-d{fill:#246CD0}
 .elta{transform-origin:60px 70px;animation-name:eltaBounce}
-.elta path{fill:none;stroke:#3787F6;stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round}
+.elta text{fill:#3787F6;font-family:'Segoe UI',Arial,Helvetica,sans-serif;font-weight:700;
+ font-size:26px;letter-spacing:2px;text-anchor:middle}
 @keyframes flyLeftEarly{
  0%{transform:translate(0px,0px) scale(1,1)}
  5.4%{transform:translate(-13px,-21px) scale(1,1)}
@@ -115,13 +116,7 @@ h2{color:#555555;font-family:Consolas,sans-serif;letter-spacing:3px;font-size:14
  <g class='sq sq-b'><rect class='rot rot-b' x='-6' y='52' width='16' height='16' rx='2'/></g>
  <g class='sq sq-c'><rect class='rot rot-c' x='110' y='52' width='16' height='16' rx='2'/></g>
  <g class='sq sq-d'><rect class='rot rot-d' x='136' y='52' width='16' height='16' rx='2'/></g>
- <g class='elta'>
-  <path d='M26 50 V70'/><path d='M26 52.25 H38.75'/>
-  <path d='M26 60 H36.25'/><path d='M26 67.75 H38.75'/>
-  <path d='M45.5 50 V67.75 H55.25'/>
-  <path d='M59.75 52.25 H75.75'/><path d='M67.75 50 V70'/>
-  <path d='M80.25 70 L86.05 52.25 H90.45 L96.25 70'/><path d='M83.45 63 H93.05'/>
- </g>
+ <g class='elta'><text x='62' y='70'>ELTA</text></g>
 </svg>
 <h2>WAITING FOR SIGNAL...</h2>
 </body></html>

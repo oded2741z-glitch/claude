@@ -109,12 +109,15 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
 - All windows use `overrideredirect(True)`; there is no native title bar, so every window needs its own
   Quit button and drag handle.
 - The Lottie placeholder needs both `loading.json` (the animation) and `lottie.min.js` (the player, bodymovin
-  5.12.2). Both are located with `shared.resource_path` (exe/script directory first, then the working
-  directory, then a PyInstaller bundle), so they work when `viewer.exe` is started from another working
-  directory; the other config files still use the working directory. When `lottie.min.js` is present its
-  contents are inlined into the placeholder page and the viewer needs no internet; otherwise the page falls
-  back to a `<script src>` pointing at cdnjs, which shows only the text on an offline machine. The
-  placeholder HTML is built by concatenation, not an f-string, because both files are full of braces.
+  5.12.2), located with `shared.resource_path` (exe/script directory first, then the working directory, then
+  a PyInstaller bundle); the other config files still use the working directory. At startup
+  `build_placeholder_file` writes a real `placeholder.html` into a temp folder and copies `lottie.min.js`
+  next to it, and the viewer loads that file with `QUrl.fromLocalFile`. Do **not** put this page through
+  `setHtml`: Qt percent-encodes the whole string into a `data:` URL, and a page carrying a 300 KB player
+  renders its markup but never runs its scripts. The page starts with a CSS spinner inside the Lottie
+  container and clears it only once `window.lottie` exists, so a missing or corrupt `lottie.min.js` shows a
+  spinner rather than nothing. `setHtml` is still fine for the small static and blackout pages. The page is
+  built by concatenation, not an f-string, because the JSON is full of braces.
 - Snapshots grab the quad's rectangle from the screen compositor (`QScreen.grabWindow`) because
   `QWebEngineView.grab()` returns black for GPU-rendered video; the viewer must be visible for this to work.
 - Hotkeys from the `keyboard` library fire on a background thread; always hop to the tkinter thread with

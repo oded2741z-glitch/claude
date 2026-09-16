@@ -2,6 +2,8 @@ import sys
 import os
 import time
 import json
+import shutil
+import tempfile
 import threading
 import socketio
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -34,47 +36,69 @@ HTML_ANIMATED_FALLBACK = """
 
 LOTTIE_FILE = shared.resource_path("loading.json")
 LOTTIE_JS_FILE = shared.resource_path("lottie.min.js")
-HTML_ANIMATED = HTML_ANIMATED_FALLBACK
-
-lottie_player = '<script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>'
-if LOTTIE_JS_FILE:
-    try:
-        with open(LOTTIE_JS_FILE, "r", encoding="utf-8") as f:
-            lottie_player = "<script>" + f.read() + "</script>"
-        print(f"Lottie player: {LOTTIE_JS_FILE}")
-    except Exception as e:
-        print(f"Failed to load lottie.min.js: {e}")
-else:
-    print("Lottie player: lottie.min.js not found, loading from the internet")
-
-if LOTTIE_FILE:
-    try:
-        with open(LOTTIE_FILE, "r", encoding="utf-8") as f:
-            lottie_data = f.read()
-        print(f"Loading animation: {LOTTIE_FILE}")
-
-        HTML_ANIMATED = (
-            "<body style='background-color: #121212; margin: 0; display: flex; flex-direction: column; "
-            "justify-content: center; align-items: center; height: 100vh;'>"
-            "<div id='lottie-container' style='width: 150px; height: 150px;'></div>"
-            "<h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; "
-            "margin-top: 15px; font-size: 14px;'>WAITING FOR SIGNAL...</h2>"
-            + lottie_player +
-            "<script>var animData = " + lottie_data + ";"
-            "lottie.loadAnimation({container: document.getElementById('lottie-container'),"
-            "renderer: 'svg', loop: true, autoplay: true, animationData: animData});</script>"
-            "</body>"
-        )
-    except Exception as e:
-        print(f"Failed to load Lottie JSON: {e}")
-else:
-    print("Loading animation: loading.json not found, using default spinner")
 
 HTML_STATIC = "<body style='background-color: #121212; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh;'><h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; font-size: 14px;'>WAITING FOR SIGNAL...</h2></body>"
 HTML_BLACK = "<body style='background-color: #000000; margin: 0;'></body>"
 
-PLACEHOLDER_HTML = HTML_ANIMATED if show_anim else HTML_STATIC
+PLACEHOLDER_HTML = HTML_ANIMATED_FALLBACK if show_anim else HTML_STATIC
 BLACKOUT_KEY = "__blackout__"
+
+PAGE_HEAD = (
+    "<!DOCTYPE html><html><head><meta charset='utf-8'><style>"
+    "body { background-color: #121212; margin: 0; display: flex; flex-direction: column;"
+    " justify-content: center; align-items: center; height: 100vh; }"
+    "#lottie-container { width: 150px; height: 150px; display: flex;"
+    " justify-content: center; align-items: center; }"
+    "#spinner { border: 4px solid rgba(255,255,255,0.05); border-left-color: #389379;"
+    " border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; }"
+    "h2 { color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px;"
+    " margin-top: 15px; font-size: 14px; }"
+    "@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }"
+    "</style>"
+)
+
+def build_placeholder_file():
+    if not show_anim or not LOTTIE_FILE:
+        return None
+    try:
+        with open(LOTTIE_FILE, "r", encoding="utf-8") as f:
+            lottie_data = f.read()
+
+        folder = tempfile.mkdtemp(prefix="viewer_wait_")
+        if LOTTIE_JS_FILE:
+            shutil.copy(LOTTIE_JS_FILE, os.path.join(folder, "lottie.min.js"))
+            player_tag = "<script src='lottie.min.js'></script>"
+        else:
+            player_tag = "<script src='https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js'></script>"
+
+        page = (
+            PAGE_HEAD + player_tag + "</head><body>"
+            "<div id='lottie-container'><div id='spinner'></div></div>"
+            "<h2>WAITING FOR SIGNAL...</h2>"
+            "<script>var animData = " + lottie_data + ";"
+            "if (window.lottie) {"
+            "document.getElementById('lottie-container').innerHTML = '';"
+            "lottie.loadAnimation({container: document.getElementById('lottie-container'),"
+            "renderer: 'svg', loop: true, autoplay: true, animationData: animData});"
+            "}</script></body></html>"
+        )
+
+        html_path = os.path.join(folder, "placeholder.html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(page)
+        print(f"Placeholder page: {html_path}")
+        return html_path
+    except Exception as e:
+        print(f"Failed to build placeholder page: {e}")
+        return None
+
+PLACEHOLDER_PATH = build_placeholder_file()
+
+def show_placeholder(view):
+    if PLACEHOLDER_PATH:
+        view.load(QUrl.fromLocalFile(PLACEHOLDER_PATH))
+    else:
+        view.setHtml(PLACEHOLDER_HTML)
 
 sio = socketio.Client()
 
@@ -219,7 +243,7 @@ class ContentFrame(QWidget):
         self.title_label.hide()
 
         self.video_frame = QWebEngineView()
-        self.video_frame.setHtml(PLACEHOLDER_HTML)
+        show_placeholder(self.video_frame)
 
         layout.addWidget(self.title_label)
         layout.addWidget(self.video_frame)
@@ -241,7 +265,7 @@ class ContentFrame(QWidget):
             elif key:
                 self.video_frame.load(QUrl(key))
             else:
-                self.video_frame.setHtml(PLACEHOLDER_HTML)
+                show_placeholder(self.video_frame)
 
         if name and name != "None" and key and key != BLACKOUT_KEY:
             self.title_label.setText(name)

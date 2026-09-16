@@ -62,8 +62,8 @@ Server-side dicts: `room_state` (per-screen payload), `networked_viewers` (label
 `"0".."3"` = stream URL per quad, `"0_name".."3_name"` = target name shown in the quad header,
 `"fullscreen"` = quad index or `"-1"`, `"blackout"` = `"True"`/`"False"`. Updates are merges, so a
 partial payload (e.g. only `blackout`) is valid. The viewer resolves a URL without `://` by prefixing
-`http://`; an empty URL shows the placeholder HTML (Lottie from `loading.json` if present, else a CSS spinner,
-or plain text when `show_animation=False`), and blackout shows a plain black page. Every state update is
+`http://`; an empty URL shows the placeholder HTML (a CSS-animated ELTA loader, or plain text when
+`show_animation=False`), and blackout shows a plain black page. Every state update is
 applied to both the grid frames and the fullscreen frame (`ContentFrame.show_content` only reloads when
 the URL actually changed).
 
@@ -108,16 +108,15 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
   configurator; keep them in sync when changing the look. The accent is `#389379` in both.
 - All windows use `overrideredirect(True)`; there is no native title bar, so every window needs its own
   Quit button and drag handle.
-- The Lottie placeholder needs both `loading.json` (the animation) and `lottie.min.js` (the player, bodymovin
-  5.12.2), located with `shared.resource_path` (exe/script directory first, then the working directory, then
-  a PyInstaller bundle); the other config files still use the working directory. At startup
-  `build_placeholder_file` writes a real `placeholder.html` into a temp folder and copies `lottie.min.js`
-  next to it, and the viewer loads that file with `QUrl.fromLocalFile`. Do **not** put this page through
-  `setHtml`: Qt percent-encodes the whole string into a `data:` URL, and a page carrying a 300 KB player
-  renders its markup but never runs its scripts. The page starts with a CSS spinner inside the Lottie
-  container and clears it only once `window.lottie` exists, so a missing or corrupt `lottie.min.js` shows a
-  spinner rather than nothing. `setHtml` is still fine for the small static and blackout pages. The page is
-  built by concatenation, not an f-string, because the JSON is full of braces.
+- The waiting page (`HTML_ANIMATED`) is a self-contained page with **no JavaScript and no external files**:
+  the ELTA loader is an inline SVG animated purely with CSS keyframes, hand-translated from the original
+  Lottie file (4 rounded squares that flip outward and squash on landing, the wordmark bouncing between
+  them; 140 frames at 60 fps, so a 2.333 s loop, and every keyframe percentage is `frame / 140`). Keep it
+  that way. JavaScript inside a page handed to `setHtml` does **not** run in this viewer: Qt percent-encodes
+  the whole string into a `data:` URL, and the page renders its markup but never executes its scripts. That
+  is why the earlier Lottie versions (inline player, then a local `placeholder.html` with `lottie.min.js`
+  beside it) both failed while the CSS spinner always worked. To change the loader, edit the keyframes; to
+  recolor it, the three blues are `#2766BE`, `#246CD0` and `#3787F6`.
 - Snapshots grab the quad's rectangle from the screen compositor (`QScreen.grabWindow`) because
   `QWebEngineView.grab()` returns black for GPU-rendered video; the viewer must be visible for this to work.
 - Hotkeys from the `keyboard` library fire on a background thread; always hop to the tkinter thread with

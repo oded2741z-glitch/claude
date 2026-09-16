@@ -2,8 +2,6 @@ import sys
 import os
 import time
 import json
-import shutil
-import tempfile
 import threading
 import socketio
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -26,79 +24,114 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
 config_data = shared.load_config()
 show_anim = (config_data.get("show_animation", "True") == "True")
 
-HTML_ANIMATED_FALLBACK = """
-<body style='background-color: #121212; margin: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh;'>
-    <div style='border: 4px solid rgba(255,255,255,0.05); border-left-color: #389379; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite;'></div>
-    <h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; margin-top: 25px; font-size: 14px;'>WAITING FOR SIGNAL...</h2>
-    <style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>
-</body>
+HTML_ANIMATED = """
+<!DOCTYPE html><html><head><meta charset='utf-8'><style>
+html,body{height:100%}
+body{background:#121212;margin:0;display:flex;flex-direction:column;
+ justify-content:center;align-items:center;overflow:hidden}
+svg{width:62%;max-width:420px;min-width:170px}
+h2{color:#555555;font-family:Consolas,sans-serif;letter-spacing:3px;font-size:14px;margin:26px 0 0}
+.sq,.rot,.elta{animation-duration:2.333s;animation-iteration-count:infinite;
+ animation-timing-function:ease-in-out}
+.sq-a{transform-origin:-24px 68px;animation-name:flyLeftEarly}
+.sq-b{transform-origin:2px 68px;animation-name:flyLeftLate}
+.sq-c{transform-origin:118px 68px;animation-name:flyRightLate}
+.sq-d{transform-origin:144px 68px;animation-name:flyRightEarly}
+.rot-a{transform-origin:-24px 60px;animation-name:spinLeftEarly,tintEarly}
+.rot-b{transform-origin:2px 60px;animation-name:spinLeftLate}
+.rot-c{transform-origin:118px 60px;animation-name:spinRightLate}
+.rot-d{transform-origin:144px 60px;animation-name:spinRightEarly,tintEarly}
+.rot-b,.rot-c{fill:#2766BE}
+.rot-a,.rot-d{fill:#246CD0}
+.elta{transform-origin:60px 70px;animation-name:eltaBounce}
+.elta path{fill:none;stroke:#3787F6;stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round}
+@keyframes flyLeftEarly{
+ 0%{transform:translate(0px,0px) scale(1,1)}
+ 5.4%{transform:translate(-13px,-21px) scale(1,1)}
+ 10.7%{transform:translate(-26px,0px) scale(1,1)}
+ 16.4%{transform:translate(-26px,0px) scale(1.2,0.8)}
+ 21.4%,72.1%{transform:translate(-26px,0px) scale(1,1)}
+ 77.5%{transform:translate(-13px,-21px) scale(1,1)}
+ 82.9%{transform:translate(0px,0px) scale(1,1)}
+ 88.6%{transform:translate(0px,0px) scale(1.2,0.8)}
+ 93.6%,100%{transform:translate(0px,0px) scale(1,1)}}
+@keyframes flyLeftLate{
+ 0%,7.1%{transform:translate(0px,0px) scale(1,1)}
+ 12.5%{transform:translate(-13px,-21px) scale(1,1)}
+ 17.9%{transform:translate(-26px,0px) scale(1,1)}
+ 23.6%{transform:translate(-26px,0px) scale(1.2,0.8)}
+ 28.6%,65%{transform:translate(-26px,0px) scale(1,1)}
+ 70.4%{transform:translate(-13px,-21px) scale(1,1)}
+ 75.7%{transform:translate(0px,0px) scale(1,1)}
+ 81.4%{transform:translate(0px,0px) scale(1.2,0.8)}
+ 86.4%,100%{transform:translate(0px,0px) scale(1,1)}}
+@keyframes flyRightEarly{
+ 0%{transform:translate(0px,0px) scale(1,1)}
+ 5.4%{transform:translate(13px,-21px) scale(1,1)}
+ 10.7%{transform:translate(26px,0px) scale(1,1)}
+ 16.4%{transform:translate(26px,0px) scale(1.2,0.8)}
+ 21.4%,72.1%{transform:translate(26px,0px) scale(1,1)}
+ 77.5%{transform:translate(13px,-21px) scale(1,1)}
+ 82.9%{transform:translate(0px,0px) scale(1,1)}
+ 88.6%{transform:translate(0px,0px) scale(1.2,0.8)}
+ 93.6%,100%{transform:translate(0px,0px) scale(1,1)}}
+@keyframes flyRightLate{
+ 0%,7.1%{transform:translate(0px,0px) scale(1,1)}
+ 12.5%{transform:translate(13px,-21px) scale(1,1)}
+ 17.9%{transform:translate(26px,0px) scale(1,1)}
+ 23.6%{transform:translate(26px,0px) scale(1.2,0.8)}
+ 28.6%,65%{transform:translate(26px,0px) scale(1,1)}
+ 70.4%{transform:translate(13px,-21px) scale(1,1)}
+ 75.7%{transform:translate(0px,0px) scale(1,1)}
+ 81.4%{transform:translate(0px,0px) scale(1.2,0.8)}
+ 86.4%,100%{transform:translate(0px,0px) scale(1,1)}}
+@keyframes spinLeftEarly{
+ 0%{transform:rotate(0deg)} 10.7%,72.1%{transform:rotate(-180deg)}
+ 82.9%,100%{transform:rotate(0deg)}}
+@keyframes spinLeftLate{
+ 0%,7.1%{transform:rotate(0deg)} 17.9%,65%{transform:rotate(-180deg)}
+ 75.7%,100%{transform:rotate(0deg)}}
+@keyframes spinRightEarly{
+ 0%{transform:rotate(0deg)} 10.7%,72.1%{transform:rotate(180deg)}
+ 82.9%,100%{transform:rotate(0deg)}}
+@keyframes spinRightLate{
+ 0%,7.1%{transform:rotate(0deg)} 17.9%,65%{transform:rotate(180deg)}
+ 75.7%,100%{transform:rotate(0deg)}}
+@keyframes tintEarly{
+ 0%{fill:#246CD0} 10.7%,72.1%{fill:#3787F6} 82.9%,100%{fill:#246CD0}}
+@keyframes eltaBounce{
+ 0%,14.3%{transform:translate(0px,0px) scale(1,1)}
+ 20%{transform:translate(0px,-21px) scale(1,1)}
+ 25.7%{transform:translate(0px,0px) scale(1,1)}
+ 30.7%{transform:translate(0px,0px) scale(1.2,0.8)}
+ 35.7%,57.1%{transform:translate(0px,0px) scale(1,1)}
+ 62.9%{transform:translate(0px,-21px) scale(1,1)}
+ 68.6%{transform:translate(0px,0px) scale(1,1)}
+ 73.6%{transform:translate(0px,0px) scale(1.2,0.8)}
+ 78.6%,100%{transform:translate(0px,0px) scale(1,1)}}
+</style></head><body>
+<svg viewBox='-62 24 244 52' xmlns='http://www.w3.org/2000/svg'>
+ <g class='sq sq-a'><rect class='rot rot-a' x='-32' y='52' width='16' height='16' rx='2'/></g>
+ <g class='sq sq-b'><rect class='rot rot-b' x='-6' y='52' width='16' height='16' rx='2'/></g>
+ <g class='sq sq-c'><rect class='rot rot-c' x='110' y='52' width='16' height='16' rx='2'/></g>
+ <g class='sq sq-d'><rect class='rot rot-d' x='136' y='52' width='16' height='16' rx='2'/></g>
+ <g class='elta'>
+  <path d='M26 50 V70'/><path d='M26 52.25 H38.75'/>
+  <path d='M26 60 H36.25'/><path d='M26 67.75 H38.75'/>
+  <path d='M45.5 50 V67.75 H55.25'/>
+  <path d='M59.75 52.25 H75.75'/><path d='M67.75 50 V70'/>
+  <path d='M80.25 70 L86.05 52.25 H90.45 L96.25 70'/><path d='M83.45 63 H93.05'/>
+ </g>
+</svg>
+<h2>WAITING FOR SIGNAL...</h2>
+</body></html>
 """
-
-LOTTIE_FILE = shared.resource_path("loading.json")
-LOTTIE_JS_FILE = shared.resource_path("lottie.min.js")
 
 HTML_STATIC = "<body style='background-color: #121212; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh;'><h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; font-size: 14px;'>WAITING FOR SIGNAL...</h2></body>"
 HTML_BLACK = "<body style='background-color: #000000; margin: 0;'></body>"
 
-PLACEHOLDER_HTML = HTML_ANIMATED_FALLBACK if show_anim else HTML_STATIC
+PLACEHOLDER_HTML = HTML_ANIMATED if show_anim else HTML_STATIC
 BLACKOUT_KEY = "__blackout__"
-
-PAGE_HEAD = (
-    "<!DOCTYPE html><html><head><meta charset='utf-8'><style>"
-    "body { background-color: #121212; margin: 0; display: flex; flex-direction: column;"
-    " justify-content: center; align-items: center; height: 100vh; }"
-    "#lottie-container { width: 150px; height: 150px; display: flex;"
-    " justify-content: center; align-items: center; }"
-    "#spinner { border: 4px solid rgba(255,255,255,0.05); border-left-color: #389379;"
-    " border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; }"
-    "h2 { color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px;"
-    " margin-top: 15px; font-size: 14px; }"
-    "@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }"
-    "</style>"
-)
-
-def build_placeholder_file():
-    if not show_anim or not LOTTIE_FILE:
-        return None
-    try:
-        with open(LOTTIE_FILE, "r", encoding="utf-8") as f:
-            lottie_data = f.read()
-
-        folder = tempfile.mkdtemp(prefix="viewer_wait_")
-        if LOTTIE_JS_FILE:
-            shutil.copy(LOTTIE_JS_FILE, os.path.join(folder, "lottie.min.js"))
-            player_tag = "<script src='lottie.min.js'></script>"
-        else:
-            player_tag = "<script src='https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js'></script>"
-
-        page = (
-            PAGE_HEAD + player_tag + "</head><body>"
-            "<div id='lottie-container'><div id='spinner'></div></div>"
-            "<h2>WAITING FOR SIGNAL...</h2>"
-            "<script>var animData = " + lottie_data + ";"
-            "if (window.lottie) {"
-            "document.getElementById('lottie-container').innerHTML = '';"
-            "lottie.loadAnimation({container: document.getElementById('lottie-container'),"
-            "renderer: 'svg', loop: true, autoplay: true, animationData: animData});"
-            "}</script></body></html>"
-        )
-
-        html_path = os.path.join(folder, "placeholder.html")
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(page)
-        print(f"Placeholder page: {html_path}")
-        return html_path
-    except Exception as e:
-        print(f"Failed to build placeholder page: {e}")
-        return None
-
-PLACEHOLDER_PATH = build_placeholder_file()
-
-def show_placeholder(view):
-    if PLACEHOLDER_PATH:
-        view.load(QUrl.fromLocalFile(PLACEHOLDER_PATH))
-    else:
-        view.setHtml(PLACEHOLDER_HTML)
 
 sio = socketio.Client()
 
@@ -243,7 +276,7 @@ class ContentFrame(QWidget):
         self.title_label.hide()
 
         self.video_frame = QWebEngineView()
-        show_placeholder(self.video_frame)
+        self.video_frame.setHtml(PLACEHOLDER_HTML)
 
         layout.addWidget(self.title_label)
         layout.addWidget(self.video_frame)
@@ -265,7 +298,7 @@ class ContentFrame(QWidget):
             elif key:
                 self.video_frame.load(QUrl(key))
             else:
-                show_placeholder(self.video_frame)
+                self.video_frame.setHtml(PLACEHOLDER_HTML)
 
         if name and name != "None" and key and key != BLACKOUT_KEY:
             self.title_label.setText(name)

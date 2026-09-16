@@ -10,7 +10,8 @@ DEFAULT_ANIMATION = "elta"
 
 ANIMATION_CHOICES = [
     ("elta", "ELTA"),
-    ("elta_wave", "ELTA Wave"),
+    ("elta_wave", "ELTA Wave (R-L)"),
+    ("elta_wave_ltr", "ELTA Wave (L-R)"),
     ("dots", "Dots"),
     ("rings", "Dual Ring"),
     ("radar", "Radar"),

@@ -149,6 +149,27 @@ svg{width:58%;max-width:380px;min-width:160px}
  37%{transform:translate(0px,0px) scale(1.2,0.8)}}
 """
 
+CSS_ELTA_WAVE_LTR = """
+svg{width:58%;max-width:380px;min-width:160px}
+.w{animation:hop 2s ease-in-out infinite}
+.w1{transform-origin:144px 68px;animation-delay:.63s}
+.w2{transform-origin:118px 68px;animation-delay:.54s}
+.w3{transform-origin:87px 70px;animation-delay:.45s}
+.w4{transform-origin:68px 70px;animation-delay:.36s}
+.w5{transform-origin:50px 70px;animation-delay:.27s}
+.w6{transform-origin:33px 70px;animation-delay:.18s}
+.w7{transform-origin:2px 68px;animation-delay:.09s}
+.w8{transform-origin:-24px 68px;animation-delay:0s}
+.sqf{fill:#246CD0}
+.ltr{fill:#3787F6;font-family:'Segoe UI',Arial,Helvetica,sans-serif;font-weight:700;
+ font-size:26px;text-anchor:middle}
+@keyframes hop{
+ 0%,45%,100%{transform:translate(0px,0px) scale(1,1)}
+ 15%{transform:translate(0px,-16px) scale(1,1)}
+ 30%{transform:translate(0px,0px) scale(1,1)}
+ 37%{transform:translate(0px,0px) scale(1.2,0.8)}}
+"""
+
 SVG_ELTA_WAVE = """
 <svg viewBox='-38 32 194 44' xmlns='http://www.w3.org/2000/svg'>
  <g class='w w8'><rect class='sqf' x='-32' y='52' width='16' height='16' rx='2'/></g>
@@ -285,6 +306,7 @@ SVG_SPINNER = """
 ANIMATIONS = {
     "elta": (CSS_ELTA, SVG_ELTA),
     "elta_wave": (CSS_ELTA_WAVE, SVG_ELTA_WAVE),
+    "elta_wave_ltr": (CSS_ELTA_WAVE_LTR, SVG_ELTA_WAVE),
     "dots": (CSS_DOTS, SVG_DOTS),
     "rings": (CSS_RINGS, SVG_RINGS),
     "radar": (CSS_RADAR, SVG_RADAR),

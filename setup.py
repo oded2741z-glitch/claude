@@ -13,6 +13,12 @@ SAMPLE_RATE: int = 16000
 CHANNELS: int = 1
 DTYPE: str = 'int16'
 SETTINGS_FILE: str = "settings.txt"
+
+# Virtual / mapper / non-headset endpoints that are never a real headset.
+NOISE_KEYWORDS: Tuple[str, ...] = (
+    "sound mapper", "primary sound", "stereo mix", "wave out mix",
+    "what u hear", "microsoft sound", "nvidia",
+)
 REFRESH_GAP: float = 0.3
 
 
@@ -276,6 +282,8 @@ class SetupWizard:
         seen: Set[str] = set()
         for d in self.pick_devices:
             name = str(d.get("name", ""))
+            if any(k in name.lower() for k in NOISE_KEYWORDS):
+                continue  # מיפוי/מיקסר/מסך - לעולם לא אוזניות
             ident = self._identity(name)
             if not ident or ident in seen:
                 continue

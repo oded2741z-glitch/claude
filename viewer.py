@@ -33,7 +33,19 @@ HTML_ANIMATED_FALLBACK = """
 """
 
 LOTTIE_FILE = shared.resource_path("loading.json")
+LOTTIE_JS_FILE = shared.resource_path("lottie.min.js")
 HTML_ANIMATED = HTML_ANIMATED_FALLBACK
+
+lottie_player = '<script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>'
+if LOTTIE_JS_FILE:
+    try:
+        with open(LOTTIE_JS_FILE, "r", encoding="utf-8") as f:
+            lottie_player = "<script>" + f.read() + "</script>"
+        print(f"Lottie player: {LOTTIE_JS_FILE}")
+    except Exception as e:
+        print(f"Failed to load lottie.min.js: {e}")
+else:
+    print("Lottie player: lottie.min.js not found, loading from the internet")
 
 if LOTTIE_FILE:
     try:
@@ -41,23 +53,18 @@ if LOTTIE_FILE:
             lottie_data = f.read()
         print(f"Loading animation: {LOTTIE_FILE}")
 
-        HTML_ANIMATED = f"""
-        <body style='background-color: #121212; margin: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh;'>
-            <div id='lottie-container' style='width: 150px; height: 150px;'></div>
-            <h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; margin-top: 15px; font-size: 14px;'>WAITING FOR SIGNAL...</h2>
-            <script src="https://cdnjs.cloudflare.com/ajax/libs/bodymovin/5.12.2/lottie.min.js"></script>
-            <script>
-                var animData = {lottie_data};
-                lottie.loadAnimation({{
-                  container: document.getElementById('lottie-container'),
-                  renderer: 'svg',
-                  loop: true,
-                  autoplay: true,
-                  animationData: animData
-                }});
-            </script>
-        </body>
-        """
+        HTML_ANIMATED = (
+            "<body style='background-color: #121212; margin: 0; display: flex; flex-direction: column; "
+            "justify-content: center; align-items: center; height: 100vh;'>"
+            "<div id='lottie-container' style='width: 150px; height: 150px;'></div>"
+            "<h2 style='color: #555555; font-family: Consolas, sans-serif; letter-spacing: 3px; "
+            "margin-top: 15px; font-size: 14px;'>WAITING FOR SIGNAL...</h2>"
+            + lottie_player +
+            "<script>var animData = " + lottie_data + ";"
+            "lottie.loadAnimation({container: document.getElementById('lottie-container'),"
+            "renderer: 'svg', loop: true, autoplay: true, animationData: animData});</script>"
+            "</body>"
+        )
     except Exception as e:
         print(f"Failed to load Lottie JSON: {e}")
 else:

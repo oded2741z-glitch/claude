@@ -20,7 +20,7 @@ if errorlevel 1 goto fail
 
 echo.
 echo Build finished. Executables are in the dist folder.
-echo Copy config.txt, targets.txt, displays_map.txt, scenes.json and loading.json next to them.
+echo Copy config.txt, targets.txt, displays_map.txt, scenes.json, loading.json and lottie.min.js next to them.
 goto end
 
 :fail

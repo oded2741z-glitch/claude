@@ -44,6 +44,7 @@ class SetupWizard:
         self.before: Set[str] = set()
         self.pnp_before: Set[str] = set()
         self.pick_names: List[str] = []
+        self.pick_devices: List[Dict] = []
         self.hp_device: str = ""
 
         self._build()
@@ -129,13 +130,34 @@ class SetupWizard:
 
     @staticmethod
     def _identity(name: str) -> str:
-        """The device's own name: the text inside parentheses if present, else the whole name.
-        'Speakers (Oculus Virtual Audio Device)' -> 'Oculus Virtual Audio Device'."""
-        if "(" in name and ")" in name:
-            inside = name[name.index("(") + 1:name.rindex(")")].strip()
+        """The device's own name: the text after the first '(', without the closing ')'.
+        Windows/MME truncates names to 31 chars, so the ')' is often missing -
+        'Speakers (3- USB PnP Audio Devi' -> '3- USB PnP Audio Devi'."""
+        if "(" in name:
+            inside = name[name.index("(") + 1:]
+            if inside.endswith(")"):
+                inside = inside[:-1]
+            inside = inside.strip()
             if inside:
                 return inside
         return name.strip()
+
+    def _pair_keyword(self, name: str, devices: List[Dict]) -> str:
+        """A keyword for the chosen device that also matches its mic/speaker twin.
+        Uses the longest leading run of whole words from the device identity that
+        appears in both an input-capable and an output-capable device - so it
+        survives MME's 31-char truncation, which cuts the two names differently."""
+        ident_words = self._words(self._identity(name))
+        ins = [str(d.get("name", "")).lower() for d in devices
+               if d.get("max_input_channels", 0) > 0]
+        outs = [str(d.get("name", "")).lower() for d in devices
+                if d.get("max_output_channels", 0) > 0]
+        for take in range(len(ident_words), 0, -1):
+            cand = " ".join(ident_words[:take])
+            low = cand.lower()
+            if any(low in n for n in ins) and any(low in n for n in outs):
+                return cand
+        return self._identity(name)
 
     def _pnp_endpoints(self) -> Set[str]:
         """Windows audio-endpoint names via PnP. Empty set on other platforms or on failure.
@@ -248,18 +270,18 @@ class SetupWizard:
         """Last resort: list current devices and let the user choose the headset."""
         self.state = "pick"
         self.result_lbl.pack_forget()
-        devices = self._devices()
+        self.pick_devices = self._devices()
         self.pick_names = []
         self.picker.delete(0, "end")
         seen: Set[str] = set()
-        for d in devices:
+        for d in self.pick_devices:
             name = str(d.get("name", ""))
             ident = self._identity(name)
             if not ident or ident in seen:
                 continue
             seen.add(ident)
             io = f"in{d.get('max_input_channels',0)}/out{d.get('max_output_channels',0)}"
-            self.pick_names.append(ident)
+            self.pick_names.append(name)
             self.picker.insert("end", f"  {ident}    [{io}]")
         self.step_lbl.config(text="Manual selection")
         self.info_lbl.config(
@@ -273,7 +295,7 @@ class SetupWizard:
         if not sel:
             self.info_lbl.config(text="Select a device from the list first.")
             return
-        self.hp_device = self.pick_names[sel[0]]
+        self.hp_device = self._pair_keyword(self.pick_names[sel[0]], self.pick_devices)
         self.picker.pack_forget()
         self.result_lbl.config(text=f'Selected -> hp_device = "{self.hp_device}"')
         self.result_lbl.pack(fill="x", padx=20, pady=14, ipadx=8, ipady=8)

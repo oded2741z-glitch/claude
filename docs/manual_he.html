@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>מדריך למשתמש - Display Room</title>
+<style>
+@page { size: A4; margin: 18mm 16mm 16mm 16mm; }
+:root {
+  --accent: #2563eb;
+  --dark: #111827;
+  --gray: #64748b;
+  --border: #e2e8f0;
+  --body: #334155;
+}
+* { margin:0; padding:0; box-sizing:border-box;
+    font-family:"DejaVu Sans","Liberation Sans",Arial,sans-serif; }
+body { color:var(--body); font-size:10.5pt; line-height:1.65; }
+
+.cover { height:245mm; display:flex; flex-direction:column; justify-content:center;
+         page-break-after:always; }
+.cover .kicker { font-size:9pt; font-weight:700; letter-spacing:2px; color:var(--gray);
+                 margin-bottom:14px; }
+.cover h1 { font-size:34pt; font-weight:700; color:var(--dark); line-height:1.2;
+            letter-spacing:-1px; }
+.cover h1 span { color:var(--accent); }
+.cover .sub { font-size:13pt; color:var(--gray); margin-top:14px; max-width:135mm; }
+.cover .rule { width:60mm; height:3px; background:var(--accent); margin:26px 0; }
+.cover .files { display:flex; gap:10px; margin-top:8px; flex-wrap:wrap; }
+.cover .chip { border:1px solid var(--border); border-radius:6px; padding:7px 13px;
+               font-size:9.5pt; color:var(--dark); background:#f9fafb; }
+
+h2 { font-size:16pt; color:var(--dark); font-weight:700; margin:0 0 4px;
+     letter-spacing:-0.4px; }
+h2 .num { color:var(--accent); font-size:12pt; margin-left:8px; }
+h3 { font-size:11.5pt; color:var(--dark); font-weight:700; margin:16px 0 6px; }
+section { page-break-inside:avoid; margin-bottom:22px; }
+section > h2 { border-bottom:1px solid var(--border); padding-bottom:7px; margin-bottom:11px; }
+p { margin-bottom:8px; }
+ul, ol { margin:0 20px 10px 0; padding-right:8px; }
+li { margin-bottom:5px; }
+
+table { width:100%; border-collapse:collapse; margin:10px 0; font-size:9.5pt; }
+th { background:#f1f5f9; color:var(--dark); font-weight:700; text-align:right;
+     padding:7px 10px; border:1px solid var(--border); }
+td { padding:7px 10px; border:1px solid var(--border); vertical-align:top; }
+td.k { white-space:nowrap; font-weight:700; color:var(--dark); width:1%; }
+
+code { font-family:"DejaVu Sans Mono","Liberation Mono",monospace; font-size:9pt;
+       background:#f1f5f9; border:1px solid var(--border); border-radius:3px;
+       padding:1px 5px; color:#1e293b; direction:ltr; unicode-bidi:isolate;
+       display:inline-block; }
+.note { background:#eff6ff; border-right:4px solid var(--accent); padding:11px 14px;
+        margin:11px 0; font-size:9.8pt; border-radius:0 5px 5px 0; }
+.warn { background:#fef3c7; border-right:4px solid #d97706; padding:11px 14px;
+        margin:11px 0; font-size:9.8pt; border-radius:0 5px 5px 0; }
+.note b, .warn b { color:var(--dark); }
+
+.steps { counter-reset:s; list-style:none; margin-right:0; padding:0; }
+.steps li { counter-increment:s; position:relative; padding-right:32px; margin-bottom:10px; }
+.steps li::before { content:counter(s); position:absolute; right:0; top:1px;
+  width:21px; height:21px; background:var(--accent); color:#fff; border-radius:50%;
+  font-size:8.5pt; font-weight:700; display:flex; align-items:center;
+  justify-content:center; }
+.foot { margin-top:26px; padding-top:10px; border-top:1px solid var(--border);
+        font-size:8.5pt; color:var(--gray); text-align:center; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="kicker">מדריך למשתמש</div>
+  <h1>Display <span>Room</span></h1>
+  <div class="rule"></div>
+  <div class="sub">מערכת לניהול חדר מסכים: מחשב בקרה אחד שולט על מסכי תצוגה מרובים,
+  כל מסך מציג עד ארבעה מקורות וידאו במקביל.</div>
+  <div class="files">
+    <div class="chip">display_controller.exe</div>
+    <div class="chip">viewer.exe</div>
+    <div class="chip">display_configurator.exe</div>
+  </div>
+</div>
+
+<section>
+  <h2><span class="num">1</span>מה המערכת עושה</h2>
+  <p>המערכת בנויה משלוש תוכנות שעובדות יחד. מחשב אחד מוגדר כ<b>בקר</b> (Controller),
+  והוא מפעיל ושולט על חלונות <b>תצוגה</b> (Viewer) שרצים במסך מלא על שאר המסכים.</p>
+  <table>
+    <tr><th>התוכנה</th><th>מה היא עושה</th><th>מתי מפעילים</th></tr>
+    <tr><td class="k">display_configurator.exe</td>
+        <td>מגדיר את המסכים, את רשימת מקורות הווידאו ואת ההגדרות הכלליות.</td>
+        <td>פעם אחת בהתקנה, ואחר כך רק כשמשנים חומרה או מקורות.</td></tr>
+    <tr><td class="k">display_controller.exe</td>
+        <td>לוח הבקרה. מפעיל ומכבה מסכים, קובע מה מוצג בכל ריבוע, שומר ומעלה סצנות.</td>
+        <td>בכל יום עבודה — זו התוכנה הראשית.</td></tr>
+    <tr><td class="k">viewer.exe</td>
+        <td>חלון התצוגה עצמו במסך מלא.</td>
+        <td>לא מפעילים ידנית — הבקר מפעיל אותו אוטומטית.</td></tr>
+  </table>
+  <div class="note"><b>חשוב:</b> כל שלושת הקבצים וקובצי ההגדרות חייבים לשבת
+  <b>באותה תיקייה</b>. התוכנות קוראות את ההגדרות מהתיקייה שממנה הן רצות.</div>
+</section>
+
+<section>
+  <h2><span class="num">2</span>מה צריך להיות בתיקייה</h2>
+  <table>
+    <tr><th>קובץ</th><th>תפקיד</th></tr>
+    <tr><td class="k">display_controller.exe</td><td>לוח הבקרה</td></tr>
+    <tr><td class="k">viewer.exe</td><td>חלון התצוגה</td></tr>
+    <tr><td class="k">display_configurator.exe</td><td>כלי ההגדרות</td></tr>
+    <tr><td class="k">displays_map.txt</td><td>מפת המסכים הפיזיים ופריסתם</td></tr>
+    <tr><td class="k">targets.txt</td><td>רשימת מקורות הווידאו (שם וכתובת)</td></tr>
+    <tr><td class="k">config.txt</td><td>הגדרות כלליות</td></tr>
+    <tr><td class="k">scenes.json</td><td>סצנות שמורות (נוצר לבד בשמירה ראשונה)</td></tr>
+    <tr><td class="k">snapshots</td><td>תיקיית צילומי המסך (נוצרת לבד)</td></tr>
+    <tr><td class="k">controller.log</td><td>יומן הפעולות של הבקר (נוצר לבד)</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2><span class="num">3</span>התקנה ראשונה — סדר הפעולות</h2>
+  <ol class="steps">
+    <li>להעתיק את כל הקבצים לתיקייה אחת על מחשב הבקרה.</li>
+    <li>להפעיל את <code>display_configurator.exe</code> ולהגדיר מסכים, מקורות והגדרות
+        (פרקים 4–6).</li>
+    <li>ללחוץ <b>SAVE CONFIG</b> ו-<b>SAVE SETTINGS</b> ולסגור את הכלי.</li>
+    <li>להפעיל את <code>display_controller.exe</code> ולהעלות את המסכים (פרק 7).</li>
+  </ol>
+  <div class="warn"><b>חומת האש של Windows:</b> בהפעלה הראשונה של הבקר יופיע חלון
+  אישור רשת. יש לאשר — הבקר מריץ שרת פנימי בפורט 5000 שדרכו כל המסכים מסתנכרנים.</div>
+</section>
+
+<section>
+  <h2><span class="num">4</span>הכלי: לשונית Displays Map</h2>
+  <p>כאן מגדירים אילו מסכים פיזיים קיימים ואיך הם מסודרים.</p>
+  <ol class="steps">
+    <li><b>DETECT MONITORS</b> — סורק את המסכים המחוברים למחשב וממלא את הטבלה לבד.
+        זו הדרך המומלצת.</li>
+    <li>לחיצה כפולה על שורה בטבלה פותחת חלון עריכה — אפשר לשנות את השם (Alias)
+        של המסך לשם משמעותי כמו "מסך ראשי" או "קיר שמאל".</li>
+    <li><b>VISUAL EDITOR</b> — עורך ויזואלי לסידור המסכים ברשת, כך שהתצוגה בבקר
+        תשקף את הסידור הפיזי בחדר.</li>
+    <li><b>SET AS PRIMARY</b> — מסמן את השורה הנבחרת כמסך הראשי.</li>
+    <li><b>SAVE CONFIG</b> — שומר. בלי זה שום שינוי לא נשמר.</li>
+  </ol>
+  <div class="note"><b>CLEAR ALL</b> מוחק את כל השורות הנבחרות. אין ביטול לפעולה.</div>
+</section>
+
+<section>
+  <h2><span class="num">5</span>הכלי: לשונית Stream Targets</h2>
+  <p>רשימת מקורות הווידאו שיהיו זמינים לבחירה בבקר.</p>
+  <ul>
+    <li>ממלאים <b>Target Name</b> (השם שיופיע ברשימה) ו-<b>Stream URL</b>
+        (הכתובת של המקור) ומוסיפים לטבלה.</li>
+    <li><b>DELETE SELECTED</b> מוחק את השורה הנבחרת.</li>
+    <li>לחיצה על שורה טוענת אותה לשדות לעריכה.</li>
+  </ul>
+  <div class="note">אם הכתובת נכתבת בלי <code>http://</code> — התצוגה תוסיף את זה לבד.</div>
+</section>
+
+<section>
+  <h2><span class="num">6</span>הכלי: לשונית Settings</h2>
+  <table>
+    <tr><th>הגדרה</th><th>משמעות</th></tr>
+    <tr><td class="k">Show Viewer Header</td>
+        <td>מציג בראש חלון התצוגה סרגל עם שם המקור וידית לשינוי גודל.
+            לתצוגת קיר נקייה — לכבות.</td></tr>
+    <tr><td class="k">Loading Animation</td>
+        <td>האנימציה שמוצגת בריבוע שעדיין אין לו מקור. אפשר לבחור מתוך רשימה
+            (ELTA, גלים, מכ"ם, ספינר ועוד), או <b>None</b> לטקסט בלבד.</td></tr>
+    <tr><td class="k">Controller Server URL</td>
+        <td>הכתובת שאליה התצוגות מתחברות. במחשב בודד להשאיר
+            <code>http://127.0.0.1:5000</code>.</td></tr>
+  </table>
+  <p>בסיום — <b>SAVE SETTINGS</b>. השינויים נכנסים לתוקף בהפעלה הבאה של הבקר והתצוגות.</p>
+</section>
+
+<section>
+  <h2><span class="num">7</span>הבקר: העלאת מסכים</h2>
+  <p>בחלק העליון של הבקר מוצגת מפת החדר. כל מסך מופיע כמלבן, ובצידו שלושה
+  ריבועים קטנים המסומנים <b>4</b>, <b>2</b>, <b>1</b> — מספר החלונות שיוצגו במסך.</p>
+  <table>
+    <tr><th>פעולה</th><th>תוצאה</th></tr>
+    <tr><td class="k">לחיצה על 4 / 2 / 1</td>
+        <td>מעלה את המסך בפריסה הזו. אם המסך כבר פעיל בפריסה אחרת — הוא נסגר
+            ונפתח מחדש בפריסה החדשה.</td></tr>
+    <tr><td class="k">לחיצה שנייה על אותו מספר</td><td>סוגרת את המסך.</td></tr>
+    <tr><td class="k">לחיצה על גוף המלבן</td>
+        <td>בוחרת את המסך ומפעילה את פאנל <b>Stream Controls</b> למטה.</td></tr>
+  </table>
+  <div class="warn">הבקר <b>לא</b> יעלה תצוגה על המסך שבו חלון הבקר עצמו נמצא.
+  אם לחצתם ולא קרה כלום — הזיזו את חלון הבקר למסך אחר.</div>
+</section>
+
+<section>
+  <h2><span class="num">8</span>הבקר: מה מוצג בכל ריבוע</h2>
+  <p>אחרי בחירת מסך, פאנל <b>Stream Controls</b> מציג ארבע שורות — אחת לכל ריבוע:
+  Stream 1 (Main), Stream 2 (Right), Stream 3 (Bottom L), Stream 4 (Bottom R).</p>
+  <ul>
+    <li>בוחרים מקור מהרשימה הנפתחת — השינוי מופיע במסך מיידית.</li>
+    <li>בחירת <b>None</b> מרוקנת את הריבוע ומחזירה אותו לאנימציית ההמתנה.</li>
+    <li>כפתור <b>⤢</b> מגדיל את הריבוע למסך מלא. לחיצה נוספת חוזרת לרשת.</li>
+    <li>כפתור <b>snapshots</b> מצלם את הריבוע ושומר אותו בתיקיית snapshots.</li>
+  </ul>
+  <div class="note">צילומים נשמרים בשם
+  <code>Snap_&lt;מסך&gt;_Quad&lt;מספר&gt;_&lt;תאריך-שעה&gt;.png</code>.
+  <b>OPEN SNAPSHOTS FOLDER</b> פותח את התיקייה.<br>
+  <b>הערה:</b> הצילום מתבצע מהמסך עצמו, ולכן חלון התצוגה חייב להיות גלוי
+  ולא מוסתר מאחורי חלון אחר.</div>
+</section>
+
+<section>
+  <h2><span class="num">9</span>הבקר: סצנות</h2>
+  <p>סצנה שומרת את התמונה המלאה — מה מוצג בכל ריבוע בכל מסך, ובאיזו פריסה.</p>
+  <table>
+    <tr><td class="k">SAVE</td><td>שומר את המצב הנוכחי. אפשר לסמן שהסצנה תיטען
+        אוטומטית בכל הפעלה של הבקר.</td></tr>
+    <tr><td class="k">LOAD</td><td>מעלה סצנה שמורה. מסכים שלא נכללים בה מתרוקנים,
+        ומסכים שהפריסה שלהם שונה נסגרים ונפתחים מחדש.</td></tr>
+    <tr><td class="k">RENAME</td><td>שינוי שם, וגם קביעה של סצנת ברירת המחדל.</td></tr>
+    <tr><td class="k">DEL</td><td>מחיקת הסצנה הנבחרת.</td></tr>
+  </table>
+  <div class="note">בטעינת סצנה המערכת שולחת את המצב שוב כמה פעמים לאורך
+  שש שניות, כדי לתפוס גם מסכים שעדיין באמצע ההפעלה. זה נורמלי.</div>
+</section>
+
+<section>
+  <h2><span class="num">10</span>הבקר: השחרה וסגירה</h2>
+  <ul>
+    <li><b>BLACKOUT ALL SCREENS</b> — משחיר את כל המסכים מיידית בלי לסגור אותם.
+        הכפתור הופך ל-<b>RESTORE SCREENS</b>; לחיצה נוספת מחזירה את התצוגה
+        בדיוק כפי שהייתה.</li>
+    <li><b>Help</b> — חלון עזרה מקוצר.</li>
+    <li><b>Quit</b> — סוגר את הבקר. חלונות התצוגה הפתוחים נשארים פתוחים.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">11</span>חלון התצוגה</h2>
+  <p>חלון התצוגה נפתח במסך מלא ואין לו סרגל כותרת של Windows.</p>
+  <ul>
+    <li><b>לסגירה:</b> לוחצים על הכיתוב הקטן <code>oT</code> בפינה התחתונה.</li>
+    <li>ריבוע בלי מקור מציג את אנימציית ההמתנה עם הכיתוב
+        <code>WAITING FOR SIGNAL...</code>.</li>
+    <li>אם <b>Show Viewer Header</b> פעיל — יש סרגל עליון עם שם המקור וידית
+        לשינוי גודל החלון. הגודל נשמר לפי הפריסה לפעם הבאה.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="num">12</span>עבודה בכמה מחשבים</h2>
+  <p>אפשר להריץ תצוגות על מחשבים נוספים ברשת, כשהבקר נשאר במחשב אחד.</p>
+  <ol class="steps">
+    <li>במחשב הבקר — לברר את כתובת ה-IP שלו ברשת.</li>
+    <li>במחשב המרוחק — להעתיק את <code>viewer.exe</code> ואת קובצי ההגדרות
+        לתיקייה משלו.</li>
+    <li>בקובץ <code>config.txt</code> של המחשב המרוחק לשנות את
+        <code>server_url</code> לכתובת הבקר, למשל
+        <code>http://192.168.1.10:5000</code>.</li>
+    <li>להפעיל שם את <code>viewer.exe</code> עם שם המסך ומספר החלונות.</li>
+  </ol>
+  <div class="warn">פורט <b>5000</b> חייב להיות פתוח בחומת האש של מחשב הבקר,
+  ושני המחשבים חייבים להיות באותה רשת.</div>
+</section>
+
+<section>
+  <h2><span class="num">13</span>פתרון תקלות</h2>
+  <table>
+    <tr><th>התופעה</th><th>מה לעשות</th></tr>
+    <tr><td class="k">לחיצה על 4/2/1<br>לא מעלה כלום</td>
+        <td>חלון הבקר יושב על אותו מסך. להזיז אותו למסך אחר ולנסות שוב.
+            הסיבה נרשמת גם ב-<code>controller.log</code>.</td></tr>
+    <tr><td class="k">התצוגה נפתחת<br>על המסך הלא נכון</td>
+        <td>ב-Configurator ללחוץ <b>DETECT MONITORS</b>, לוודא שהשורות מעודכנות
+            ולשמור. המערכת מזהה מסך לפי הנתונים שנסרקו.</td></tr>
+    <tr><td class="k">הריבוע נשאר<br>על אנימציית ההמתנה</td>
+        <td>אין מקור מוגדר, או שהכתובת לא נגישה. לבדוק את הכתובת בדפדפן רגיל
+            על אותו מחשב.</td></tr>
+    <tr><td class="k">שינוי בבקר<br>לא מגיע למסך</td>
+        <td>לוודא שהתצוגה באמת פתוחה, ושהתקשורת עוברת. הכי פשוט: לסגור את
+            התצוגה ולהעלות אותה מחדש מהבקר.</td></tr>
+    <tr><td class="k">הצילום יוצא שחור</td>
+        <td>חלון התצוגה מוסתר מאחורי חלון אחר. להביא אותו לחזית ולצלם שוב.</td></tr>
+    <tr><td class="k">שינוי בהגדרות<br>לא השפיע</td>
+        <td>הגדרות ב-Settings נכנסות לתוקף רק בהפעלה הבאה. לסגור ולהפעיל מחדש
+            את הבקר ואת התצוגות.</td></tr>
+    <tr><td class="k">שום דבר לא נשמר</td>
+        <td>לוודא שנלחץ <b>SAVE CONFIG</b> / <b>SAVE SETTINGS</b>, ושהתיקייה
+            אינה לקריאה בלבד (למשל לא תחת Program Files).</td></tr>
+  </table>
+</section>
+
+<div class="foot">Display Room — מדריך למשתמש</div>
+
+</body>
+</html>

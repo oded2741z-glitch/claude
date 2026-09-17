@@ -17,9 +17,17 @@ except ImportError:
     winsound = None
 
 # --- Constants & Settings ---
-SAMPLE_RATE: int = 16000
+DEFAULT_SAMPLE_RATE: int = 24000
+ALLOWED_RATES: Tuple[int, ...] = (16000, 24000, 48000)
+RATE_LABELS: Dict[int, str] = {16000: "16k Narrow", 24000: "24k Balanced", 48000: "48k Wide"}
 CHANNELS: int = 1
-CHUNK_SIZE: int = 512
+
+
+def chunk_for(rate: int) -> int:
+    """Frames per packet, ~30 ms, so packet count stays steady across rates."""
+    return max(256, rate // 32)
+
+
 DTYPE: str = 'int16'
 BUFFER_SIZE: int = 65535          # UDP חותך בשקט חבילות גדולות מהבאפר
 TIMEOUT_SECS: float = 3.0
@@ -123,6 +131,9 @@ class IntercomGUI:
         self.signalling_addr: Optional[Tuple[str, int]] = None
         self.my_id: str = ""
         self.peer_id: str = ""
+
+        self.sample_rate: int = DEFAULT_SAMPLE_RATE
+        self.chunk_size: int = chunk_for(DEFAULT_SAMPLE_RATE)
 
         # Dashboard state (נכתב מתרדי הרקע, נקרא מתרד ה-UI)
         self._events: deque = deque(maxlen=200)
@@ -231,6 +242,19 @@ class IntercomGUI:
         tk.Label(config_frame, text="My ID:", bg=Theme.BG, fg=Theme.FG).grid(row=1, column=0, sticky="w", pady=5)
         self.my_id_entry = tk.Entry(config_frame, bg=Theme.ENTRY_BG, fg=Theme.FG, insertbackground=Theme.FG, relief="flat", highlightthickness=1, highlightbackground=Theme.DIVIDER, width=18)
         self.my_id_entry.grid(row=1, column=1, pady=5, padx=5)
+
+        tk.Label(config_frame, text="Audio:", bg=Theme.BG, fg=Theme.FG).grid(row=2, column=0, sticky="w", pady=5)
+        rate_frame = tk.Frame(config_frame, bg=Theme.BG)
+        rate_frame.grid(row=2, column=1, columnspan=3, sticky="w", pady=5)
+        self.rate_var = tk.IntVar(value=DEFAULT_SAMPLE_RATE)
+        self.rate_buttons: list = []
+        for rate in ALLOWED_RATES:
+            rb = tk.Radiobutton(rate_frame, text=RATE_LABELS[rate], value=rate, variable=self.rate_var,
+                                command=self._on_rate_change, bg=Theme.BG, fg=Theme.FG,
+                                selectcolor=Theme.BTN_BG, activebackground=Theme.BG,
+                                activeforeground=Theme.FG, font=Theme.FONT_ENTRY)
+            rb.pack(side="left", padx=(0, 8))
+            self.rate_buttons.append(rb)
 
         self.status_label = tk.Label(self.root, text="STATUS: DISCONNECTED", font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.DISCONNECTED)
         self.status_label.pack(pady=10)
@@ -565,6 +589,16 @@ class IntercomGUI:
                 pass
         self.root.after(0, apply)
 
+    def _on_rate_change(self) -> None:
+        rate = self.rate_var.get()
+        if rate not in ALLOWED_RATES:
+            rate = DEFAULT_SAMPLE_RATE
+            self.rate_var.set(rate)
+        self.sample_rate = rate
+        self.chunk_size = chunk_for(rate)
+        self.save_settings()
+        self.log(f"Audio sample rate set to {rate} ({RATE_LABELS[rate]}).", "yellow")
+
     def save_settings(self) -> None:
         """Serializes current UI entries into a localized JSON config."""
         data: Dict[str, Any] = {
@@ -572,7 +606,8 @@ class IntercomGUI:
             "local_mode": self.local_mode_var.get(),
             "ip": self.server_ip_entry.get().strip(),
             "port": self.server_port_entry.get().strip(),
-            "my_id": self.my_id_entry.get().strip()
+            "my_id": self.my_id_entry.get().strip(),
+            "sample_rate": self.sample_rate
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -603,6 +638,12 @@ class IntercomGUI:
                 entry.insert(0, str(data.get(key, default)))
 
             self.local_mode_var.set(data.get("local_mode", False))
+            rate = data.get("sample_rate", DEFAULT_SAMPLE_RATE)
+            if rate not in ALLOWED_RATES:
+                rate = DEFAULT_SAMPLE_RATE
+            self.rate_var.set(rate)
+            self.sample_rate = rate
+            self.chunk_size = chunk_for(rate)
         except (OSError, json.JSONDecodeError) as e:
             self.log(f"Error loading settings: {e}")
 
@@ -750,8 +791,10 @@ class IntercomGUI:
             ip1 = self._visible_ip(addr1[0], ext_ip, use_local)
             ip2 = self._visible_ip(addr2[0], ext_ip, use_local)
 
-            reply1 = json.dumps({"peer_ip": ip2, "peer_port": addr2[1], "peer_id": peer2_id}).encode('utf-8')
-            reply2 = json.dumps({"peer_ip": ip1, "peer_port": addr1[1], "peer_id": peer1_id}).encode('utf-8')
+            reply1 = json.dumps({"peer_ip": ip2, "peer_port": addr2[1], "peer_id": peer2_id,
+                                 "sample_rate": self.sample_rate}).encode('utf-8')
+            reply2 = json.dumps({"peer_ip": ip1, "peer_port": addr1[1], "peer_id": peer1_id,
+                                 "sample_rate": self.sample_rate}).encode('utf-8')
             for _ in range(MATCH_RETRIES):
                 server_sock.sendto(reply1, addr1)
                 server_sock.sendto(reply2, addr2)
@@ -882,6 +925,8 @@ class IntercomGUI:
         self.toggle_btn.config(text="DISCONNECT", bg=Theme.QUIT, fg=Theme.FG)
         for entry in (self.server_ip_entry, self.server_port_entry, self.my_id_entry, self.ext_ip_entry):
             entry.config(state="disabled")
+        for rb in self.rate_buttons:
+            rb.config(state="disabled")
 
         self._safe_refresh_hardware()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -999,7 +1044,7 @@ class IntercomGUI:
             restart_needed = False
             try:
                 with self._counted_stream(
-                        lambda: sd.OutputStream(samplerate=SAMPLE_RATE, channels=CHANNELS,
+                        lambda: sd.OutputStream(samplerate=self.sample_rate, channels=CHANNELS,
                                                 dtype=DTYPE)) as stream:
                     while self.is_running:
                         sock = self.sock
@@ -1048,11 +1093,11 @@ class IntercomGUI:
             restart_needed = False
             try:
                 with self._counted_stream(
-                        lambda: sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=DTYPE,
-                                               blocksize=CHUNK_SIZE)) as stream:
+                        lambda: sd.InputStream(samplerate=self.sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                               blocksize=self.chunk_size)) as stream:
                     while self.is_running:
                         try:
-                            data, _ = stream.read(CHUNK_SIZE)
+                            data, _ = stream.read(self.chunk_size)
                         except sd.PortAudioError:
                             if self.is_running:
                                 self.log("Input device disconnected. Reconnecting...", "red")
@@ -1124,6 +1169,8 @@ class IntercomGUI:
                 self.toggle_btn.config(text="START INTERCOM", bg=Theme.ACCENT, fg="#000000")
                 for entry in (self.server_ip_entry, self.server_port_entry, self.my_id_entry, self.ext_ip_entry):
                     entry.config(state="normal")
+                for rb in self.rate_buttons:
+                    rb.config(state="normal")
                 self.status_label.config(text="STATUS: DISCONNECTED", fg=Theme.DISCONNECTED)
                 self.log("Intercom stopped.", "red")
             except tk.TclError:

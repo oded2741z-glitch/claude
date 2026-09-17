@@ -10,13 +10,18 @@ import os
 from typing import Optional, Tuple, List, Dict, Any
 
 # --- System & Audio Settings ---
-SAMPLE_RATE: int = 16000
+DEFAULT_SAMPLE_RATE: int = 24000
+ALLOWED_RATES: Tuple[int, ...] = (16000, 24000, 48000)
 CHANNELS: int = 1
-CHUNK_SIZE: int = 512
 DTYPE: str = 'int16'
 BUFFER_SIZE: int = 65535
 TIMEOUT_SECS: float = 3.0
 SETTINGS_FILE: str = "settings.txt"
+
+
+def chunk_for(rate: int) -> int:
+    """Frames per packet, ~30 ms, so packet count stays steady across rates."""
+    return max(256, rate // 32)
 
 # --- P2P wire protocol (חייב להיות זהה ל-server.py) ---
 AUDIO_TAG: bytes = b'\x01'
@@ -61,6 +66,9 @@ class IntercomCLI:
         self.hp_device: str = ""
         self.peer_id: str = ""
 
+        self.sample_rate: int = DEFAULT_SAMPLE_RATE
+        self.chunk_size: int = chunk_for(DEFAULT_SAMPLE_RATE)
+
         self.headphones_ok: bool = False
         self.input_device: Optional[int] = None
         self.output_device: Optional[int] = None
@@ -98,31 +106,38 @@ class IntercomCLI:
             port = int(data.get("port", self.server_port))
             my_id = str(data.get("my_id", self.my_id)).strip()
             hp_device = str(data.get("hp_device", self.hp_device)).strip()
+            rate = int(data.get("sample_rate", self.sample_rate))
         except Exception as e:
             self.log(f"Error loading {SETTINGS_FILE}: {e}. Keeping current values.")
             return
 
-        changed = (ip, port, my_id, hp_device) != (self.server_ip, self.server_port,
-                                                   self.my_id, self.hp_device)
-        self.server_ip, self.server_port, self.my_id, self.hp_device = ip, port, my_id, hp_device
+        if rate not in ALLOWED_RATES:
+            rate = DEFAULT_SAMPLE_RATE
 
-        # קובץ ישן בלי המפתח - מוסיפים אותו כדי שיהיה גלוי לעריכה
-        if "hp_device" not in data:
+        changed = (ip, port, my_id, hp_device, rate) != (self.server_ip, self.server_port,
+                                                         self.my_id, self.hp_device, self.sample_rate)
+        self.server_ip, self.server_port, self.my_id, self.hp_device = ip, port, my_id, hp_device
+        self.sample_rate = rate
+        self.chunk_size = chunk_for(rate)
+
+        # קובץ ישן בלי מפתחות - מוסיפים אותם כדי שיהיו גלויים לעריכה
+        if "hp_device" not in data or "sample_rate" not in data:
             self.save_settings()
-            self.log('Added "hp_device" to settings.txt - set it to part of your headset name.')
+            self.log('Updated settings.txt with the current keys (hp_device / sample_rate).')
 
         if changed or not quiet:
             match = self.hp_device if self.hp_device else "<default device>"
             self.log(f"Settings: IP={self.server_ip}, Port={self.server_port}, "
-                     f"ID={self.my_id}, hp_device={match}")
+                     f"ID={self.my_id}, hp_device={match}, sample_rate={self.sample_rate}")
 
     def save_settings(self) -> None:
         """Serializes current configuration into a localized JSON config."""
-        data: Dict[str, str] = {
+        data: Dict[str, Any] = {
             "ip": self.server_ip,
             "port": str(self.server_port),
             "my_id": self.my_id,
-            "hp_device": self.hp_device
+            "hp_device": self.hp_device,
+            "sample_rate": self.sample_rate
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -269,9 +284,9 @@ class IntercomCLI:
         if in_idx is None or out_idx is None:
             return False
         try:
-            sd.check_input_settings(device=in_idx, samplerate=SAMPLE_RATE,
+            sd.check_input_settings(device=in_idx, samplerate=self.sample_rate,
                                     channels=CHANNELS, dtype=DTYPE)
-            sd.check_output_settings(device=out_idx, samplerate=SAMPLE_RATE,
+            sd.check_output_settings(device=out_idx, samplerate=self.sample_rate,
                                      channels=CHANNELS, dtype=DTYPE)
         except Exception:
             return False
@@ -423,6 +438,10 @@ class IntercomCLI:
                 continue
             peer_id = info.get("peer_id")
             self.peer_id = peer_id.strip() if isinstance(peer_id, str) else ""
+            peer_rate = info.get("sample_rate")
+            if isinstance(peer_rate, int) and peer_rate != self.sample_rate:
+                self.log(f"WARNING: peer sample_rate {peer_rate} != mine {self.sample_rate}. "
+                         f"Audio will sound distorted - set both sides to the same rate.")
             return peer
         return None
 
@@ -515,7 +534,7 @@ class IntercomCLI:
     def _audio_player(self) -> None:
         try:
             with self._counted_stream(
-                    lambda: sd.OutputStream(device=self.output_device, samplerate=SAMPLE_RATE,
+                    lambda: sd.OutputStream(device=self.output_device, samplerate=self.sample_rate,
                                             channels=CHANNELS, dtype=DTYPE)) as stream:
                 while self.in_call and not self.shutdown_event.is_set():
                     try:
@@ -535,11 +554,11 @@ class IntercomCLI:
     def _audio_sender(self) -> None:
         try:
             with self._counted_stream(
-                    lambda: sd.InputStream(device=self.input_device, samplerate=SAMPLE_RATE,
+                    lambda: sd.InputStream(device=self.input_device, samplerate=self.sample_rate,
                                            channels=CHANNELS, dtype=DTYPE,
-                                           blocksize=CHUNK_SIZE)) as stream:
+                                           blocksize=self.chunk_size)) as stream:
                 while self.in_call and not self.shutdown_event.is_set():
-                    data, _ = stream.read(CHUNK_SIZE)
+                    data, _ = stream.read(self.chunk_size)
                     sock, peer = self.sock, self.tx_peer
                     if sock is None or peer is None:
                         break

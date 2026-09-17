@@ -5,7 +5,7 @@ import subprocess
 import time
 import ctypes
 import tkinter as tk
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import sounddevice as sd
 
@@ -20,6 +20,14 @@ NOISE_KEYWORDS: Tuple[str, ...] = (
     "what u hear", "microsoft sound", "nvidia",
 )
 REFRESH_GAP: float = 0.3
+
+DEFAULT_SAMPLE_RATE: int = 24000
+ALLOWED_RATES: Tuple[int, ...] = (16000, 24000, 48000)
+RATE_LABELS: Dict[int, str] = {
+    16000: "16k  Narrow (slow internet)",
+    24000: "24k  Balanced (recommended)",
+    48000: "48k  Wide (fast network)",
+}
 
 
 class Theme:
@@ -52,6 +60,7 @@ class SetupWizard:
         self.pick_names: List[str] = []
         self.pick_devices: List[Dict] = []
         self.hp_device: str = ""
+        self.sample_rate: int = self._load_saved_rate()
 
         self._build()
         self._force_dark_titlebar()
@@ -104,10 +113,38 @@ class SetupWizard:
                                     activeforeground="#000000", command=self._on_action)
         self.action_btn.pack(pady=10)
 
+        # --- Audio quality ---
+        self.rate_frame = tk.Frame(self.root, bg=Theme.BG)
+        self.rate_frame.pack(fill="x", padx=20, pady=(4, 0))
+        tk.Label(self.rate_frame, text="Audio quality (must match the other side):",
+                 font=Theme.FONT_TEXT, bg=Theme.BG, fg=Theme.MUTED).pack(anchor="w")
+        self.rate_var = tk.IntVar(value=self.sample_rate)
+        for rate in ALLOWED_RATES:
+            tk.Radiobutton(self.rate_frame, text=RATE_LABELS[rate], value=rate,
+                           variable=self.rate_var, command=self._on_rate_change,
+                           bg=Theme.BG, fg=Theme.FG, selectcolor=Theme.BTN_BG,
+                           activebackground=Theme.BG, activeforeground=Theme.FG,
+                           font=Theme.FONT_TEXT).pack(anchor="w")
+
         tk.Label(self.root, text="oT", font=("Arial", 7), bg=Theme.BG,
                  fg=Theme.BTN_BG).pack(side="bottom", anchor="e", padx=10, pady=6)
 
         self._show_intro()
+
+    def _load_saved_rate(self) -> int:
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                rate = int(json.load(f).get("sample_rate", DEFAULT_SAMPLE_RATE))
+            return rate if rate in ALLOWED_RATES else DEFAULT_SAMPLE_RATE
+        except Exception:
+            return DEFAULT_SAMPLE_RATE
+
+    def _on_rate_change(self) -> None:
+        rate = self.rate_var.get()
+        self.sample_rate = rate if rate in ALLOWED_RATES else DEFAULT_SAMPLE_RATE
+        # שמירה מיידית ל-settings.txt הקיים, משמרת את שאר המפתחות
+        if os.path.exists(SETTINGS_FILE):
+            self._write_settings()
 
     # ------------------------------------------------------------------
     def _devices(self) -> List[Dict]:
@@ -337,9 +374,11 @@ class SetupWizard:
             return shared[0]
         return names[0].split("(")[0].strip() or names[0].strip()
 
-    def _save(self) -> None:
-        data: Dict[str, str] = {"ip": "192.168.1.11", "port": "9999",
-                                "my_id": "node_B", "hp_device": self.hp_device}
+    def _write_settings(self) -> Optional[Dict[str, Any]]:
+        """Writes hp_device + sample_rate, preserving ip/port/my_id when present."""
+        data: Dict[str, Any] = {"ip": "192.168.1.11", "port": "9999",
+                                "my_id": "node_B", "hp_device": self.hp_device,
+                                "sample_rate": self.sample_rate}
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -347,19 +386,28 @@ class SetupWizard:
                 for k in ("ip", "port", "my_id"):
                     if k in existing:
                         data[k] = str(existing[k])
+                if not self.hp_device and "hp_device" in existing:
+                    data["hp_device"] = str(existing["hp_device"])
             except Exception:
                 pass
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
-        except OSError as e:
-            self.info_lbl.config(text=f"Could not write {SETTINGS_FILE}: {e}", fg=Theme.QUIT)
+        except OSError:
+            return None
+        return data
+
+    def _save(self) -> None:
+        data = self._write_settings()
+        if data is None:
+            self.info_lbl.config(text=f"Could not write {SETTINGS_FILE}", fg=Theme.QUIT)
             return
 
         path = os.path.abspath(SETTINGS_FILE)
         self.result_lbl.config(
             text=f'Saved:\n{path}\n\nip={data["ip"]}  port={data["port"]}\n'
-                 f'my_id={data["my_id"]}\nhp_device="{data["hp_device"]}"')
+                 f'my_id={data["my_id"]}\nhp_device="{data["hp_device"]}"\n'
+                 f'sample_rate={data["sample_rate"]}')
         self.info_lbl.config(text="Setup complete. You can close this window and start the client.")
         self.step_lbl.config(text="Saved")
         self.state = "close"

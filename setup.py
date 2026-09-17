@@ -29,6 +29,9 @@ RATE_LABELS: Dict[int, str] = {
     48000: "48k  Wide (fast network)",
 }
 
+DEFAULT_GAIN: float = 1.0    # mic
+DEFAULT_LEVEL: float = 1.0   # speaker
+
 
 class Theme:
     BG: str = "#121212"
@@ -51,7 +54,7 @@ class SetupWizard:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("Intercom Setup")
-        self.root.geometry("520x420")
+        self.root.geometry("520x560")
         self.root.configure(bg=Theme.BG)
         self.root.resizable(False, False)
 
@@ -61,6 +64,8 @@ class SetupWizard:
         self.pick_devices: List[Dict] = []
         self.hp_device: str = ""
         self.sample_rate: int = self._load_saved_rate()
+        self.gain: float = self._load_saved_float("gain", DEFAULT_GAIN)
+        self.level: float = self._load_saved_float("level", DEFAULT_LEVEL)
 
         self._build()
         self._force_dark_titlebar()
@@ -126,6 +131,30 @@ class SetupWizard:
                            activebackground=Theme.BG, activeforeground=Theme.FG,
                            font=Theme.FONT_TEXT).pack(anchor="w")
 
+        # --- Live gain / level (0-200%, 100% = unchanged) ---
+        vol_frame = tk.Frame(self.root, bg=Theme.BG)
+        vol_frame.pack(fill="x", padx=20, pady=(8, 0))
+        self.gain_lbl = tk.Label(vol_frame, bg=Theme.BG, fg=Theme.FG, font=Theme.FONT_TEXT, anchor="w")
+        self.gain_lbl.pack(fill="x")
+        self.gain_scale = tk.Scale(vol_frame, from_=0, to=200, orient="horizontal",
+                                   showvalue=False, command=self._on_gain,
+                                   bg=Theme.BG, fg=Theme.FG, troughcolor=Theme.BTN_BG,
+                                   highlightthickness=0, sliderrelief="flat",
+                                   activebackground=Theme.ACCENT)
+        self.gain_scale.set(int(self.gain * 100))
+        self.gain_scale.pack(fill="x")
+
+        self.level_lbl = tk.Label(vol_frame, bg=Theme.BG, fg=Theme.FG, font=Theme.FONT_TEXT, anchor="w")
+        self.level_lbl.pack(fill="x", pady=(6, 0))
+        self.level_scale = tk.Scale(vol_frame, from_=0, to=200, orient="horizontal",
+                                    showvalue=False, command=self._on_level,
+                                    bg=Theme.BG, fg=Theme.FG, troughcolor=Theme.BTN_BG,
+                                    highlightthickness=0, sliderrelief="flat",
+                                    activebackground=Theme.ACCENT)
+        self.level_scale.set(int(self.level * 100))
+        self.level_scale.pack(fill="x")
+        self._update_vol_labels()
+
         tk.Label(self.root, text="oT", font=("Arial", 7), bg=Theme.BG,
                  fg=Theme.BTN_BG).pack(side="bottom", anchor="e", padx=10, pady=6)
 
@@ -139,10 +168,34 @@ class SetupWizard:
         except Exception:
             return DEFAULT_SAMPLE_RATE
 
+    def _load_saved_float(self, key: str, default: float) -> float:
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                v = float(json.load(f).get(key, default))
+            return max(0.0, min(2.0, v))
+        except Exception:
+            return default
+
+    def _update_vol_labels(self) -> None:
+        self.gain_lbl.config(text=f"Microphone gain: {int(self.gain * 100)}%")
+        self.level_lbl.config(text=f"Speaker level: {int(self.level * 100)}%")
+
     def _on_rate_change(self) -> None:
         rate = self.rate_var.get()
         self.sample_rate = rate if rate in ALLOWED_RATES else DEFAULT_SAMPLE_RATE
         # שמירה מיידית ל-settings.txt הקיים, משמרת את שאר המפתחות
+        if os.path.exists(SETTINGS_FILE):
+            self._write_settings()
+
+    def _on_gain(self, value: str) -> None:
+        self.gain = max(0.0, min(2.0, int(value) / 100.0))
+        self._update_vol_labels()
+        if os.path.exists(SETTINGS_FILE):
+            self._write_settings()
+
+    def _on_level(self, value: str) -> None:
+        self.level = max(0.0, min(2.0, int(value) / 100.0))
+        self._update_vol_labels()
         if os.path.exists(SETTINGS_FILE):
             self._write_settings()
 
@@ -378,7 +431,8 @@ class SetupWizard:
         """Writes hp_device + sample_rate, preserving ip/port/my_id when present."""
         data: Dict[str, Any] = {"ip": "192.168.1.11", "port": "9999",
                                 "my_id": "node_B", "hp_device": self.hp_device,
-                                "sample_rate": self.sample_rate}
+                                "sample_rate": self.sample_rate,
+                                "gain": self.gain, "level": self.level}
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -407,7 +461,8 @@ class SetupWizard:
         self.result_lbl.config(
             text=f'Saved:\n{path}\n\nip={data["ip"]}  port={data["port"]}\n'
                  f'my_id={data["my_id"]}\nhp_device="{data["hp_device"]}"\n'
-                 f'sample_rate={data["sample_rate"]}')
+                 f'sample_rate={data["sample_rate"]}  '
+                 f'gain={int(data["gain"]*100)}%  level={int(data["level"]*100)}%')
         self.info_lbl.config(text="Setup complete. You can close this window and start the client.")
         self.step_lbl.config(text="Saved")
         self.state = "close"

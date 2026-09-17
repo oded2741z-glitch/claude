@@ -41,6 +41,28 @@ REPORT_REPEATS: int = 3
 AUDIO_QUEUE_MAX: int = 64
 CALL_RETRY_GAP: float = 1.0
 
+# --- Live gain / level ---
+GAIN_MIN: float = 0.0             # 0..2.0, 1.0 = ללא שינוי
+GAIN_MAX: float = 2.0
+DEFAULT_GAIN: float = 1.0         # mic (tx)
+DEFAULT_LEVEL: float = 1.0        # speaker (rx)
+SETTINGS_POLL: float = 2.0        # קריאה חוזרת של settings.txt לתפיסת שינוי חי
+
+
+def clamp_gain(v: float) -> float:
+    try:
+        return max(GAIN_MIN, min(GAIN_MAX, float(v)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def apply_gain(block: "np.ndarray", factor: float) -> "np.ndarray":
+    """Scale int16 samples, clipping so a high factor never wraps into noise."""
+    if factor == 1.0:
+        return block
+    scaled = block.astype(np.int32) * factor
+    return np.clip(scaled, -32768, 32767).astype(np.int16)
+
 
 class IntercomCLI:
     def __init__(self) -> None:
@@ -68,6 +90,8 @@ class IntercomCLI:
 
         self.sample_rate: int = DEFAULT_SAMPLE_RATE
         self.chunk_size: int = chunk_for(DEFAULT_SAMPLE_RATE)
+        self.gain: float = DEFAULT_GAIN      # mic, applied before send
+        self.level: float = DEFAULT_LEVEL    # speaker, applied before play
 
         self.headphones_ok: bool = False
         self.input_device: Optional[int] = None
@@ -107,12 +131,15 @@ class IntercomCLI:
             my_id = str(data.get("my_id", self.my_id)).strip()
             hp_device = str(data.get("hp_device", self.hp_device)).strip()
             rate = int(data.get("sample_rate", self.sample_rate))
+            gain = clamp_gain(data.get("gain", self.gain))
+            level = clamp_gain(data.get("level", self.level))
         except Exception as e:
             self.log(f"Error loading {SETTINGS_FILE}: {e}. Keeping current values.")
             return
 
         if rate not in ALLOWED_RATES:
             rate = DEFAULT_SAMPLE_RATE
+        self.gain, self.level = gain, level
 
         changed = (ip, port, my_id, hp_device, rate) != (self.server_ip, self.server_port,
                                                          self.my_id, self.hp_device, self.sample_rate)
@@ -137,7 +164,9 @@ class IntercomCLI:
             "port": str(self.server_port),
             "my_id": self.my_id,
             "hp_device": self.hp_device,
-            "sample_rate": self.sample_rate
+            "sample_rate": self.sample_rate,
+            "gain": self.gain,
+            "level": self.level
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -319,6 +348,7 @@ class IntercomCLI:
     # ------------------------------------------------------------------
     def _signal_loop(self) -> None:
         """Heartbeat to the server plus SERVER CONNECTED / DISCONNECTED tracking."""
+        last_live = 0.0
         while not self.shutdown_event.is_set():
             self._report_headphones(1)
             online = (time.time() - self._last_ack) <= SERVER_TIMEOUT
@@ -328,7 +358,26 @@ class IntercomCLI:
                     self.log(f"SERVER: CONNECTED  ({self.server_ip}:{self.server_port})")
                 else:
                     self.log(f"SERVER: DISCONNECTED  ({self.server_ip}:{self.server_port} not responding)")
+            now = time.time()
+            if now - last_live >= SETTINGS_POLL:
+                last_live = now
+                self._refresh_live_audio()
             self.shutdown_event.wait(HEARTBEAT_INTERVAL)
+
+    def _refresh_live_audio(self) -> None:
+        """Re-reads only gain/level from settings.txt, so a slider move in setup.py
+        takes effect mid-call without touching the device or sample rate."""
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return
+        gain = clamp_gain(data.get("gain", self.gain))
+        level = clamp_gain(data.get("level", self.level))
+        if gain != self.gain or level != self.level:
+            self.gain, self.level = gain, level
+            self.log(f"Live audio updated: mic gain={int(gain * 100)}%, "
+                     f"speaker level={int(level * 100)}%")
 
     def _rx_loop(self) -> None:
         """Single owner of recvfrom. Dispatches signalling and P2P audio."""
@@ -545,7 +594,9 @@ class IntercomCLI:
                             self.in_call = False
                             break
                         continue
-                    stream.write(np.frombuffer(payload, dtype=np.int16).reshape(-1, CHANNELS))
+                    block = np.frombuffer(payload, dtype=np.int16)
+                    block = apply_gain(block, self.level)
+                    stream.write(block.reshape(-1, CHANNELS))
         except Exception:
             if self.in_call:
                 self.log("HEADPHONES: output device error (speaker lost).")
@@ -562,6 +613,8 @@ class IntercomCLI:
                     sock, peer = self.sock, self.tx_peer
                     if sock is None or peer is None:
                         break
+                    if self.gain != 1.0:
+                        data = apply_gain(data.reshape(-1), self.gain).reshape(data.shape)
                     try:
                         sock.sendto(AUDIO_TAG + data.tobytes(), peer)
                     except ConnectionResetError:

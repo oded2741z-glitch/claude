@@ -53,10 +53,13 @@ class Theme:
 class SetupWizard:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        # מסתירים עד שהפס הכהה מוחל, אחרת נראה הבזק לבן של שורת הכותרת
+        self.root.withdraw()
         self.root.title("Intercom Setup")
         self.root.geometry("520x560")
         self.root.configure(bg=Theme.BG)
         self.root.resizable(False, False)
+        self._clear_icon()
 
         self.before: Set[str] = set()
         self.pnp_before: Set[str] = set()
@@ -70,6 +73,16 @@ class SetupWizard:
         self._build()
         self._force_dark_titlebar()
         self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+        # מציגים רק אחרי שהפס כבר כהה - בלי הבזק לבן ובלי אייקון הנוצה
+        self.root.deiconify()
+
+    def _clear_icon(self) -> None:
+        """Drops the default Tk feather icon by setting a blank one."""
+        try:
+            self._blank_icon = tk.PhotoImage(width=1, height=1)
+            self.root.iconphoto(True, self._blank_icon)
+        except Exception:
+            pass
 
     def _force_dark_titlebar(self) -> None:
         try:

@@ -132,13 +132,10 @@ CSS_ELTA_WAVE = """
 svg{width:58%;max-width:380px;min-width:160px}
 .w{animation:hop 2s ease-in-out infinite}
 .w1{transform-origin:144px 68px;animation-delay:0s}
-.w2{transform-origin:118px 68px;animation-delay:.09s}
-.w3{transform-origin:87px 70px;animation-delay:.18s}
-.w4{transform-origin:68px 70px;animation-delay:.27s}
-.w5{transform-origin:50px 70px;animation-delay:.36s}
-.w6{transform-origin:33px 70px;animation-delay:.45s}
-.w7{transform-origin:2px 68px;animation-delay:.54s}
-.w8{transform-origin:-24px 68px;animation-delay:.63s}
+.w2{transform-origin:118px 68px;animation-delay:.11s}
+.w3{transform-origin:60px 70px;animation-delay:.22s}
+.w4{transform-origin:2px 68px;animation-delay:.33s}
+.w5{transform-origin:-24px 68px;animation-delay:.44s}
 .sqf{fill:#246CD0}
 .ltr{fill:#3787F6;font-family:'Segoe UI',Arial,Helvetica,sans-serif;font-weight:700;
  font-size:26px;text-anchor:middle}
@@ -152,14 +149,11 @@ svg{width:58%;max-width:380px;min-width:160px}
 CSS_ELTA_WAVE_LTR = """
 svg{width:58%;max-width:380px;min-width:160px}
 .w{animation:hop 2s ease-in-out infinite}
-.w1{transform-origin:144px 68px;animation-delay:.63s}
-.w2{transform-origin:118px 68px;animation-delay:.54s}
-.w3{transform-origin:87px 70px;animation-delay:.45s}
-.w4{transform-origin:68px 70px;animation-delay:.36s}
-.w5{transform-origin:50px 70px;animation-delay:.27s}
-.w6{transform-origin:33px 70px;animation-delay:.18s}
-.w7{transform-origin:2px 68px;animation-delay:.09s}
-.w8{transform-origin:-24px 68px;animation-delay:0s}
+.w1{transform-origin:144px 68px;animation-delay:.44s}
+.w2{transform-origin:118px 68px;animation-delay:.33s}
+.w3{transform-origin:60px 70px;animation-delay:.22s}
+.w4{transform-origin:2px 68px;animation-delay:.11s}
+.w5{transform-origin:-24px 68px;animation-delay:0s}
 .sqf{fill:#246CD0}
 .ltr{fill:#3787F6;font-family:'Segoe UI',Arial,Helvetica,sans-serif;font-weight:700;
  font-size:26px;text-anchor:middle}
@@ -172,12 +166,9 @@ svg{width:58%;max-width:380px;min-width:160px}
 
 SVG_ELTA_WAVE = """
 <svg viewBox='-38 32 194 44' xmlns='http://www.w3.org/2000/svg'>
- <g class='w w8'><rect class='sqf' x='-32' y='52' width='16' height='16' rx='2'/></g>
- <g class='w w7'><rect class='sqf' x='-6' y='52' width='16' height='16' rx='2'/></g>
- <g class='w w6'><text class='ltr' x='33' y='70'>E</text></g>
- <g class='w w5'><text class='ltr' x='50' y='70'>L</text></g>
- <g class='w w4'><text class='ltr' x='68' y='70'>T</text></g>
- <g class='w w3'><text class='ltr' x='87' y='70'>A</text></g>
+ <g class='w w5'><rect class='sqf' x='-32' y='52' width='16' height='16' rx='2'/></g>
+ <g class='w w4'><rect class='sqf' x='-6' y='52' width='16' height='16' rx='2'/></g>
+ <g class='w w3'><text class='ltr' x='60' y='70'>ELTA</text></g>
  <g class='w w2'><rect class='sqf' x='110' y='52' width='16' height='16' rx='2'/></g>
  <g class='w w1'><rect class='sqf' x='136' y='52' width='16' height='16' rx='2'/></g>
 </svg>

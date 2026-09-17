@@ -122,9 +122,10 @@ layout differs, and re-emits the state at 0/2/4/6 s to catch viewers that are st
   when the legacy `show_animation=False` is set and to `elta` otherwise; the configurator's Settings tab
   writes both keys. `elta` is hand-translated from the original Lottie (4 rounded squares that flip outward
   and squash on landing, the wordmark bouncing between them; 140 frames at 60 fps, so a 2.333 s loop, and
-  every keyframe percentage is `frame / 140`); `elta_wave` is the same artwork with each square and letter
-  sharing one `hop` keyframe on a staggered `animation-delay`, right to left; `elta_wave_ltr` reuses
-  `SVG_ELTA_WAVE` unchanged and only reverses those delays, so the two CSS blocks must stay in step. The wordmark is an SVG
+  every keyframe percentage is `frame / 140`); `elta_wave` is the same artwork split into five
+  hopping groups — the four squares and `ELTA` as one whole word — sharing one `hop` keyframe on a
+  staggered `animation-delay`, right to left; `elta_wave_ltr` reuses `SVG_ELTA_WAVE` unchanged and only
+  reverses those delays, so the two CSS blocks must stay in step. The wordmark is an SVG
   `<text>` in Segoe UI Bold, not the original's stroked letter paths, which looked blobby at this size.
   Every loader uses the same three blues: `#2766BE`, `#246CD0` and `#3787F6`.
 - Snapshots grab the quad's rectangle from the screen compositor (`QScreen.grabWindow`) because

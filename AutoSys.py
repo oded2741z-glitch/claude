@@ -596,19 +596,24 @@ class AutoSysApp(tk.Tk):
                 '$b[21] = $b[21] -bor 0x20',
                 f'[System.IO.File]::WriteAllBytes("{stage}", $b)',
             ]
+        # Move the staged .lnk into the real Startup folder from within the
+        # elevated PowerShell (Unicode-safe and native, so it is allowed to
+        # write to the Startup folder where Python hit Permission denied).
+        lines += [
+            f'$dst = "{lnk}"',
+            '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
+            'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
+            f'Move-Item -LiteralPath "{stage}" -Destination $dst -Force',
+        ]
 
         # Pass the script as -EncodedCommand so paths with spaces/quotes/unicode
-        # never break, then move the staged .lnk into the real folder.
+        # never break.
         script = "\n".join(lines)
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         try:
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-            if os.path.exists(stage):
-                os.makedirs(folder, exist_ok=True)
-                if os.path.exists(lnk): os.remove(lnk)
-                shutil.move(stage, lnk)
             self.refresh_startup_list()
             if not os.path.exists(lnk):
                 err = (res.stderr or res.stdout or "").strip() or "PowerShell did not create the shortcut."

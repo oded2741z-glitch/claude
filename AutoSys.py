@@ -212,8 +212,10 @@ class AutoSysApp(tk.Tk):
         self.after(1500, self.sys_mtk_refresh)
 
     def get_real_user_startup(self):
+        suffix = r"Microsoft\Windows\Start Menu\Programs\Startup"
         try:
             ps_script = (
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
                 "$process = Get-WmiObject Win32_Process -Filter \"Name='explorer.exe'\" | Select-Object -First 1;"
                 "if ($process) {"
                 "    $sid = $process.GetOwnerSid().Sid;"
@@ -222,10 +224,18 @@ class AutoSysApp(tk.Tk):
                 "}"
             )
             cmd = ["powershell", "-NoProfile", "-Command", ps_script]
-            output = subprocess.check_output(cmd, creationflags=CREATE_NO_WINDOW).decode('mbcs', errors='ignore').strip()
-            if output and os.path.exists(output):
+            # Decode as UTF-8 so non-ASCII (e.g. Hebrew) usernames survive;
+            # mbcs would mangle them and send us to the wrong profile.
+            output = subprocess.check_output(cmd, creationflags=CREATE_NO_WINDOW).decode('utf-8', errors='ignore').strip()
+            if output and os.path.isdir(output):
                 return output
         except: pass
+
+        # The current process's own APPDATA (Python reads it as correct
+        # Unicode) — right when the elevated app runs as the logged-in user.
+        appdata = os.environ.get("APPDATA", "")
+        if appdata and os.path.isdir(os.path.join(appdata, suffix)):
+            return os.path.join(appdata, suffix)
             
         try:
             users_dir = r"C:\Users"

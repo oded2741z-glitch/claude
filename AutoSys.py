@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import os, subprocess, threading, time, shutil, sys, ctypes, platform, ipaddress
+import os, subprocess, threading, time, shutil, sys, ctypes, platform, ipaddress, base64
 from concurrent.futures import ThreadPoolExecutor
 
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
@@ -542,45 +542,52 @@ class AutoSysApp(tk.Tk):
     
     def add_lnk(self, as_admin=False):
         f = filedialog.askopenfilename()
-        if f:
-            n = os.path.splitext(os.path.basename(f))[0]
-            suf = "_Admin" if as_admin else ""
-            lnk = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
+        if not f: return
+        n = os.path.splitext(os.path.basename(f))[0]
+        suf = "_Admin" if as_admin else ""
+        lnk = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
 
-            use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
-            if use_delay:
-                # A plain .lnk can't wait, so route it through cmd + timeout.
-                args = '/c timeout /t {} /nobreak >nul & start "" "{}"'.format(self.delay_ent.get(), f)
-                ps_cmd = (
-                    f'$WshShell = New-Object -comObject WScript.Shell;'
-                    f'$Shortcut = $WshShell.CreateShortcut("{lnk}");'
-                    f'$Shortcut.TargetPath = "$env:ComSpec";'
-                    f"$Shortcut.Arguments = '{args}';"
-                    f'$Shortcut.WorkingDirectory = "{os.path.dirname(f)}";'
-                    f'$Shortcut.WindowStyle = 7;'
-                    f'$Shortcut.Save();'
-                )
-            else:
-                ps_cmd = (
-                    f'$WshShell = New-Object -comObject WScript.Shell;'
-                    f'$Shortcut = $WshShell.CreateShortcut("{lnk}");'
-                    f'$Shortcut.TargetPath = "{f}";'
-                    f'$Shortcut.WorkingDirectory = "{os.path.dirname(f)}";'
-                    f'$Shortcut.Save();'
-                )
+        use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
+        lines = [
+            '$ws = New-Object -ComObject WScript.Shell',
+            f'$sc = $ws.CreateShortcut("{lnk}")',
+        ]
+        if use_delay:
+            # A plain .lnk can't wait, so route it through cmd + timeout.
+            args = '/c timeout /t {} /nobreak >nul & start "" "{}"'.format(self.delay_ent.get(), f)
+            lines += [
+                '$sc.TargetPath = "$env:ComSpec"',
+                f"$sc.Arguments = '{args}'",
+                f'$sc.WorkingDirectory = "{os.path.dirname(f)}"',
+                '$sc.WindowStyle = 7',
+            ]
+        else:
+            lines += [
+                f'$sc.TargetPath = "{f}"',
+                f'$sc.WorkingDirectory = "{os.path.dirname(f)}"',
+            ]
+        lines.append('$sc.Save()')
+        if as_admin:
+            lines += [
+                f'$b = [System.IO.File]::ReadAllBytes("{lnk}")',
+                '$b[21] = $b[21] -bor 0x20',
+                f'[System.IO.File]::WriteAllBytes("{lnk}", $b)',
+            ]
 
-            if as_admin:
-                ps_cmd += (
-                    f'$bytes = [System.IO.File]::ReadAllBytes("{lnk}");'
-                    f'$bytes[21] = $bytes[21] -bor 0x20;'
-                    f'[System.IO.File]::WriteAllBytes("{lnk}", $bytes);'
-                )
-                
-            try:
-                subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], creationflags=CREATE_NO_WINDOW)
-                self.refresh_startup_list()
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
+        # Pass the script as -EncodedCommand so paths with spaces/quotes/unicode
+        # never break, and verify the .lnk was actually written.
+        script = "\n".join(lines)
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+                capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            self.refresh_startup_list()
+            if not os.path.exists(lnk):
+                err = (res.stderr or res.stdout or "").strip() or "PowerShell did not create the shortcut."
+                messagebox.showerror("Error", f"Failed to create shortcut:\n{err}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
 
     def add_admin_lnk(self): 
         self.add_lnk(as_admin=True)

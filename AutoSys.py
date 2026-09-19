@@ -214,7 +214,6 @@ class AutoSysApp(tk.Tk):
     def get_real_user_startup(self):
         try:
             ps_script = (
-                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
                 "$process = Get-WmiObject Win32_Process -Filter \"Name='explorer.exe'\" | Select-Object -First 1;"
                 "if ($process) {"
                 "    $sid = $process.GetOwnerSid().Sid;"
@@ -223,8 +222,7 @@ class AutoSysApp(tk.Tk):
                 "}"
             )
             cmd = ["powershell", "-NoProfile", "-Command", ps_script]
-            # Decode as UTF-8 so non-ASCII (e.g. Hebrew) usernames survive.
-            output = subprocess.check_output(cmd, creationflags=CREATE_NO_WINDOW).decode('utf-8', errors='ignore').strip()
+            output = subprocess.check_output(cmd, creationflags=CREATE_NO_WINDOW).decode('mbcs', errors='ignore').strip()
             if output and os.path.exists(output):
                 return output
         except: pass
@@ -551,8 +549,6 @@ class AutoSysApp(tk.Tk):
 
         use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
         lines = [
-            f'$dir = [System.IO.Path]::GetDirectoryName("{lnk}")',
-            'if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }',
             '$ws = New-Object -ComObject WScript.Shell',
             f'$sc = $ws.CreateShortcut("{lnk}")',
         ]

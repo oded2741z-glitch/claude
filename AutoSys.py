@@ -548,13 +548,22 @@ class AutoSysApp(tk.Tk):
         folder = self.get_current_startup_folder()
         lnk = os.path.join(folder, f"{n}{suf}.lnk")
 
+        # WScript.Shell.Save() converts the .lnk path to ANSI and fails on
+        # non-ASCII (e.g. Hebrew) folder names. So build the shortcut in an
+        # all-ASCII temp path, then move it into place with Python, which is
+        # fully Unicode-safe.
+        stage_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")
+        try: os.makedirs(stage_dir, exist_ok=True)
+        except Exception: pass
+        stage = os.path.join(stage_dir, f"_autosys_{'admin' if as_admin else 'user'}.lnk")
+        try:
+            if os.path.exists(stage): os.remove(stage)
+        except Exception: pass
+
         use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
         lines = [
-            # Make sure the target Startup folder exists before saving.
-            f'$dir = "{folder}"',
-            'if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }',
             '$ws = New-Object -ComObject WScript.Shell',
-            f'$sc = $ws.CreateShortcut("{lnk}")',
+            f'$sc = $ws.CreateShortcut("{stage}")',
         ]
         if use_delay:
             # A plain .lnk can't wait, so route it through cmd + timeout.
@@ -573,24 +582,27 @@ class AutoSysApp(tk.Tk):
         lines.append('$sc.Save()')
         if as_admin:
             lines += [
-                f'$b = [System.IO.File]::ReadAllBytes("{lnk}")',
+                f'$b = [System.IO.File]::ReadAllBytes("{stage}")',
                 '$b[21] = $b[21] -bor 0x20',
-                f'[System.IO.File]::WriteAllBytes("{lnk}", $b)',
+                f'[System.IO.File]::WriteAllBytes("{stage}", $b)',
             ]
 
         # Pass the script as -EncodedCommand so paths with spaces/quotes/unicode
-        # never break, and verify the .lnk was actually written.
+        # never break, then move the staged .lnk into the real folder.
         script = "\n".join(lines)
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         try:
             res = subprocess.run(
                 ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
                 capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+            if os.path.exists(stage):
+                os.makedirs(folder, exist_ok=True)
+                if os.path.exists(lnk): os.remove(lnk)
+                shutil.move(stage, lnk)
             self.refresh_startup_list()
             if not os.path.exists(lnk):
                 err = (res.stderr or res.stdout or "").strip() or "PowerShell did not create the shortcut."
-                exists = "exists" if os.path.isdir(folder) else "MISSING"
-                messagebox.showerror("Error", f"Failed to create shortcut.\nTarget folder ({exists}):\n{folder}\n\n{err}")
+                messagebox.showerror("Error", f"Failed to create shortcut:\n{err}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
 

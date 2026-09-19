@@ -545,10 +545,14 @@ class AutoSysApp(tk.Tk):
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
         suf = "_Admin" if as_admin else ""
-        lnk = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
+        folder = self.get_current_startup_folder()
+        lnk = os.path.join(folder, f"{n}{suf}.lnk")
 
         use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
         lines = [
+            # Make sure the target Startup folder exists before saving.
+            f'$dir = "{folder}"',
+            'if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }',
             '$ws = New-Object -ComObject WScript.Shell',
             f'$sc = $ws.CreateShortcut("{lnk}")',
         ]
@@ -585,7 +589,8 @@ class AutoSysApp(tk.Tk):
             self.refresh_startup_list()
             if not os.path.exists(lnk):
                 err = (res.stderr or res.stdout or "").strip() or "PowerShell did not create the shortcut."
-                messagebox.showerror("Error", f"Failed to create shortcut:\n{err}")
+                exists = "exists" if os.path.isdir(folder) else "MISSING"
+                messagebox.showerror("Error", f"Failed to create shortcut.\nTarget folder ({exists}):\n{folder}\n\n{err}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
 

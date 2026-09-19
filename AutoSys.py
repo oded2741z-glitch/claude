@@ -196,7 +196,7 @@ class AutoSysApp(tk.Tk):
         self.user_startup = self.get_real_user_startup()
         self.startup_path_script = os.path.join(self.global_startup, 'AutoSys_Loader.bat')
         
-        self.use_user_startup_var = tk.BooleanVar(value=False)
+        self.use_user_startup_var = tk.BooleanVar(value=True)
         self.keep_pinging = False
         self._main_status_timer = None
         self.btn_style = {"bg": "#333333", "fg": "white", "bd": 0, "font": ("Arial", 9, "bold"), "cursor": "hand2"}
@@ -515,7 +515,10 @@ class AutoSysApp(tk.Tk):
         tk.Button(f_open, text="USER FOLDER", command=lambda: os.startfile(self.user_startup), **self.btn_style).pack(side="left", fill="x", expand=True, padx=2)
 
     def get_current_startup_folder(self):
-        return self.user_startup if self.use_user_startup_var.get() else self.global_startup
+        folder = self.user_startup if self.use_user_startup_var.get() else self.global_startup
+        try: os.makedirs(folder, exist_ok=True)
+        except Exception: pass
+        return folder
 
     def refresh_startup_list(self):
         self.startup_tree.delete(*self.startup_tree.get_children())

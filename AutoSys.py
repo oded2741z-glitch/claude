@@ -546,15 +546,29 @@ class AutoSysApp(tk.Tk):
             n = os.path.splitext(os.path.basename(f))[0]
             suf = "_Admin" if as_admin else ""
             lnk = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
-            
-            ps_cmd = (
-                f'$WshShell = New-Object -comObject WScript.Shell;'
-                f'$Shortcut = $WshShell.CreateShortcut("{lnk}");'
-                f'$Shortcut.TargetPath = "{f}";'
-                f'$Shortcut.WorkingDirectory = "{os.path.dirname(f)}";'
-                f'$Shortcut.Save();'
-            )
-            
+
+            use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
+            if use_delay:
+                # A plain .lnk can't wait, so route it through cmd + timeout.
+                args = '/c timeout /t {} /nobreak >nul & start "" "{}"'.format(self.delay_ent.get(), f)
+                ps_cmd = (
+                    f'$WshShell = New-Object -comObject WScript.Shell;'
+                    f'$Shortcut = $WshShell.CreateShortcut("{lnk}");'
+                    f'$Shortcut.TargetPath = "$env:ComSpec";'
+                    f"$Shortcut.Arguments = '{args}';"
+                    f'$Shortcut.WorkingDirectory = "{os.path.dirname(f)}";'
+                    f'$Shortcut.WindowStyle = 7;'
+                    f'$Shortcut.Save();'
+                )
+            else:
+                ps_cmd = (
+                    f'$WshShell = New-Object -comObject WScript.Shell;'
+                    f'$Shortcut = $WshShell.CreateShortcut("{lnk}");'
+                    f'$Shortcut.TargetPath = "{f}";'
+                    f'$Shortcut.WorkingDirectory = "{os.path.dirname(f)}";'
+                    f'$Shortcut.Save();'
+                )
+
             if as_admin:
                 ps_cmd += (
                     f'$bytes = [System.IO.File]::ReadAllBytes("{lnk}");'

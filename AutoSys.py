@@ -530,6 +530,37 @@ class AutoSysApp(tk.Tk):
         except Exception: pass
         return folder
 
+    # --- Startup file helpers (all writes go through elevated, Unicode-safe
+    #     PowerShell so they work in the real user's Startup folder even when
+    #     its path contains non-ASCII, e.g. Hebrew, characters). ---
+    def _psq(self, s):
+        # PowerShell single-quoted literal, safe for spaces/unicode/$/backtick.
+        return "'" + str(s).replace("'", "''") + "'"
+
+    def _run_ps(self, lines):
+        script = "\n".join(lines)
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        return subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
+
+    def _stage_path(self, name):
+        stage_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")
+        try: os.makedirs(stage_dir, exist_ok=True)
+        except Exception: pass
+        return os.path.join(stage_dir, name)
+
+    def _place_in_startup(self, src, dest_name):
+        # Move a locally-staged file into the current Startup folder.
+        dst = os.path.join(self.get_current_startup_folder(), dest_name)
+        lines = [
+            f'$dst = {self._psq(dst)}',
+            '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
+            'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
+            f'Move-Item -LiteralPath {self._psq(src)} -Destination $dst -Force',
+        ]
+        return dst, self._run_ps(lines)
+
     def refresh_startup_list(self):
         self.startup_tree.delete(*self.startup_tree.get_children())
         folder = self.get_current_startup_folder()
@@ -538,34 +569,40 @@ class AutoSysApp(tk.Tk):
                 if f.lower() != "desktop.ini":
                     self.startup_tree.insert("", "end", values=(f, os.path.splitext(f)[1]))
 
-    def add_startup_manual(self): 
+    def add_startup_manual(self):
         f = filedialog.askopenfilename()
-        if f: 
-            shutil.copy2(f, self.get_current_startup_folder())
-            self.refresh_startup_list()
+        if not f: return
+        dst = os.path.join(self.get_current_startup_folder(), os.path.basename(f))
+        lines = [
+            f'$dst = {self._psq(dst)}',
+            '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
+            'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
+            f'Copy-Item -LiteralPath {self._psq(f)} -Destination $dst -Force',
+        ]
+        res = self._run_ps(lines)
+        self.refresh_startup_list()
+        if not os.path.exists(dst):
+            err = (res.stderr or res.stdout or "").strip() or "Could not copy the file."
+            messagebox.showerror("Error", f"Failed to add file:\n{err}")
 
-    def del_startup(self): 
+    def del_startup(self):
         s = self.startup_tree.selection()
-        if s: 
-            os.remove(os.path.join(self.get_current_startup_folder(), self.startup_tree.item(s[0])['values'][0]))
-            self.refresh_startup_list()
+        if not s: return
+        name = str(self.startup_tree.item(s[0])['values'][0])
+        target = os.path.join(self.get_current_startup_folder(), name)
+        self._run_ps([f'Remove-Item -LiteralPath {self._psq(target)} -Force -ErrorAction SilentlyContinue'])
+        self.refresh_startup_list()
     
     def add_lnk(self, as_admin=False):
         f = filedialog.askopenfilename()
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
         suf = "_Admin" if as_admin else ""
-        folder = self.get_current_startup_folder()
-        lnk = os.path.join(folder, f"{n}{suf}.lnk")
 
         # WScript.Shell.Save() converts the .lnk path to ANSI and fails on
-        # non-ASCII (e.g. Hebrew) folder names. So build the shortcut in an
-        # all-ASCII temp path, then move it into place with Python, which is
-        # fully Unicode-safe.
-        stage_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")
-        try: os.makedirs(stage_dir, exist_ok=True)
-        except Exception: pass
-        stage = os.path.join(stage_dir, f"_autosys_{'admin' if as_admin else 'user'}.lnk")
+        # non-ASCII (e.g. Hebrew) folder names, so build the shortcut in an
+        # all-ASCII temp path first, then move it into the real folder.
+        stage = self._stage_path(f"_autosys_{'admin' if as_admin else 'user'}.lnk")
         try:
             if os.path.exists(stage): os.remove(stage)
         except Exception: pass
@@ -573,67 +610,63 @@ class AutoSysApp(tk.Tk):
         use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
         lines = [
             '$ws = New-Object -ComObject WScript.Shell',
-            f'$sc = $ws.CreateShortcut("{stage}")',
+            f'$sc = $ws.CreateShortcut({self._psq(stage)})',
         ]
         if use_delay:
             # A plain .lnk can't wait, so route it through cmd + timeout.
             args = '/c timeout /t {} /nobreak >nul & start "" "{}"'.format(self.delay_ent.get(), f)
             lines += [
-                '$sc.TargetPath = "$env:ComSpec"',
-                f"$sc.Arguments = '{args}'",
-                f'$sc.WorkingDirectory = "{os.path.dirname(f)}"',
+                '$sc.TargetPath = $env:ComSpec',
+                f'$sc.Arguments = {self._psq(args)}',
+                f'$sc.WorkingDirectory = {self._psq(os.path.dirname(f))}',
                 '$sc.WindowStyle = 7',
             ]
         else:
             lines += [
-                f'$sc.TargetPath = "{f}"',
-                f'$sc.WorkingDirectory = "{os.path.dirname(f)}"',
+                f'$sc.TargetPath = {self._psq(f)}',
+                f'$sc.WorkingDirectory = {self._psq(os.path.dirname(f))}',
             ]
         lines.append('$sc.Save()')
         if as_admin:
             lines += [
-                f'$b = [System.IO.File]::ReadAllBytes("{stage}")',
+                f'$b = [System.IO.File]::ReadAllBytes({self._psq(stage)})',
                 '$b[21] = $b[21] -bor 0x20',
-                f'[System.IO.File]::WriteAllBytes("{stage}", $b)',
+                f'[System.IO.File]::WriteAllBytes({self._psq(stage)}, $b)',
             ]
-        # Move the staged .lnk into the real Startup folder from within the
-        # elevated PowerShell (Unicode-safe and native, so it is allowed to
-        # write to the Startup folder where Python hit Permission denied).
-        lines += [
-            f'$dst = "{lnk}"',
-            '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
-            'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
-            f'Move-Item -LiteralPath "{stage}" -Destination $dst -Force',
-        ]
-
-        # Pass the script as -EncodedCommand so paths with spaces/quotes/unicode
-        # never break.
-        script = "\n".join(lines)
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         try:
-            res = subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-                capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-            self.refresh_startup_list()
-            if not os.path.exists(lnk):
+            res = self._run_ps(lines)
+            if not os.path.exists(stage):
                 err = (res.stderr or res.stdout or "").strip() or "PowerShell did not create the shortcut."
+                messagebox.showerror("Error", f"Failed to create shortcut:\n{err}"); return
+            dst, res2 = self._place_in_startup(stage, f"{n}{suf}.lnk")
+            self.refresh_startup_list()
+            if not os.path.exists(dst):
+                err = (res2.stderr or res2.stdout or "").strip() or "Could not place the shortcut."
                 messagebox.showerror("Error", f"Failed to create shortcut:\n{err}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
 
-    def add_admin_lnk(self): 
+    def add_admin_lnk(self):
         self.add_lnk(as_admin=True)
 
     def add_bat(self):
         f = filedialog.askopenfilename()
-        if f:
-            n = os.path.splitext(os.path.basename(f))[0]
-            with open(os.path.join(self.get_current_startup_folder(), f"{n}_START.bat"), "w", encoding="utf-8") as b:
+        if not f: return
+        n = os.path.splitext(os.path.basename(f))[0]
+        stage = self._stage_path("_autosys_bat.bat")
+        try:
+            with open(stage, "w", encoding="utf-8") as b:
                 b.write("@echo off\n")
-                if self.delay_v.get() and self.delay_ent.get().isdigit(): 
+                if self.delay_v.get() and self.delay_ent.get().isdigit():
                     b.write(f"timeout /t {self.delay_ent.get()}\n")
                 b.write(f'start "" "{os.path.normpath(f)}"\n')
-            self.refresh_startup_list()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create BAT file:\n{e}"); return
+        dst, res = self._place_in_startup(stage, f"{n}_START.bat")
+        self.refresh_startup_list()
+        if not os.path.exists(dst):
+            err = (res.stderr or res.stdout or "").strip() or "Could not place the BAT file."
+            messagebox.showerror("Error", f"Failed to create BAT file:\n{err}")
 
     # ================= SYSTEM TAB LOGIC =================
     def setup_system_tab(self):

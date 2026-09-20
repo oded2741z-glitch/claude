@@ -648,10 +648,10 @@ class AutoSysApp(tk.Tk):
         f = filedialog.askopenfilename()
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
-        # Write the .bat with plain Python (like the older working build).
-        # Writing it via PowerShell trips antivirus (a script written into
-        # Startup by powershell.exe), which then deletes the file seconds
-        # later. cmd.exe reads .bat in the OEM codepage, so encode with it.
+        # A direct Python write to Startup is denied (Controlled Folder
+        # Access blocks the process), so write the .bat to a writable temp
+        # first, then place it with Copy-Item like Add File (which is allowed
+        # to write to Startup). cmd.exe reads .bat in the OEM codepage.
         dst = os.path.join(self.get_current_startup_folder(), f"{n}_START.bat")
         content = "@echo off\r\n"
         if self.delay_v.get() and self.delay_ent.get().isdigit():
@@ -662,14 +662,19 @@ class AutoSysApp(tk.Tk):
             data = content.encode(oem, errors="replace")
         except Exception:
             data = content.encode("utf-8", errors="replace")
+        tmp = os.path.join(os.environ.get("TEMP") or self.application_path, "_autosys_bat.bat")
         try:
-            with open(dst, "wb") as b:
+            with open(tmp, "wb") as b:
                 b.write(data)
-            self.refresh_startup_list()
-            if not os.path.exists(dst):
-                messagebox.showerror("Error", "Could not create the BAT file.")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to create BAT file:\n{e}")
+            messagebox.showerror("Error", f"Failed to create BAT file:\n{e}"); return
+        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
+            f'Copy-Item -LiteralPath {self._psq(tmp)} -Destination $dst -Force',
+        ]
+        res = self._run_ps(lines)
+        self.refresh_startup_list()
+        if not os.path.exists(dst):
+            messagebox.showerror("Error", f"Failed to create BAT file:\n{self._startup_err(res, 'Could not create the BAT file.')}")
 
     # ================= SYSTEM TAB LOGIC =================
     def setup_system_tab(self):

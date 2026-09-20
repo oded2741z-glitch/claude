@@ -545,10 +545,18 @@ class AutoSysApp(tk.Tk):
             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
 
     def _stage_path(self, name):
-        stage_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")
-        try: os.makedirs(stage_dir, exist_ok=True)
-        except Exception: pass
-        return os.path.join(stage_dir, name)
+        # Public folder: ASCII path (avoids the WScript ANSI bug) and the
+        # user has full control (create AND delete), unlike C:\Windows\Temp
+        # where deleting our own staged file is denied.
+        public = os.environ.get("PUBLIC", r"C:\Users\Public")
+        for base in (os.path.join(public, "Documents"), public,
+                     os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")):
+            try:
+                os.makedirs(base, exist_ok=True)
+                return os.path.join(base, name)
+            except Exception:
+                continue
+        return os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), name)
 
     def _short_path(self, p):
         # Windows 8.3 short path — pure ASCII, so it is safe inside a .bat
@@ -562,15 +570,29 @@ class AutoSysApp(tk.Tk):
         return p
 
     def _place_in_startup(self, src, dest_name):
-        # Move a locally-staged file into the current Startup folder.
+        # Copy a locally-staged file into the current Startup folder, then
+        # remove the staged copy (best effort). Copy avoids Move's atomic
+        # source-delete, which can be denied depending on the staging folder.
         dst = os.path.join(self.get_current_startup_folder(), dest_name)
         lines = [
             f'$dst = {self._psq(dst)}',
             '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
             'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
-            f'Move-Item -LiteralPath {self._psq(src)} -Destination $dst -Force',
+            f'Copy-Item -LiteralPath {self._psq(src)} -Destination $dst -Force',
+            f'Remove-Item -LiteralPath {self._psq(src)} -Force -ErrorAction SilentlyContinue',
         ]
         return dst, self._run_ps(lines)
+
+    def _startup_err(self, res, default):
+        err = (res.stderr or res.stdout or "").strip() or default
+        low = err.lower()
+        if "denied" in low or "unauthorized" in low:
+            err += ("\n\nWriting to the Startup folder was blocked. This is "
+                    "usually Windows 'Controlled Folder Access' (ransomware "
+                    "protection). Allow AutoSys under Windows Security > Virus "
+                    "& threat protection > Ransomware protection > Allow an app "
+                    "through Controlled folder access, or run AutoSys as admin.")
+        return err
 
     def refresh_startup_list(self):
         self.startup_tree.delete(*self.startup_tree.get_children())
@@ -593,8 +615,7 @@ class AutoSysApp(tk.Tk):
         res = self._run_ps(lines)
         self.refresh_startup_list()
         if not os.path.exists(dst):
-            err = (res.stderr or res.stdout or "").strip() or "Could not copy the file."
-            messagebox.showerror("Error", f"Failed to add file:\n{err}")
+            messagebox.showerror("Error", f"Failed to add file:\n{self._startup_err(res, 'Could not copy the file.')}")
 
     def del_startup(self):
         s = self.startup_tree.selection()
@@ -652,8 +673,7 @@ class AutoSysApp(tk.Tk):
             dst, res2 = self._place_in_startup(stage, f"{n}{suf}.lnk")
             self.refresh_startup_list()
             if not os.path.exists(dst):
-                err = (res2.stderr or res2.stdout or "").strip() or "Could not place the shortcut."
-                messagebox.showerror("Error", f"Failed to create shortcut:\n{err}")
+                messagebox.showerror("Error", f"Failed to create shortcut:\n{self._startup_err(res2, 'Could not place the shortcut.')}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
 
@@ -686,8 +706,7 @@ class AutoSysApp(tk.Tk):
         dst, res = self._place_in_startup(stage, f"{n}_START.bat")
         self.refresh_startup_list()
         if not os.path.exists(dst):
-            err = (res.stderr or res.stdout or "").strip() or "Could not place the BAT file."
-            messagebox.showerror("Error", f"Failed to create BAT file:\n{err}")
+            messagebox.showerror("Error", f"Failed to create BAT file:\n{self._startup_err(res, 'Could not place the BAT file.')}")
 
     # ================= SYSTEM TAB LOGIC =================
     def setup_system_tab(self):

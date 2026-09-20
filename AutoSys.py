@@ -654,8 +654,16 @@ class AutoSysApp(tk.Tk):
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
         stage = self._stage_path("_autosys_bat.bat")
+        # cmd.exe reads .bat files in the system OEM codepage, so write the
+        # file with that encoding; otherwise a non-ASCII (Hebrew) target path
+        # gets garbled and "Windows cannot find" the file at startup.
         try:
-            with open(stage, "w", encoding="utf-8") as b:
+            oem = "cp" + str(ctypes.windll.kernel32.GetOEMCP())
+            "".encode(oem)
+        except Exception:
+            oem = "mbcs"
+        try:
+            with open(stage, "w", encoding=oem, errors="replace") as b:
                 b.write("@echo off\n")
                 if self.delay_v.get() and self.delay_ent.get().isdigit():
                     b.write(f"timeout /t {self.delay_ent.get()}\n")

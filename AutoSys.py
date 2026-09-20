@@ -645,14 +645,17 @@ class AutoSysApp(tk.Tk):
         self.add_lnk(as_admin=True)
 
     def add_bat(self):
+        if not pythoncom:
+            messagebox.showerror("Error", "This needs pywin32.\nInstall it with:  pip install pywin32")
+            return
         f = filedialog.askopenfilename()
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
-        # A direct Python write to Startup is denied (Controlled Folder
-        # Access blocks the process), so write the .bat to a writable temp
-        # first, then place it with Copy-Item like Add File (which is allowed
-        # to write to Startup). cmd.exe reads .bat in the OEM codepage.
-        dst = os.path.join(self.get_current_startup_folder(), f"{n}_START.bat")
+        # Antivirus deletes any .bat placed in the Startup folder (it looks
+        # like a persistence script). So keep the .bat in a non-protected
+        # AppData folder and put a .lnk to it in Startup instead — the .lnk
+        # survives, and it launches the .bat at startup.
+        bat_dir = os.path.join(os.environ.get("LOCALAPPDATA") or self.application_path, "AutoSys")
         content = "@echo off\r\n"
         if self.delay_v.get() and self.delay_ent.get().isdigit():
             content += f"timeout /t {self.delay_ent.get()}\r\n"
@@ -662,19 +665,28 @@ class AutoSysApp(tk.Tk):
             data = content.encode(oem, errors="replace")
         except Exception:
             data = content.encode("utf-8", errors="replace")
-        tmp = os.path.join(os.environ.get("TEMP") or self.application_path, "_autosys_bat.bat")
         try:
-            with open(tmp, "wb") as b:
+            os.makedirs(bat_dir, exist_ok=True)
+            bat_path = os.path.join(bat_dir, f"{n}_START.bat")
+            with open(bat_path, "wb") as b:
                 b.write(data)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create BAT file:\n{e}"); return
-        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
-            f'Copy-Item -LiteralPath {self._psq(tmp)} -Destination $dst -Force',
-        ]
-        res = self._run_ps(lines)
-        self.refresh_startup_list()
-        if not os.path.exists(dst):
-            messagebox.showerror("Error", f"Failed to create BAT file:\n{self._startup_err(res, 'Could not create the BAT file.')}")
+
+        lnk = os.path.join(self.get_current_startup_folder(), f"{n}_START.lnk")
+        try:
+            pythoncom.CoInitialize()
+            s = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None,
+                                           pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+            s.SetPath(bat_path)
+            s.SetWorkingDirectory(bat_dir)
+            s.SetShowCmd(7)  # minimized
+            s.QueryInterface(pythoncom.IID_IPersistFile).Save(lnk, 0)
+            self.refresh_startup_list()
+            if not os.path.exists(lnk):
+                messagebox.showerror("Error", "Could not create the startup entry.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create startup entry:\n{e}")
 
     # ================= SYSTEM TAB LOGIC =================
     def setup_system_tab(self):

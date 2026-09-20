@@ -595,14 +595,20 @@ class AutoSysApp(tk.Tk):
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
         suf = "_Admin" if as_admin else ""
-        # Create the shortcut directly in the Startup folder (same approach
-        # as Add File), which is what works reliably.
         dst = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
 
+        # WScript.Shell.Save() converts the .lnk path to ANSI and mangles
+        # non-ASCII (Hebrew) folders, sending the shortcut to a wrong path.
+        # So create it at an ASCII temp path where WScript is reliable, then
+        # Copy-Item it to the real folder (the Unicode-safe primitive that
+        # works for Add File).
+        stage = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp",
+                             f"_autosys_{'admin' if as_admin else 'user'}.lnk")
+
         use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
-        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
+        lines = [f'$dst = {self._psq(dst)}', f'$stage = {self._psq(stage)}'] + self._ensure_dst_lines() + [
             '$ws = New-Object -ComObject WScript.Shell',
-            '$sc = $ws.CreateShortcut($dst)',
+            '$sc = $ws.CreateShortcut($stage)',
         ]
         if use_delay:
             # A plain .lnk can't wait, so route it through cmd + timeout.
@@ -621,10 +627,14 @@ class AutoSysApp(tk.Tk):
         lines.append('$sc.Save()')
         if as_admin:
             lines += [
-                '$b = [System.IO.File]::ReadAllBytes($dst)',
+                '$b = [System.IO.File]::ReadAllBytes($stage)',
                 '$b[21] = $b[21] -bor 0x20',
-                '[System.IO.File]::WriteAllBytes($dst, $b)',
+                '[System.IO.File]::WriteAllBytes($stage, $b)',
             ]
+        lines += [
+            'Copy-Item -LiteralPath $stage -Destination $dst -Force',
+            'Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue',
+        ]
         res = self._run_ps(lines)
         self.refresh_startup_list()
         if not os.path.exists(dst):

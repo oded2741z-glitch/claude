@@ -7,6 +7,11 @@ CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
 
 try: import send2trash
 except ImportError: send2trash = None
+try:
+    import pythoncom
+    from win32com.shell import shell, shellcon
+except ImportError:
+    pythoncom = None
 try: 
     import pygetwindow as gw
     ENFORCER_AVAILABLE = True
@@ -548,28 +553,6 @@ class AutoSysApp(tk.Tk):
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
 
-    def _ascii_stage_dir(self):
-        # An ASCII directory (so WScript's ANSI Save works) that we can
-        # actually write to right now — probed, not assumed.
-        candidates = [
-            os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), "Documents"),
-            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp"),
-            os.environ.get("ProgramData", r"C:\ProgramData"),
-            self.application_path,
-        ]
-        for d in candidates:
-            try:
-                if not d or not d.isascii():
-                    continue
-                os.makedirs(d, exist_ok=True)
-                probe = os.path.join(d, "_autosys_probe.tmp")
-                with open(probe, "w") as fh: fh.write("x")
-                os.remove(probe)
-                return d
-            except Exception:
-                continue
-        return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")
-
     def _ensure_dst_lines(self):
         # PowerShell prelude: $dst must be set; make sure its folder exists.
         return [
@@ -624,54 +607,39 @@ class AutoSysApp(tk.Tk):
         self.refresh_startup_list()
     
     def add_lnk(self, as_admin=False):
+        if not pythoncom:
+            messagebox.showerror("Error", "Shortcut creation needs pywin32.\nInstall it with:  pip install pywin32")
+            return
         f = filedialog.askopenfilename()
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
         suf = "_Admin" if as_admin else ""
-        dst = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
+        lnk = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
 
-        # WScript.Shell.Save() converts the .lnk path to ANSI and mangles
-        # non-ASCII (Hebrew) folders, sending the shortcut to a wrong path.
-        # So create it at an ASCII temp path where WScript is reliable, then
-        # Copy-Item it to the real folder (the Unicode-safe primitive that
-        # works for Add File).
-        stage = os.path.join(self._ascii_stage_dir(),
-                             f"_autosys_{'admin' if as_admin else 'user'}.lnk")
-
-        use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
-        lines = [f'$dst = {self._psq(dst)}', f'$stage = {self._psq(stage)}'] + self._ensure_dst_lines() + [
-            '$ws = New-Object -ComObject WScript.Shell',
-            '$sc = $ws.CreateShortcut($stage)',
-        ]
-        if use_delay:
-            # A plain .lnk can't wait, so route it through cmd + timeout.
-            args = '/c timeout /t {} /nobreak >nul & start "" "{}"'.format(self.delay_ent.get(), f)
-            lines += [
-                '$sc.TargetPath = $env:ComSpec',
-                f'$sc.Arguments = {self._psq(args)}',
-                f'$sc.WorkingDirectory = {self._psq(os.path.dirname(f))}',
-                '$sc.WindowStyle = 7',
-            ]
-        else:
-            lines += [
-                f'$sc.TargetPath = {self._psq(f)}',
-                f'$sc.WorkingDirectory = {self._psq(os.path.dirname(f))}',
-            ]
-        lines.append('$sc.Save()')
-        if as_admin:
-            lines += [
-                '$b = [System.IO.File]::ReadAllBytes($stage)',
-                '$b[21] = $b[21] -bor 0x20',
-                '[System.IO.File]::WriteAllBytes($stage, $b)',
-            ]
-        lines += [
-            'Copy-Item -LiteralPath $stage -Destination $dst -Force',
-            'Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue',
-        ]
-        res = self._run_ps(lines)
-        self.refresh_startup_list()
-        if not os.path.exists(dst):
-            messagebox.showerror("Error", f"Failed to create shortcut:\n{self._startup_err(res, 'Could not create the shortcut.')}")
+        # Create the .lnk with the native IShellLink/IPersistFile COM API.
+        # IPersistFile::Save takes a Unicode path, so it writes correctly to
+        # non-ASCII (Hebrew) Startup folders — unlike WScript.Shell (ANSI).
+        try:
+            pythoncom.CoInitialize()
+            s = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None,
+                                           pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+            if self.delay_v.get() and self.delay_ent.get().isdigit():
+                # A plain .lnk can't wait, so route it through cmd + timeout.
+                s.SetPath(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe"))
+                s.SetArguments('/c timeout /t {} /nobreak >nul & start "" "{}"'.format(self.delay_ent.get(), f))
+                s.SetShowCmd(7)  # minimized
+            else:
+                s.SetPath(f)
+            s.SetWorkingDirectory(os.path.dirname(f))
+            if as_admin:
+                d = s.QueryInterface(shell.IID_IShellLinkDataList)
+                d.SetFlags(d.GetFlags() | shellcon.SLDF_RUNAS_USER)
+            s.QueryInterface(pythoncom.IID_IPersistFile).Save(lnk, 0)
+            self.refresh_startup_list()
+            if not os.path.exists(lnk):
+                messagebox.showerror("Error", "Could not create the shortcut.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
 
     def add_admin_lnk(self):
         self.add_lnk(as_admin=True)

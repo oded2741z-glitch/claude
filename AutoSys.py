@@ -550,6 +550,17 @@ class AutoSysApp(tk.Tk):
         except Exception: pass
         return os.path.join(stage_dir, name)
 
+    def _short_path(self, p):
+        # Windows 8.3 short path — pure ASCII, so it is safe inside a .bat
+        # regardless of the console codepage. Falls back to the long path.
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            if ctypes.windll.kernel32.GetShortPathNameW(p, buf, 1024) and buf.value:
+                return buf.value
+        except Exception:
+            pass
+        return p
+
     def _place_in_startup(self, src, dest_name):
         # Move a locally-staged file into the current Startup folder.
         dst = os.path.join(self.get_current_startup_folder(), dest_name)
@@ -654,20 +665,22 @@ class AutoSysApp(tk.Tk):
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
         stage = self._stage_path("_autosys_bat.bat")
-        # cmd.exe reads .bat files in the system OEM codepage, so write the
-        # file with that encoding; otherwise a non-ASCII (Hebrew) target path
-        # gets garbled and "Windows cannot find" the file at startup.
+        # Use the 8.3 short path (ASCII) for the target so the .bat has no
+        # non-ASCII characters, avoiding cmd.exe codepage garbling. Write in
+        # binary with errors="replace" so creation can never fail on encoding.
+        target = self._short_path(os.path.normpath(f))
+        content = "@echo off\r\n"
+        if self.delay_v.get() and self.delay_ent.get().isdigit():
+            content += f"timeout /t {self.delay_ent.get()}\r\n"
+        content += f'start "" "{target}"\r\n'
         try:
             oem = "cp" + str(ctypes.windll.kernel32.GetOEMCP())
-            "".encode(oem)
+            data = content.encode(oem, errors="replace")
         except Exception:
-            oem = "mbcs"
+            data = content.encode("ascii", errors="replace")
         try:
-            with open(stage, "w", encoding=oem, errors="replace") as b:
-                b.write("@echo off\n")
-                if self.delay_v.get() and self.delay_ent.get().isdigit():
-                    b.write(f"timeout /t {self.delay_ent.get()}\n")
-                b.write(f'start "" "{os.path.normpath(f)}"\n')
+            with open(stage, "wb") as b:
+                b.write(data)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create BAT file:\n{e}"); return
         dst, res = self._place_in_startup(stage, f"{n}_START.bat")

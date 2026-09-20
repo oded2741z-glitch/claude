@@ -648,21 +648,28 @@ class AutoSysApp(tk.Tk):
         f = filedialog.askopenfilename()
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
-        # Write the .bat directly into the Startup folder via PowerShell (same
-        # approach as Add File). -Encoding Oem matches how cmd.exe reads .bat.
+        # Write the .bat with plain Python (like the older working build).
+        # Writing it via PowerShell trips antivirus (a script written into
+        # Startup by powershell.exe), which then deletes the file seconds
+        # later. cmd.exe reads .bat in the OEM codepage, so encode with it.
         dst = os.path.join(self.get_current_startup_folder(), f"{n}_START.bat")
-        bat = ['@echo off']
+        content = "@echo off\r\n"
         if self.delay_v.get() and self.delay_ent.get().isdigit():
-            bat.append(f'timeout /t {self.delay_ent.get()}')
-        bat.append(f'start "" "{os.path.normpath(f)}"')
-        ps_array = ",".join(self._psq(x) for x in bat)
-        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
-            f'Set-Content -LiteralPath $dst -Encoding Oem -Value @({ps_array})',
-        ]
-        res = self._run_ps(lines)
-        self.refresh_startup_list()
-        if not os.path.exists(dst):
-            messagebox.showerror("Error", f"Failed to create BAT file:\n{self._startup_err(res, 'Could not create the BAT file.')}")
+            content += f"timeout /t {self.delay_ent.get()}\r\n"
+        content += f'start "" "{os.path.normpath(f)}"\r\n'
+        try:
+            oem = "cp" + str(ctypes.windll.kernel32.GetOEMCP())
+            data = content.encode(oem, errors="replace")
+        except Exception:
+            data = content.encode("utf-8", errors="replace")
+        try:
+            with open(dst, "wb") as b:
+                b.write(data)
+            self.refresh_startup_list()
+            if not os.path.exists(dst):
+                messagebox.showerror("Error", "Could not create the BAT file.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create BAT file:\n{e}")
 
     # ================= SYSTEM TAB LOGIC =================
     def setup_system_tab(self):

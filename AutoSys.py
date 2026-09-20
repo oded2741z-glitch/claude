@@ -544,44 +544,12 @@ class AutoSysApp(tk.Tk):
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
 
-    def _stage_path(self, name):
-        # Public folder: ASCII path (avoids the WScript ANSI bug) and the
-        # user has full control (create AND delete), unlike C:\Windows\Temp
-        # where deleting our own staged file is denied.
-        public = os.environ.get("PUBLIC", r"C:\Users\Public")
-        for base in (os.path.join(public, "Documents"), public,
-                     os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")):
-            try:
-                os.makedirs(base, exist_ok=True)
-                return os.path.join(base, name)
-            except Exception:
-                continue
-        return os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), name)
-
-    def _short_path(self, p):
-        # Windows 8.3 short path — pure ASCII, so it is safe inside a .bat
-        # regardless of the console codepage. Falls back to the long path.
-        try:
-            buf = ctypes.create_unicode_buffer(1024)
-            if ctypes.windll.kernel32.GetShortPathNameW(p, buf, 1024) and buf.value:
-                return buf.value
-        except Exception:
-            pass
-        return p
-
-    def _place_in_startup(self, src, dest_name):
-        # Copy a locally-staged file into the current Startup folder, then
-        # remove the staged copy (best effort). Copy avoids Move's atomic
-        # source-delete, which can be denied depending on the staging folder.
-        dst = os.path.join(self.get_current_startup_folder(), dest_name)
-        lines = [
-            f'$dst = {self._psq(dst)}',
+    def _ensure_dst_lines(self):
+        # PowerShell prelude: $dst must be set; make sure its folder exists.
+        return [
             '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
             'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
-            f'Copy-Item -LiteralPath {self._psq(src)} -Destination $dst -Force',
-            f'Remove-Item -LiteralPath {self._psq(src)} -Force -ErrorAction SilentlyContinue',
         ]
-        return dst, self._run_ps(lines)
 
     def _startup_err(self, res, default):
         err = (res.stderr or res.stdout or "").strip() or default
@@ -606,10 +574,7 @@ class AutoSysApp(tk.Tk):
         f = filedialog.askopenfilename()
         if not f: return
         dst = os.path.join(self.get_current_startup_folder(), os.path.basename(f))
-        lines = [
-            f'$dst = {self._psq(dst)}',
-            '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
-            'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
+        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
             f'Copy-Item -LiteralPath {self._psq(f)} -Destination $dst -Force',
         ]
         res = self._run_ps(lines)
@@ -630,19 +595,14 @@ class AutoSysApp(tk.Tk):
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
         suf = "_Admin" if as_admin else ""
-
-        # WScript.Shell.Save() converts the .lnk path to ANSI and fails on
-        # non-ASCII (e.g. Hebrew) folder names, so build the shortcut in an
-        # all-ASCII temp path first, then move it into the real folder.
-        stage = self._stage_path(f"_autosys_{'admin' if as_admin else 'user'}.lnk")
-        try:
-            if os.path.exists(stage): os.remove(stage)
-        except Exception: pass
+        # Create the shortcut directly in the Startup folder (same approach
+        # as Add File), which is what works reliably.
+        dst = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
 
         use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()
-        lines = [
+        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
             '$ws = New-Object -ComObject WScript.Shell',
-            f'$sc = $ws.CreateShortcut({self._psq(stage)})',
+            '$sc = $ws.CreateShortcut($dst)',
         ]
         if use_delay:
             # A plain .lnk can't wait, so route it through cmd + timeout.
@@ -661,21 +621,14 @@ class AutoSysApp(tk.Tk):
         lines.append('$sc.Save()')
         if as_admin:
             lines += [
-                f'$b = [System.IO.File]::ReadAllBytes({self._psq(stage)})',
+                '$b = [System.IO.File]::ReadAllBytes($dst)',
                 '$b[21] = $b[21] -bor 0x20',
-                f'[System.IO.File]::WriteAllBytes({self._psq(stage)}, $b)',
+                '[System.IO.File]::WriteAllBytes($dst, $b)',
             ]
-        try:
-            res = self._run_ps(lines)
-            if not os.path.exists(stage):
-                err = (res.stderr or res.stdout or "").strip() or "PowerShell did not create the shortcut."
-                messagebox.showerror("Error", f"Failed to create shortcut:\n{err}"); return
-            dst, res2 = self._place_in_startup(stage, f"{n}{suf}.lnk")
-            self.refresh_startup_list()
-            if not os.path.exists(dst):
-                messagebox.showerror("Error", f"Failed to create shortcut:\n{self._startup_err(res2, 'Could not place the shortcut.')}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
+        res = self._run_ps(lines)
+        self.refresh_startup_list()
+        if not os.path.exists(dst):
+            messagebox.showerror("Error", f"Failed to create shortcut:\n{self._startup_err(res, 'Could not create the shortcut.')}")
 
     def add_admin_lnk(self):
         self.add_lnk(as_admin=True)
@@ -684,29 +637,21 @@ class AutoSysApp(tk.Tk):
         f = filedialog.askopenfilename()
         if not f: return
         n = os.path.splitext(os.path.basename(f))[0]
-        stage = self._stage_path("_autosys_bat.bat")
-        # Use the 8.3 short path (ASCII) for the target so the .bat has no
-        # non-ASCII characters, avoiding cmd.exe codepage garbling. Write in
-        # binary with errors="replace" so creation can never fail on encoding.
-        target = self._short_path(os.path.normpath(f))
-        content = "@echo off\r\n"
+        # Write the .bat directly into the Startup folder via PowerShell (same
+        # approach as Add File). -Encoding Oem matches how cmd.exe reads .bat.
+        dst = os.path.join(self.get_current_startup_folder(), f"{n}_START.bat")
+        bat = ['@echo off']
         if self.delay_v.get() and self.delay_ent.get().isdigit():
-            content += f"timeout /t {self.delay_ent.get()}\r\n"
-        content += f'start "" "{target}"\r\n'
-        try:
-            oem = "cp" + str(ctypes.windll.kernel32.GetOEMCP())
-            data = content.encode(oem, errors="replace")
-        except Exception:
-            data = content.encode("ascii", errors="replace")
-        try:
-            with open(stage, "wb") as b:
-                b.write(data)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to create BAT file:\n{e}"); return
-        dst, res = self._place_in_startup(stage, f"{n}_START.bat")
+            bat.append(f'timeout /t {self.delay_ent.get()}')
+        bat.append(f'start "" "{os.path.normpath(f)}"')
+        ps_array = ",".join(self._psq(x) for x in bat)
+        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
+            f'Set-Content -LiteralPath $dst -Encoding Oem -Value @({ps_array})',
+        ]
+        res = self._run_ps(lines)
         self.refresh_startup_list()
         if not os.path.exists(dst):
-            messagebox.showerror("Error", f"Failed to create BAT file:\n{self._startup_err(res, 'Could not place the BAT file.')}")
+            messagebox.showerror("Error", f"Failed to create BAT file:\n{self._startup_err(res, 'Could not create the BAT file.')}")
 
     # ================= SYSTEM TAB LOGIC =================
     def setup_system_tab(self):

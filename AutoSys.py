@@ -544,6 +544,28 @@ class AutoSysApp(tk.Tk):
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
             capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
 
+    def _ascii_stage_dir(self):
+        # An ASCII directory (so WScript's ANSI Save works) that we can
+        # actually write to right now — probed, not assumed.
+        candidates = [
+            os.path.join(os.environ.get("PUBLIC", r"C:\Users\Public"), "Documents"),
+            os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp"),
+            os.environ.get("ProgramData", r"C:\ProgramData"),
+            self.application_path,
+        ]
+        for d in candidates:
+            try:
+                if not d or not d.isascii():
+                    continue
+                os.makedirs(d, exist_ok=True)
+                probe = os.path.join(d, "_autosys_probe.tmp")
+                with open(probe, "w") as fh: fh.write("x")
+                os.remove(probe)
+                return d
+            except Exception:
+                continue
+        return os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp")
+
     def _ensure_dst_lines(self):
         # PowerShell prelude: $dst must be set; make sure its folder exists.
         return [
@@ -602,7 +624,7 @@ class AutoSysApp(tk.Tk):
         # So create it at an ASCII temp path where WScript is reliable, then
         # Copy-Item it to the real folder (the Unicode-safe primitive that
         # works for Add File).
-        stage = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Temp",
+        stage = os.path.join(self._ascii_stage_dir(),
                              f"_autosys_{'admin' if as_admin else 'user'}.lnk")
 
         use_delay = self.delay_v.get() and self.delay_ent.get().isdigit()

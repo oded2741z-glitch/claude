@@ -538,7 +538,11 @@ class AutoSysApp(tk.Tk):
         return "'" + str(s).replace("'", "''") + "'"
 
     def _run_ps(self, lines):
-        script = "\n".join(lines)
+        # Wrap in try/catch so any failure comes back as a clean plain-text
+        # message (AUTOSYS_ERR:...) instead of PowerShell's CLIXML stderr.
+        script = ("$ErrorActionPreference='Stop'\ntry {\n"
+                  + "\n".join(lines)
+                  + "\n} catch { Write-Output ('AUTOSYS_ERR:' + $_.Exception.Message) }")
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         return subprocess.run(
             ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
@@ -574,7 +578,14 @@ class AutoSysApp(tk.Tk):
         ]
 
     def _startup_err(self, res, default):
-        err = (res.stderr or res.stdout or "").strip() or default
+        err = ""
+        for line in (res.stdout or "").splitlines():
+            if line.startswith("AUTOSYS_ERR:"):
+                err = line[len("AUTOSYS_ERR:"):].strip(); break
+        if not err:
+            err = (res.stderr or "").strip()
+        if not err:
+            err = default
         low = err.lower()
         if "denied" in low or "unauthorized" in low:
             err += ("\n\nWriting to the Startup folder was blocked. This is "

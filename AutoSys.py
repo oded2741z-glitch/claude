@@ -1,17 +1,12 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import os, subprocess, threading, time, shutil, sys, ctypes, platform, ipaddress, base64
+import os, subprocess, threading, time, shutil, sys, ctypes, platform, ipaddress
 from concurrent.futures import ThreadPoolExecutor
 
 CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
 
 try: import send2trash
 except ImportError: send2trash = None
-try:
-    import pythoncom
-    from win32com.shell import shell, shellcon
-except ImportError:
-    pythoncom = None
 try: 
     import pygetwindow as gw
     ENFORCER_AVAILABLE = True
@@ -201,7 +196,7 @@ class AutoSysApp(tk.Tk):
         self.user_startup = self.get_real_user_startup()
         self.startup_path_script = os.path.join(self.global_startup, 'AutoSys_Loader.bat')
         
-        self.use_user_startup_var = tk.BooleanVar(value=True)
+        self.use_user_startup_var = tk.BooleanVar(value=False)
         self.keep_pinging = False
         self._main_status_timer = None
         self.btn_style = {"bg": "#333333", "fg": "white", "bd": 0, "font": ("Arial", 9, "bold"), "cursor": "hand2"}
@@ -217,10 +212,8 @@ class AutoSysApp(tk.Tk):
         self.after(1500, self.sys_mtk_refresh)
 
     def get_real_user_startup(self):
-        suffix = r"Microsoft\Windows\Start Menu\Programs\Startup"
         try:
             ps_script = (
-                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
                 "$process = Get-WmiObject Win32_Process -Filter \"Name='explorer.exe'\" | Select-Object -First 1;"
                 "if ($process) {"
                 "    $sid = $process.GetOwnerSid().Sid;"
@@ -229,18 +222,10 @@ class AutoSysApp(tk.Tk):
                 "}"
             )
             cmd = ["powershell", "-NoProfile", "-Command", ps_script]
-            # Decode as UTF-8 so non-ASCII (e.g. Hebrew) usernames survive;
-            # mbcs would mangle them and send us to the wrong profile.
-            output = subprocess.check_output(cmd, creationflags=CREATE_NO_WINDOW).decode('utf-8', errors='ignore').strip()
-            if output and os.path.isdir(output):
+            output = subprocess.check_output(cmd, creationflags=CREATE_NO_WINDOW).decode('mbcs', errors='ignore').strip()
+            if output and os.path.exists(output):
                 return output
         except: pass
-
-        # The current process's own APPDATA (Python reads it as correct
-        # Unicode) — right when the elevated app runs as the logged-in user.
-        appdata = os.environ.get("APPDATA", "")
-        if appdata and os.path.isdir(os.path.join(appdata, suffix)):
-            return os.path.join(appdata, suffix)
             
         try:
             users_dir = r"C:\Users"
@@ -530,53 +515,7 @@ class AutoSysApp(tk.Tk):
         tk.Button(f_open, text="USER FOLDER", command=lambda: os.startfile(self.user_startup), **self.btn_style).pack(side="left", fill="x", expand=True, padx=2)
 
     def get_current_startup_folder(self):
-        folder = self.user_startup if self.use_user_startup_var.get() else self.global_startup
-        try: os.makedirs(folder, exist_ok=True)
-        except Exception: pass
-        return folder
-
-    # --- Startup file helpers (all writes go through elevated, Unicode-safe
-    #     PowerShell so they work in the real user's Startup folder even when
-    #     its path contains non-ASCII, e.g. Hebrew, characters). ---
-    def _psq(self, s):
-        # PowerShell single-quoted literal, safe for spaces/unicode/$/backtick.
-        return "'" + str(s).replace("'", "''") + "'"
-
-    def _run_ps(self, lines):
-        # Wrap in try/catch so any failure comes back as a clean plain-text
-        # message (AUTOSYS_ERR:...) instead of PowerShell's CLIXML stderr.
-        script = ("$ErrorActionPreference='Stop'\ntry {\n"
-                  + "\n".join(lines)
-                  + "\n} catch { Write-Output ('AUTOSYS_ERR:' + $_.Exception.Message) }")
-        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        return subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-            capture_output=True, text=True, creationflags=CREATE_NO_WINDOW)
-
-    def _ensure_dst_lines(self):
-        # PowerShell prelude: $dst must be set; make sure its folder exists.
-        return [
-            '$ddir = [System.IO.Path]::GetDirectoryName($dst)',
-            'if (-not (Test-Path -LiteralPath $ddir)) { New-Item -ItemType Directory -Path $ddir -Force | Out-Null }',
-        ]
-
-    def _startup_err(self, res, default):
-        err = ""
-        for line in (res.stdout or "").splitlines():
-            if line.startswith("AUTOSYS_ERR:"):
-                err = line[len("AUTOSYS_ERR:"):].strip(); break
-        if not err:
-            err = (res.stderr or "").strip()
-        if not err:
-            err = default
-        low = err.lower()
-        if "denied" in low or "unauthorized" in low:
-            err += ("\n\nWriting to the Startup folder was blocked. This is "
-                    "usually Windows 'Controlled Folder Access' (ransomware "
-                    "protection). Allow AutoSys under Windows Security > Virus "
-                    "& threat protection > Ransomware protection > Allow an app "
-                    "through Controlled folder access, or run AutoSys as admin.")
-        return err
+        return self.user_startup if self.use_user_startup_var.get() else self.global_startup
 
     def refresh_startup_list(self):
         self.startup_tree.delete(*self.startup_tree.get_children())
@@ -586,107 +525,59 @@ class AutoSysApp(tk.Tk):
                 if f.lower() != "desktop.ini":
                     self.startup_tree.insert("", "end", values=(f, os.path.splitext(f)[1]))
 
-    def add_startup_manual(self):
+    def add_startup_manual(self): 
         f = filedialog.askopenfilename()
-        if not f: return
-        dst = os.path.join(self.get_current_startup_folder(), os.path.basename(f))
-        lines = [f'$dst = {self._psq(dst)}'] + self._ensure_dst_lines() + [
-            f'Copy-Item -LiteralPath {self._psq(f)} -Destination $dst -Force',
-        ]
-        res = self._run_ps(lines)
-        self.refresh_startup_list()
-        if not os.path.exists(dst):
-            messagebox.showerror("Error", f"Failed to add file:\n{self._startup_err(res, 'Could not copy the file.')}")
+        if f: 
+            shutil.copy2(f, self.get_current_startup_folder())
+            self.refresh_startup_list()
 
-    def del_startup(self):
+    def del_startup(self): 
         s = self.startup_tree.selection()
-        if not s: return
-        name = str(self.startup_tree.item(s[0])['values'][0])
-        target = os.path.join(self.get_current_startup_folder(), name)
-        self._run_ps([f'Remove-Item -LiteralPath {self._psq(target)} -Force -ErrorAction SilentlyContinue'])
-        self.refresh_startup_list()
+        if s: 
+            os.remove(os.path.join(self.get_current_startup_folder(), self.startup_tree.item(s[0])['values'][0]))
+            self.refresh_startup_list()
     
     def add_lnk(self, as_admin=False):
-        if not pythoncom:
-            messagebox.showerror("Error", "Shortcut creation needs pywin32.\nInstall it with:  pip install pywin32")
-            return
         f = filedialog.askopenfilename()
-        if not f: return
-        n = os.path.splitext(os.path.basename(f))[0]
-        suf = "_Admin" if as_admin else ""
-        lnk = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
-
-        # Create the .lnk with the native IShellLink/IPersistFile COM API.
-        # IPersistFile::Save takes a Unicode path, so it writes correctly to
-        # non-ASCII (Hebrew) Startup folders — unlike WScript.Shell (ANSI).
-        try:
-            pythoncom.CoInitialize()
-            s = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None,
-                                           pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
-            if self.delay_v.get() and self.delay_ent.get().isdigit():
-                # A plain .lnk can't wait, so route it through cmd + timeout.
-                s.SetPath(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe"))
-                s.SetArguments('/c timeout /t {} /nobreak >nul & start "" "{}"'.format(self.delay_ent.get(), f))
-                s.SetShowCmd(7)  # minimized
-            else:
-                s.SetPath(f)
-            s.SetWorkingDirectory(os.path.dirname(f))
+        if f:
+            n = os.path.splitext(os.path.basename(f))[0]
+            suf = "_Admin" if as_admin else ""
+            lnk = os.path.join(self.get_current_startup_folder(), f"{n}{suf}.lnk")
+            
+            ps_cmd = (
+                f'$WshShell = New-Object -comObject WScript.Shell;'
+                f'$Shortcut = $WshShell.CreateShortcut("{lnk}");'
+                f'$Shortcut.TargetPath = "{f}";'
+                f'$Shortcut.WorkingDirectory = "{os.path.dirname(f)}";'
+                f'$Shortcut.Save();'
+            )
+            
             if as_admin:
-                d = s.QueryInterface(shell.IID_IShellLinkDataList)
-                d.SetFlags(d.GetFlags() | shellcon.SLDF_RUNAS_USER)
-            s.QueryInterface(pythoncom.IID_IPersistFile).Save(lnk, 0)
-            self.refresh_startup_list()
-            if not os.path.exists(lnk):
-                messagebox.showerror("Error", "Could not create the shortcut.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
+                ps_cmd += (
+                    f'$bytes = [System.IO.File]::ReadAllBytes("{lnk}");'
+                    f'$bytes[21] = $bytes[21] -bor 0x20;'
+                    f'[System.IO.File]::WriteAllBytes("{lnk}", $bytes);'
+                )
+                
+            try:
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], creationflags=CREATE_NO_WINDOW)
+                self.refresh_startup_list()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create shortcut:\n{e}")
 
-    def add_admin_lnk(self):
+    def add_admin_lnk(self): 
         self.add_lnk(as_admin=True)
 
     def add_bat(self):
-        if not pythoncom:
-            messagebox.showerror("Error", "This needs pywin32.\nInstall it with:  pip install pywin32")
-            return
         f = filedialog.askopenfilename()
-        if not f: return
-        n = os.path.splitext(os.path.basename(f))[0]
-        # Antivirus deletes any .bat placed in the Startup folder (it looks
-        # like a persistence script). So keep the .bat in a non-protected
-        # AppData folder and put a .lnk to it in Startup instead — the .lnk
-        # survives, and it launches the .bat at startup.
-        bat_dir = os.path.join(os.environ.get("LOCALAPPDATA") or self.application_path, "AutoSys")
-        content = "@echo off\r\n"
-        if self.delay_v.get() and self.delay_ent.get().isdigit():
-            content += f"timeout /t {self.delay_ent.get()}\r\n"
-        content += f'start "" "{os.path.normpath(f)}"\r\n'
-        try:
-            oem = "cp" + str(ctypes.windll.kernel32.GetOEMCP())
-            data = content.encode(oem, errors="replace")
-        except Exception:
-            data = content.encode("utf-8", errors="replace")
-        try:
-            os.makedirs(bat_dir, exist_ok=True)
-            bat_path = os.path.join(bat_dir, f"{n}_START.bat")
-            with open(bat_path, "wb") as b:
-                b.write(data)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to create BAT file:\n{e}"); return
-
-        lnk = os.path.join(self.get_current_startup_folder(), f"{n}_START.lnk")
-        try:
-            pythoncom.CoInitialize()
-            s = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None,
-                                           pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
-            s.SetPath(bat_path)
-            s.SetWorkingDirectory(bat_dir)
-            s.SetShowCmd(7)  # minimized
-            s.QueryInterface(pythoncom.IID_IPersistFile).Save(lnk, 0)
+        if f:
+            n = os.path.splitext(os.path.basename(f))[0]
+            with open(os.path.join(self.get_current_startup_folder(), f"{n}_START.bat"), "w", encoding="utf-8") as b:
+                b.write("@echo off\n")
+                if self.delay_v.get() and self.delay_ent.get().isdigit(): 
+                    b.write(f"timeout /t {self.delay_ent.get()}\n")
+                b.write(f'start "" "{os.path.normpath(f)}"\n')
             self.refresh_startup_list()
-            if not os.path.exists(lnk):
-                messagebox.showerror("Error", "Could not create the startup entry.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to create startup entry:\n{e}")
 
     # ================= SYSTEM TAB LOGIC =================
     def setup_system_tab(self):

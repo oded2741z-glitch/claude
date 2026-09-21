@@ -480,7 +480,7 @@ class AutoSysApp(tk.Tk):
     def setup_startup_tab(self):
         tk.Label(self.tab_startup, text="STARTUP MANAGER", bg="#121212", fg="#FFA500", font=("Arial", 10, "bold")).pack(pady=5)
         
-        tk.Checkbutton(self.tab_startup, text="Target User Startup (Instead of Global)", variable=self.use_user_startup_var, command=self.refresh_startup_list, bg="#121212", fg="white", selectcolor="#333333", activebackground="#121212", activeforeground="white").pack(anchor="w", padx=15, pady=(0, 10))
+        tk.Checkbutton(self.tab_startup, text="Target Global Startup (Instead of User)", variable=self.use_user_startup_var, command=self.refresh_startup_list, bg="#121212", fg="white", selectcolor="#333333", activebackground="#121212", activeforeground="white").pack(anchor="w", padx=15, pady=(0, 10))
 
         self.startup_tree = ttk.Treeview(self.tab_startup, columns=("name", "type"), show="headings", height=10)
         self.startup_tree.heading("name", text="Name")

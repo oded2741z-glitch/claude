@@ -10,7 +10,19 @@ on.
 | Taken on | 2026-09-22 |
 | Source commit | `bce5eb7` - *Add network-camera settings (ONVIF) and extra live views* |
 | Branch | `claude/file-this-nwnu7c` |
-| Git tag | `V1` |
+| Git tag | `V1` (local only - see below) |
+
+The `V1` tag was created locally, but this environment's GitHub
+credentials are not allowed to push tags (the push is refused with
+HTTP 403), so the tag is not on the remote. Push it from a checkout with
+tag permission:
+
+```bash
+git push origin V1
+```
+
+Nothing depends on the tag: the folder below is the backup, and the source
+commit `bce5eb7` identifies the same state.
 
 ## What is in here
 
@@ -50,8 +62,9 @@ cp backup/V1/ouster_gui.py backup/V1/README.md backup/V1/requirements.txt .
 Or read it straight out of git, without touching the working tree:
 
 ```bash
-git show V1:ouster_gui.py > /tmp/ouster_gui_v1.py   # from the tag
-git show bce5eb7:ouster_gui.py | less               # from the commit
+git show bce5eb7:ouster_gui.py | less                  # from the commit
+git show c4a67d9:backup/V1/ouster_gui.py | less        # from the snapshot
+git show V1:ouster_gui.py | less                       # once the tag is pushed
 ```
 
 Check a copy against the table above with:

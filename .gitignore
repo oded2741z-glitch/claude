@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# App data and local recordings
+.ouster_projects.json
+*.pcap
+*.osf
+*.mcap

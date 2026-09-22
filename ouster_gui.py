@@ -10,7 +10,8 @@ hierarchy and lets you talk to each one:
   * Projects    - a site, a customer, a research program ...
   * Equipment   - the vehicle / mast / robot the sensors are mounted on,
                   with a body size and a 3D layout showing where on it
-                  each sensor sits
+                  each sensor sits, drawn from a built-in shape or from
+                  an STL model of your own
   * Sensors     - one entry per physical device, of one of four types:
                     - Ouster lidar, reached by hostname / IP (ouster-sdk)
                     - Camera: USB (0, /dev/video0) or network
@@ -85,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.7.0"
+__version__ = "2.8.0"
 
 import numpy as np
 
@@ -351,6 +352,17 @@ DEFAULT_MOUNT = {"x": "0", "y": "0", "z": "0",
 MOUNT_KEYS = ("x", "y", "z", "roll", "pitch", "yaw")
 # length (x) x width (y) x height (z), in metres
 DEFAULT_BODY = {"length": "2.0", "width": "1.0", "height": "1.0"}
+# an optional STL standing in for the built-in shape
+DEFAULT_MODEL = {"path": "", "fit": True, "scale": "1",
+                 "roll": "0", "pitch": "0", "yaw": "0",
+                 "dx": "0", "dy": "0", "dz": "0"}
+# ready-made rotations for the two conventions models usually arrive in
+MODEL_ORIENTATIONS = {
+    "as exported": {"roll": "0", "pitch": "0", "yaw": "0"},
+    "Y up -> Z up": {"roll": "90", "pitch": "0", "yaw": "0"},
+    "Z forward -> X forward": {"roll": "90", "pitch": "0", "yaw": "90"},
+    "turn 180°": {"roll": "0", "pitch": "0", "yaw": "180"},
+}
 BODY_PRESETS = {
     "Vehicle": {"length": "4.80", "width": "1.90", "height": "1.60"},
     "Drone / UAV": {"length": "0.90", "width": "0.90", "height": "0.30"},
@@ -678,6 +690,10 @@ class Store:
             body = {}
         preset = BODY_PRESETS.get(equipment.get("type", ""), DEFAULT_BODY)
         equipment["body"] = {**copy.deepcopy(preset), **body}
+        model = equipment.get("model")
+        if not isinstance(model, dict):
+            model = {}
+        equipment["model"] = {**copy.deepcopy(DEFAULT_MODEL), **model}
         return equipment
 
     @staticmethod
@@ -2288,6 +2304,88 @@ def equipment_shapes(kind: str, length: float, width: float,
     return [(box_faces(0, 0, 0, length, width, height), body, 0.85)]
 
 
+STL_MAX_TRIANGLES = 20000       # matplotlib crawls much above this
+# 80-byte header, uint32 count, then 50 bytes per triangle
+STL_RECORD = np.dtype([("normal", "<f4", (3,)), ("v", "<f4", (3, 3)),
+                       ("attr", "<u2")])
+
+
+def load_stl(path: str, max_triangles: int = STL_MAX_TRIANGLES):
+    """Read a binary or ascii STL into (triangles, total_before_thinning).
+
+    `triangles` is an (N, 3, 3) array of vertices. Models heavier than
+    `max_triangles` are thinned by taking every nth triangle, which keeps
+    the shape recognisable and the view interactive.
+    """
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        header = fh.read(84)
+        if len(header) < 84:
+            raise ValueError("the file is too small to be an STL")
+        count = int.from_bytes(header[80:84], "little")
+        if size == 84 + count * 50:                  # binary
+            records = np.frombuffer(fh.read(count * 50), dtype=STL_RECORD,
+                                    count=count)
+            triangles = np.array(records["v"], dtype=np.float64)
+        else:                                        # ascii
+            fh.seek(0)
+            triangles = _parse_ascii_stl(
+                fh.read().decode("ascii", "replace"))
+    if not len(triangles):
+        raise ValueError("the STL holds no triangles")
+    total = len(triangles)
+    if total > max_triangles:
+        step = int(math.ceil(total / max_triangles))
+        triangles = triangles[::step]
+    return triangles, total
+
+
+def _parse_ascii_stl(text: str) -> np.ndarray:
+    vertices = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 4 and parts[0].lower() == "vertex":
+            try:
+                vertices.append([float(v) for v in parts[1:]])
+            except ValueError:
+                continue
+    if len(vertices) < 3:
+        return np.zeros((0, 3, 3))
+    usable = len(vertices) - len(vertices) % 3
+    return np.asarray(vertices[:usable],
+                      dtype=np.float64).reshape(-1, 3, 3)
+
+
+def fit_model(triangles: np.ndarray, model: dict, length: float,
+              width: float, height: float) -> np.ndarray:
+    """Rotate, scale and place a loaded model in the equipment's frame."""
+    def number(key, default=0.0):
+        try:
+            return float(str(model.get(key, default)).strip() or default)
+        except ValueError:
+            return default
+
+    points = triangles.reshape(-1, 3)
+    rotation = rotation_matrix(number("roll"), number("pitch"),
+                               number("yaw"))
+    points = points @ rotation.T
+    low, high = points.min(axis=0), points.max(axis=0)
+    extent = np.maximum(high - low, 1e-9)
+    if model.get("fit", True):
+        # uniform scale, so the model keeps its proportions inside the body
+        scale = min(length / extent[0], width / extent[1],
+                    height / extent[2])
+        points = points * scale
+        low, high = points.min(axis=0), points.max(axis=0)
+        # centred on the footprint, standing on the ground
+        points = points - [(low[0] + high[0]) / 2.0,
+                           (low[1] + high[1]) / 2.0, low[2]]
+    else:
+        points = points * number("scale", 1.0)
+    points = points + [number("dx"), number("dy"), number("dz")]
+    return points.reshape(-1, 3, 3)
+
+
 def rotation_matrix(roll: float, pitch: float, yaw: float):
     """Z-Y-X rotation from degrees, applied as yaw, then pitch, then roll."""
     r, p, y = math.radians(roll), math.radians(pitch), math.radians(yaw)
@@ -2328,6 +2426,132 @@ def mount_presets(length: float, width: float, height: float) -> dict:
     }
 
 
+class ModelDialog(tk.Toplevel):
+    """Pick an STL for a piece of equipment and place it in the frame."""
+
+    def __init__(self, parent, layout):
+        super().__init__(parent)
+        self.layout = layout
+        self.equipment = layout.equipment
+        model = self.equipment["model"]
+        self.title(f"3D model  ·  {self.equipment.get('name', '')}")
+        self.configure(bg=Theme.BG)
+        self.transient(parent)
+        self.resizable(False, False)
+
+        body = ttk.Frame(self, style="Panel.TFrame", padding=14)
+        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 6))
+        ttk.Label(body, text="STL file (binary or ascii):",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.path_var = tk.StringVar(value=str(model.get("path", "")))
+        ttk.Entry(body, textvariable=self.path_var,
+                  width=52).pack(fill=tk.X, pady=3)
+        row = ttk.Frame(body, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(row, text="Browse...",
+                   command=self.on_browse).pack(side=tk.LEFT)
+        ttk.Label(row, text=f"models over {STL_MAX_TRIANGLES} triangles are "
+                            "thinned to stay interactive",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(side=tk.LEFT, padx=8)
+
+        self.fit_var = tk.BooleanVar(value=bool(model.get("fit", True)))
+        ttk.Checkbutton(body, text="Scale to the equipment size",
+                        variable=self.fit_var,
+                        style="TCheckbutton").pack(anchor=tk.W, pady=(4, 0))
+        ttk.Label(body, text="On: the model is scaled to fit the length / "
+                             "width / height and stood on the ground. Off: "
+                             "its own coordinates are used, times the scale "
+                             "below.",
+                  style="Hint.TLabel", wraplength=430,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 6))
+
+        ttk.Label(body, text="Orientation:",
+                  style="Muted.TLabel").pack(anchor=tk.W)
+        self.orientation_var = tk.StringVar()
+        box = ttk.Combobox(body, textvariable=self.orientation_var,
+                           values=list(MODEL_ORIENTATIONS), state="readonly")
+        box.pack(fill=tk.X, pady=3)
+        box.bind("<<ComboboxSelected>>", lambda e: self.on_orientation())
+
+        grid = ttk.Frame(body, style="Panel.TFrame")
+        grid.pack(fill=tk.X, pady=(6, 0))
+        self.vars = {}
+        fields = (("scale", "scale"), ("roll", "roll [°]"),
+                  ("pitch", "pitch [°]"), ("yaw", "yaw [°]"),
+                  ("dx", "offset x [m]"), ("dy", "offset y [m]"),
+                  ("dz", "offset z [m]"))
+        for i, (key, label) in enumerate(fields):
+            row, column = divmod(i, 2)
+            ttk.Label(grid, text=label,
+                      style="Muted.TLabel").grid(row=row, column=column * 2,
+                                                 sticky=tk.W, pady=1)
+            self.vars[key] = tk.StringVar(value=str(model.get(key, "0")))
+            ttk.Entry(grid, textvariable=self.vars[key],
+                      width=10).grid(row=row, column=column * 2 + 1,
+                                     padx=(4, 16), pady=1)
+
+        buttons = ttk.Frame(self, style="TFrame")
+        buttons.pack(fill=tk.X, padx=12, pady=(0, 12))
+        ttk.Button(buttons, text="Apply", style="Accent.TButton",
+                   command=self.on_apply).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Remove model",
+                   command=self.on_remove).pack(side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="Close",
+                   command=self.destroy).pack(side=tk.RIGHT)
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def on_browse(self):
+        path = filedialog.askopenfilename(
+            title="Open an STL model", parent=self,
+            filetypes=[("STL models", "*.stl"), ("All files", "*")])
+        if path:
+            self.path_var.set(path)
+
+    def on_orientation(self):
+        preset = MODEL_ORIENTATIONS.get(self.orientation_var.get(), {})
+        for key, value in preset.items():
+            self.vars[key].set(value)
+
+    def _collect(self):
+        values = {"path": self.path_var.get().strip(),
+                  "fit": bool(self.fit_var.get())}
+        for key, var in self.vars.items():
+            text = var.get().strip() or "0"
+            try:
+                values[key] = f"{float(text):g}"
+            except ValueError:
+                messagebox.showerror("3D model",
+                                     f"'{key}' must be a number.",
+                                     parent=self)
+                return None
+        if values["path"] and not os.path.isfile(values["path"]):
+            messagebox.showerror("3D model",
+                                 f"No such file:\n{values['path']}",
+                                 parent=self)
+            return None
+        return values
+
+    def on_apply(self):
+        values = self._collect()
+        if values is None:
+            return
+        self.equipment["model"] = values
+        self.layout.app.store.save()
+        self.layout.app.forget_model(values["path"])
+        self.layout.redraw()
+        self.destroy()
+
+    def on_remove(self):
+        self.equipment["model"] = copy.deepcopy(DEFAULT_MODEL)
+        self.layout.app.store.save()
+        self.layout.app.log(f"3D model removed from "
+                            f"'{self.equipment.get('name')}'; the built-in "
+                            "shape is back.")
+        self.layout.redraw()
+        self.destroy()
+
+
 class MountLayoutWindow:
     """Where each sensor sits on its equipment, drawn in 3D.
 
@@ -2345,10 +2569,11 @@ class MountLayoutWindow:
                         for s in equipment.get("sensors", [])]
         self.selected = self.sensors[0] if self.sensors else None
         self.markers = {}          # sensor id -> (x, y, z) for picking
+        self.model_bounds = None   # bounding box of a loaded STL, if any
 
         self.win = tk.Toplevel(app.root)
         self.win.title(f"Mount layout  ·  {equipment.get('name', '')}")
-        self.win.geometry("1180x740")
+        self.win.geometry("1180x800")
         self.win.configure(bg=Theme.BG)
         self.win.transient(app.root)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
@@ -2390,8 +2615,18 @@ class MountLayoutWindow:
                 value=str(equipment["body"].get(key, "1")))
             ttk.Entry(grid, textvariable=self.body_vars[key],
                       width=8).grid(row=i, column=1, padx=6, pady=1)
-        ttk.Button(box, text="Apply size",
-                   command=self.on_apply_body).pack(fill=tk.X, pady=(6, 0))
+        buttons = ttk.Frame(box, style="Panel.TFrame")
+        buttons.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(buttons, text="Apply size",
+                   command=self.on_apply_body).pack(side=tk.LEFT, expand=True,
+                                                    fill=tk.X, padx=(0, 3))
+        ttk.Button(buttons, text="⬚  3D model...",
+                   command=self.on_model).pack(side=tk.LEFT, expand=True,
+                                               fill=tk.X, padx=(3, 0))
+        self.model_label = tk.StringVar()
+        ttk.Label(box, textvariable=self.model_label, style="Hint.TLabel",
+                  wraplength=320, justify=tk.LEFT).pack(anchor=tk.W,
+                                                        pady=(4, 0))
 
     def _build_sensor_panel(self, parent):
         box = ttk.LabelFrame(parent, text="  SENSORS ON THIS EQUIPMENT  ",
@@ -2400,7 +2635,7 @@ class MountLayoutWindow:
         self.tree_box = box
         columns = ("name", "kind", "pos")
         self.tree = ttk.Treeview(box, columns=columns, show="headings",
-                                 selectmode="browse", height=8)
+                                 selectmode="browse", height=6)
         for key, heading, width in (("name", "Sensor", 130),
                                     ("kind", "Type", 90),
                                     ("pos", "x / y / z [m]", 120)):
@@ -2454,8 +2689,8 @@ class MountLayoutWindow:
                             width=12)
         view.pack(side=tk.LEFT)
         view.bind("<<ComboboxSelected>>", lambda e: self.redraw())
-        ttk.Button(box, text="Close",
-                   command=self.close).pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(row, text="Close",
+                   command=self.close).pack(side=tk.RIGHT)
 
     def _build_canvas(self, parent):
         box = ttk.LabelFrame(parent, text="  3D LAYOUT  ", padding=6)
@@ -2598,12 +2833,16 @@ class MountLayoutWindow:
         ax.set_facecolor(Theme.BG)
         self.markers = {}
 
-        for faces, color, alpha in equipment_shapes(
-                self.equipment.get("type", "Other"), length, width, height):
-            collection = Poly3DCollection(faces, facecolors=color,
-                                          edgecolors="#6b7490", linewidths=0.4)
-            collection.set_alpha(alpha)
-            ax.add_collection3d(collection)
+        drawn = self._draw_model(ax, length, width, height)
+        if not drawn:
+            for faces, color, alpha in equipment_shapes(
+                    self.equipment.get("type", "Other"), length, width,
+                    height):
+                collection = Poly3DCollection(
+                    faces, facecolors=color, edgecolors="#6b7490",
+                    linewidths=0.4)
+                collection.set_alpha(alpha)
+                ax.add_collection3d(collection)
 
         reach = max(length, width, height)
         for sensor in self.sensors:
@@ -2626,6 +2865,10 @@ class MountLayoutWindow:
                     else Theme.MUTED, fontsize=8 if chosen else 7)
 
         extent = max(length / 2.0, width / 2.0, height)
+        if self.model_bounds is not None:
+            low, high = self.model_bounds
+            extent = max(extent, abs(low[0]), abs(high[0]), abs(low[1]),
+                         abs(high[1]), abs(high[2]))
         for point in self.markers.values():
             extent = max(extent, abs(point[0]), abs(point[1]), abs(point[2]))
         span = extent * 1.2
@@ -2649,6 +2892,40 @@ class MountLayoutWindow:
                      f"{len(self.sensors)} sensor(s)", fontsize=9,
                      color=Theme.FG, loc="left")
         self.canvas.draw_idle()
+
+    def on_model(self):
+        dialog = ModelDialog(self.win, self)
+        self.win.wait_window(dialog)
+
+    def _draw_model(self, ax, length, width, height) -> bool:
+        """Draw the equipment's STL, if it has one. False falls back."""
+        self.model_bounds = None
+        model = self.equipment.get("model") or {}
+        path = str(model.get("path", "")).strip()
+        if not path:
+            self.model_label.set("No 3D model - drawing the built-in "
+                                 f"{self.equipment.get('type', 'shape')}.")
+            return False
+        loaded = self.app.load_model(path)
+        if loaded is None:
+            self.model_label.set(f"Could not load {os.path.basename(path)} - "
+                                 "showing the built-in shape instead.")
+            return False
+        triangles, total = loaded
+        placed = fit_model(triangles, model, length, width, height)
+        collection = Poly3DCollection(placed, facecolors="#3d4457",
+                                      edgecolors="#59627d", linewidths=0.15)
+        collection.set_alpha(0.9)
+        ax.add_collection3d(collection)
+        points = placed.reshape(-1, 3)
+        self.model_bounds = (points.min(axis=0), points.max(axis=0))
+        shown = len(placed)
+        self.model_label.set(
+            f"{os.path.basename(path)} - {total} triangles"
+            + (f", showing {shown}" if shown != total else "")
+            + (", scaled to the equipment size" if model.get("fit", True)
+               else f", scale x{model.get('scale', '1')}"))
+        return True
 
     def close(self):
         if self.win is None:
@@ -2829,6 +3106,7 @@ class OusterGuiApp:
         self.imu_rate = None
         self.view_windows = []          # detached camera views
         self.layout_windows = []        # open 3D mount layouts
+        self._model_cache = {}          # (path, mtime) -> (triangles, total)
         self.last_camera_frame = None
         self._onvif_passwords = {}      # sensor id -> password, this session
 
@@ -3199,6 +3477,32 @@ class OusterGuiApp:
         self.layout_windows.append(window)
         self.log(f"Opened the 3D mount layout for "
                  f"'{equipment.get('name')}'.")
+
+    def load_model(self, path: str):
+        """Parsed STL for `path`, or None after reporting why not."""
+        try:
+            key = (path, os.path.getmtime(path))
+        except OSError as e:
+            self.log(f"3D model not readable: {e}")
+            return None
+        if key in self._model_cache:
+            return self._model_cache[key]
+        try:
+            triangles, total = load_stl(path)
+        except Exception as e:
+            self.log(f"Could not read {os.path.basename(path)}: {e}")
+            return None
+        self._model_cache[key] = (triangles, total)
+        note = f"Loaded {os.path.basename(path)}: {total} triangles"
+        if len(triangles) != total:
+            note += f", thinned to {len(triangles)} for the view"
+        self.log(note + ".")
+        return self._model_cache[key]
+
+    def forget_model(self, path: str):
+        """Drop a cached model, so the next draw re-reads the file."""
+        for key in [k for k in self._model_cache if k[0] == path]:
+            self._model_cache.pop(key, None)
 
     def _close_layout_windows(self):
         for window in list(self.layout_windows):

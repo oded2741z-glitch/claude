@@ -140,6 +140,39 @@ redraws the equipment and moves the presets with it. Equipment saved
 before this existed gets a default size from its type, and sensors get a
 mount at the origin.
 
+#### Using your own model (STL)
+
+**3D model...** replaces the built-in shape with an **STL** file - binary
+or ascii, both read by a parser built into the app, with no extra package
+to install. STL is the format every CAD tool exports and the only one
+supported; OBJ, STEP, glTF and the rest are not read.
+
+| Field | What it does |
+| --- | --- |
+| **STL file** | the path, or **Browse...** |
+| **Scale to the equipment size** | on: the model is scaled uniformly to fit the length / width / height and stood on the ground - the usual case, since STL carries no units. Off: its own coordinates are used, times **scale** |
+| **Orientation** | `as exported`, `Y up -> Z up`, `Z forward -> X forward` or `turn 180°`, which just fill in roll / pitch / yaw |
+| **roll / pitch / yaw** | degrees, applied before scaling |
+| **offset x / y / z** | metres, applied last |
+
+Scaling is always uniform, so a model never comes out stretched: the
+tightest of the three body dimensions decides the factor. A 2 x 1 x 0.5 m
+model in a 4.8 x 1.9 x 1.6 m body ends up 3.8 x 1.9 x 0.95 m - the width
+binds.
+
+Models heavier than 20 000 triangles are thinned by taking every nth
+triangle, which keeps the view interactive; the panel reports both counts
+(`van.stl - 84 120 triangles, showing 20 030`). A parsed file is cached
+until it changes on disk or the model is re-applied.
+
+If the file is missing or unreadable, the layout falls back to the
+built-in shape and says so in the panel and the log, so a moved file
+never breaks a project. **Remove model** goes back to the built-in shape
+deliberately.
+
+Sensor markers, arrows and labels are drawn on top of the model exactly as
+they are on the built-in shape.
+
 ### Baseline (legacy) settings
 
 When a sensor is created, its settings are frozen as a **baseline** - the
@@ -562,7 +595,9 @@ stream first rather than fighting the reader for the device.
 ```
 
 Each equipment item carries a `body` block - `{"length", "width",
-"height"}` in metres - and each sensor a `mount` block - `{"x", "y", "z",
+"height"}` in metres - and a `model` block - `{"path", "fit", "scale",
+"roll", "pitch", "yaw", "dx", "dy", "dz"}` for an optional STL - and each
+sensor a `mount` block - `{"x", "y", "z",
 "roll", "pitch", "yaw"}` - giving its place on that equipment.
 
 Each sensor also carries a `legacy` block - `{"kind", "created", "note",

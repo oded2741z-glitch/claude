@@ -47,6 +47,11 @@ From a camera's dashboard you can:
     capture when a preview is open, and read back what the camera kept.
   * Record the live image to MP4 / AVI.
 
+Every dashboard also has a Compare button: it reads the sensor and shows
+the settings saved in the project next to the live ones, marking each row
+same / differs / not set / not reported, and can adopt just the rows that
+differ.
+
 From a radar's or an inertial sensor's dashboard you can read its live
 data (point cloud / acceleration, rate and orientation traces), record it,
 replay recordings, and write settings back - ROS 2 parameters for the
@@ -76,7 +81,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 import numpy as np
 
@@ -791,6 +796,68 @@ class FormDialog(tk.Toplevel):
 
 
 # ----------------------------------------------------------- sdk helpers -----
+# --- comparing the saved settings against what a sensor reports -------------
+# Per kind, the settings worth putting side by side, in display order. Arbe
+# and inertial sensors add their driver parameters on top of these.
+COMPARABLE_KEYS = {
+    KIND_OUSTER: ["lidar_mode", "timestamp_mode", "operating_mode",
+                  "signal_multiplier", "udp_profile", "az_start", "az_end",
+                  "lidar_port", "imu_port"],
+    KIND_CAMERA: ["width", "height", "fps", "fourcc", "brightness",
+                  "contrast", "saturation", "gain", "exposure",
+                  "encoding", "bitrate", "gop", "mtu", "net_ip",
+                  "net_gateway"],
+    KIND_ARBE: ["topic"],
+    KIND_IMU: ["layout", "baud"],
+}
+COMPARE_LABELS = {
+    "lidar_mode": "Lidar mode", "timestamp_mode": "Timestamp mode",
+    "operating_mode": "Operating mode", "signal_multiplier": "Signal mult.",
+    "udp_profile": "UDP profile", "az_start": "Azimuth start",
+    "az_end": "Azimuth end", "lidar_port": "Lidar port",
+    "imu_port": "IMU port", "width": "Width", "height": "Height",
+    "fps": "Frame rate", "fourcc": "Pixel format",
+    "brightness": "Brightness", "contrast": "Contrast",
+    "saturation": "Saturation", "gain": "Gain", "exposure": "Exposure",
+    "encoding": "Encoding (ONVIF)", "bitrate": "Bitrate (ONVIF)",
+    "gop": "GOP (ONVIF)", "mtu": "MTU (ONVIF)", "net_ip": "IP (ONVIF)",
+    "net_gateway": "Gateway (ONVIF)", "topic": "Topic", "layout": "Layout",
+    "baud": "Baud",
+}
+# row states
+SAME, DIFFERS, UNSET, UNREPORTED = ("same", "differs", "not set",
+                                    "not reported")
+
+
+def values_match(saved, live) -> bool:
+    """Compare two settings the way a person would: 1 == 1.0 == '1'."""
+    saved, live = str(saved).strip(), str(live).strip()
+    try:
+        return abs(float(saved) - float(live)) < 1e-6
+    except ValueError:
+        return saved.casefold() == live.casefold()
+
+
+def compare_settings(saved: dict, live: dict, order=()) -> list:
+    """Rows of (key, saved, live, state) for the comparison table."""
+    keys = [k for k in order if k in saved or k in live]
+    keys += sorted(k for k in set(saved) | set(live) if k not in keys)
+    rows = []
+    for key in keys:
+        mine = str(saved.get(key, "")).strip()
+        theirs = str(live.get(key, "")).strip()
+        if mine in ("", UNCHANGED) and not theirs:
+            continue                    # nothing on either side to compare
+        if not mine or mine == UNCHANGED:
+            state = UNSET if theirs else UNREPORTED
+        elif not theirs:
+            state = UNREPORTED
+        else:
+            state = SAME if values_match(mine, theirs) else DIFFERS
+        rows.append((key, mine, theirs, state))
+    return rows
+
+
 def parse_lidar_mode(mode_str: str):
     """LidarMode from string across SDK versions."""
     try:
@@ -2630,6 +2697,7 @@ class OusterGuiApp:
             [("Open", self.open_sensor, "Accent.TButton"),
              ("New sensor", self.new_sensor, None),
              ("Edit", self.edit_sensor, None),
+             ("⇄ Compare", self.compare_selected, None),
              ("Delete", self.delete_sensor, None)],
             self.open_sensor,
             "No sensors on this equipment yet - click 'New sensor'.")
@@ -2900,6 +2968,9 @@ class OusterGuiApp:
         ttk.Button(cfg, text="Save to project (no sensor access)",
                    command=lambda: self.on_save_config(True)).pack(fill=tk.X,
                                                                    pady=3)
+        ttk.Button(cfg, text="⇄  Compare with sensor",
+                   command=self.on_compare_sensor).pack(fill=tk.X,
+                                                        pady=3)
         ttk.Label(cfg, text="Pull reads the live config into the form; "
                             "Push writes the form to the sensor. Both save "
                             "to the project.",
@@ -3070,6 +3141,9 @@ class OusterGuiApp:
         ttk.Button(cfg, text="Save to project (no camera access)",
                    command=lambda: self.on_save_camera_config(True)).pack(
             fill=tk.X, pady=3)
+        ttk.Button(cfg, text="⇄  Compare with camera",
+                   command=self.on_compare_sensor).pack(fill=tk.X,
+                                                        pady=3)
         ttk.Label(cfg, text="Cameras are free to ignore a setting; after a "
                             "push the values the camera actually kept are "
                             "written back into the form.",
@@ -3306,6 +3380,9 @@ class OusterGuiApp:
         ttk.Button(cfg, text="Save to project (no device access)",
                    command=lambda: self.on_save_imu_config(True)).pack(
             fill=tk.X, pady=3)
+        ttk.Button(cfg, text="⇄  Compare with device",
+                   command=self.on_compare_sensor).pack(fill=tk.X,
+                                                        pady=3)
 
     def _build_imu_stream_panel(self, parent):
         cfg_values = self.sensor["config"]
@@ -3831,6 +3908,9 @@ class OusterGuiApp:
         ttk.Button(cfg, text="Save to project (no radar access)",
                    command=lambda: self.on_save_arbe_config(True)).pack(
             fill=tk.X, pady=3)
+        ttk.Button(cfg, text="⇄  Compare with radar",
+                   command=self.on_compare_sensor).pack(fill=tk.X,
+                                                        pady=3)
 
         view = ttk.LabelFrame(parent, text="  VIEW  ", padding=10)
         view.pack(fill=tk.X, pady=4)
@@ -4742,6 +4822,306 @@ class OusterGuiApp:
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ------------------------------------------------------- comparison ----
+    def on_compare_sensor(self):
+        """Put the settings saved for this sensor next to the live ones."""
+        sensor = self.sensor
+        if sensor is None:
+            return
+        kind = self.sensor_kind()
+        # make "saved" mean what is on screen, as Pull and Push already do
+        if self.cfg_vars:
+            saver = {KIND_OUSTER: self.on_save_config,
+                     KIND_CAMERA: self.on_save_camera_config,
+                     KIND_ARBE: self.on_save_arbe_config,
+                     KIND_IMU: self.on_save_imu_config}[kind]
+            if saver() is None:
+                return
+        if not self._compare_ready(kind, sensor):
+            return
+        config = copy.deepcopy(sensor["config"])
+        host = sensor.get("host", "")
+        onvif_password = self._onvif_passwords.get(sensor.get("id", ""))
+        reader = self.reader
+        self.log(f"Comparing '{sensor.get('name')}' with the live sensor ...")
+
+        def work():
+            try:
+                live = self._read_live_settings(kind, host, config, reader,
+                                                onvif_password)
+            except Exception as e:
+                self.log(f"ERROR reading from the sensor: {e}")
+                return
+            self.frame_queue.put(("compare", kind, config, live))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _compare_ready(self, kind, sensor) -> bool:
+        """Check the backend and the address before going to the sensor."""
+        host = sensor.get("host", "")
+        config = sensor["config"]
+        if kind == KIND_OUSTER:
+            return self._require_sdk()
+        if kind == KIND_CAMERA:
+            return self._require_cv2()
+        if kind == KIND_ARBE:
+            if config.get("source_type") != ARBE_SOURCES[0]:
+                messagebox.showinfo(
+                    "Compare",
+                    "This radar is set to play a recording. Switch the data "
+                    "source to the ROS 2 topic to compare against a live "
+                    "driver.")
+                return False
+            if not config.get("node"):
+                messagebox.showerror("Compare",
+                                     "Enter the driver's ROS 2 node name "
+                                     "first, e.g. /arbe_driver.")
+                return False
+            return True
+        if kind == KIND_IMU:
+            source = config.get("source_type", "")
+            if source == "Recording file":
+                messagebox.showinfo(
+                    "Compare",
+                    "This sensor is set to replay a log. Switch the data "
+                    "source to the serial port or the ROS 2 topic to "
+                    "compare against the live device.")
+                return False
+            if source == "Serial port":
+                if not self._require_serial():
+                    return False
+                if self.reader is not None:
+                    messagebox.showinfo(
+                        "Compare",
+                        "Stop the stream first - the serial port can only "
+                        "be open once.")
+                    return False
+                if not host:
+                    messagebox.showerror("Compare",
+                                         "Enter the serial port first.")
+                    return False
+            elif not config.get("node"):
+                messagebox.showerror("Compare",
+                                     "Enter the driver's ROS 2 node name "
+                                     "first.")
+                return False
+        return True
+
+    def _read_live_settings(self, kind, host, config, reader,
+                            onvif_password) -> dict:
+        """Read a sensor's current settings. Runs on a worker thread."""
+        if kind == KIND_OUSTER:
+            return config_to_dict(get_config(host))
+        if kind == KIND_CAMERA:
+            return self._read_live_camera(host, config, reader,
+                                          onvif_password)
+        if kind == KIND_ARBE:
+            return self._read_live_params(config)
+        if kind == KIND_IMU:
+            if config.get("source_type") == "Serial port":
+                return self._read_live_imu_serial(host, config)
+            return self._read_live_params(config)
+        return {}
+
+    def _read_live_camera(self, host, config, reader, onvif_password) -> dict:
+        live = {}
+        if isinstance(reader, CameraReader) and reader.is_alive():
+            # the preview owns the device; use what it reported
+            info = reader.info or {}
+            for key in ("width", "height", "fourcc"):
+                if info.get(key):
+                    live[key] = str(info[key])
+            if info.get("fps"):
+                live["fps"] = f"{float(info['fps']):g}"
+        else:
+            probe = CameraReader(host, self.frame_queue, self.log,
+                                 backend=config.get("backend", "auto"))
+            cap = None
+            try:
+                cap = probe.open_capture()
+                live.update(CameraReader.read_props(cap))
+            except Exception as e:
+                # a network camera may still answer over ONVIF even when
+                # its video stream cannot be opened from here
+                self.log(f"  (the video stream could not be read: {e})")
+            finally:
+                if cap is not None:
+                    cap.release()
+        # the device's own settings, if ONVIF is usable without prompting
+        if str(host).isdigit():
+            if not live:
+                raise RuntimeError(f"could not read from camera '{host}'")
+            return live
+        if not HAVE_ONVIF:
+            self.log("  (onvif-zeep is not installed, so the camera's own "
+                     "IP / MTU / bitrate / GOP are not compared)")
+        elif onvif_password is None:
+            self.log("  (no ONVIF password held this session - use 'Pull "
+                     "from camera (ONVIF)' once to include the device's "
+                     "own settings)")
+        else:
+            try:
+                camera = OnvifCamera(host, config.get("onvif_port", "80"),
+                                     config.get("onvif_user", ""),
+                                     onvif_password)
+                live.update(camera.read_settings())
+            except Exception as e:
+                self.log(f"  (ONVIF settings could not be read: {e})")
+        if not live:
+            raise RuntimeError(f"nothing could be read from '{host}' - "
+                               "neither the video stream nor ONVIF")
+        return live
+
+    def _read_live_params(self, config) -> dict:
+        """The driver's ROS 2 parameters, as a flat dict."""
+        node = config.get("node", "")
+        ok, out = self._ros2("param", "dump", node,
+                             domain=config.get("domain_id", ""))
+        if not ok:
+            raise RuntimeError(out)
+        return dict(self.parse_param_lines(out))
+
+    def _read_live_imu_serial(self, host, config) -> dict:
+        """What the unit is actually sending: its column layout."""
+        baud = int(config.get("baud") or 115200)
+        lines = []
+        with pyserial.Serial(host, baud, timeout=0.3) as link:
+            deadline = time.time() + 2.0
+            while time.time() < deadline and len(lines) < 40:
+                raw = link.readline().decode("ascii", "replace")
+                if raw.strip():
+                    lines.append(raw.strip())
+        if not lines:
+            raise RuntimeError("no data received - check the baud rate "
+                               "and wiring")
+        live = {"baud": str(baud)}     # the link works, so the rate is right
+        suggestion = suggest_imu_layout(lines)
+        if suggestion:
+            live["layout"] = suggestion
+        return live
+
+    def _show_comparison(self, kind, saved, live):
+        """The comparison table, with the option to adopt the live values."""
+        sensor = self.sensor
+        order = COMPARABLE_KEYS.get(kind, [])
+        if kind in (KIND_ARBE, KIND_IMU):
+            field = "parameters" if kind == KIND_ARBE else "commands"
+            saved = dict(saved)
+            saved.update(dict(self.parse_param_lines(saved.get(field, ""))))
+        rows = compare_settings({k: v for k, v in saved.items()
+                                 if k in order or k in live}, live, order)
+        differing = [r for r in rows if r[3] == DIFFERS]
+
+        win = tk.Toplevel(self.root)
+        win.title(f"Compare  ·  {sensor.get('name', '')}")
+        win.geometry("880x540")
+        win.configure(bg=Theme.BG)
+        win.transient(self.root)
+
+        head = ttk.Frame(win, style="TFrame", padding=(12, 10, 12, 4))
+        head.pack(fill=tk.X)
+        ttk.Label(head, text=f"{sensor.get('name', '')}  ·  "
+                             f"{sensor.get('host', '')}",
+                  style="Title.TLabel", font=CRUMB_FONT).pack(anchor=tk.W)
+        summary = (f"{len(differing)} of {len(rows)} settings differ"
+                   if differing else
+                   f"all {len(rows)} settings match the sensor")
+        ttk.Label(head, text=summary,
+                  style="Subtitle.TLabel").pack(anchor=tk.W, pady=(2, 0))
+
+        card = ttk.Frame(win, style="Panel.TFrame", padding=1)
+        card.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+        columns = ("setting", "saved", "live", "state")
+        tree = ttk.Treeview(card, columns=columns, show="headings",
+                            selectmode="browse")
+        for key, heading, width in (("setting", "Setting", 190),
+                                    ("saved", "Saved in project", 265),
+                                    ("live", "On the sensor", 265),
+                                    ("state", "", 105)):
+            tree.heading(key, text=heading, anchor=tk.W)
+            tree.column(key, width=width, anchor=tk.W,
+                        stretch=(key != "state"))
+        vbar = ttk.Scrollbar(card, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vbar.set)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tree.tag_configure(DIFFERS, foreground=Theme.ORANGE)
+        tree.tag_configure(SAME, foreground=Theme.FG)
+        for state in (UNSET, UNREPORTED):
+            tree.tag_configure(state, foreground=Theme.MUTED)
+        for key, mine, theirs, state in rows:
+            tree.insert("", tk.END, tags=(state,), values=(
+                COMPARE_LABELS.get(key, key), mine or "-", theirs or "-",
+                state))
+
+        note = ("Orange rows differ. 'not set' means the project has no "
+                "value for that setting, 'not reported' means the sensor "
+                "does not expose it.")
+        ttk.Label(win, text=note, style="Hint.TLabel", wraplength=840,
+                  justify=tk.LEFT).pack(anchor=tk.W, padx=12)
+
+        buttons = ttk.Frame(win, style="TFrame")
+        buttons.pack(fill=tk.X, padx=12, pady=(6, 12))
+        adopt = ttk.Button(
+            buttons, text=f"Copy the sensor's values into the project "
+                          f"({len(differing)})",
+            style="Accent.TButton",
+            command=lambda: (self._adopt_live_values(kind, live, differing),
+                             win.destroy()))
+        adopt.pack(side=tk.LEFT)
+        if not differing:
+            adopt.state(["disabled"])
+        ttk.Button(buttons, text="Refresh",
+                   command=lambda: (win.destroy(),
+                                    self.on_compare_sensor())).pack(
+            side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="Close",
+                   command=win.destroy).pack(side=tk.RIGHT)
+        self.log(summary + ".")
+        for key, mine, theirs, _state in differing:
+            self.log(f"  {COMPARE_LABELS.get(key, key)}: project={mine}, "
+                     f"sensor={theirs}")
+
+    def _adopt_live_values(self, kind, live: dict, differing: list):
+        """Write the sensor's values over the saved ones (a targeted pull)."""
+        if not differing:
+            return
+        keys = [row[0] for row in differing]
+        if kind == KIND_ARBE or kind == KIND_IMU:
+            field = "parameters" if kind == KIND_ARBE else "commands"
+            settings = [k for k in keys if k in COMPARABLE_KEYS[kind]]
+            params = [k for k in keys if k not in settings]
+            if params:
+                merged = dict(self.parse_param_lines(
+                    self.sensor["config"].get(field, "")))
+                merged.update({k: live[k] for k in params})
+                text = "\n".join(f"{k}: {v}" for k, v in merged.items())
+                self.sensor["config"][field] = text
+                if getattr(self, "param_text", None) is not None:
+                    self.param_text.delete("1.0", tk.END)
+                    self.param_text.insert("1.0", text)
+            keys = settings
+        for key in keys:
+            self.sensor["config"][key] = live[key]
+            var = self.cfg_vars.get(key)
+            if var is not None:
+                try:
+                    var.set(live[key])
+                except Exception:
+                    pass
+        self.sensor["last_seen"] = now_stamp()
+        self.store.save()
+        self.log(f"Adopted {len(differing)} value(s) from the sensor into "
+                 "the project.")
+
+    def compare_selected(self):
+        """The Compare button on the sensors list."""
+        sensor = self._require_selection("Sensor")
+        if sensor is None:
+            return
+        self.sensor = Store.normalize_sensor(sensor)
+        self.on_compare_sensor()
+
     # ------------------------------------------------- sensor record I/O ----
     def on_save_host(self):
         host = self.host_var.get().strip()
@@ -5617,6 +5997,8 @@ class OusterGuiApp:
                     self._finish_camera_push(item[1], item[2])
                 elif kind == "onvif_props":
                     self._finish_onvif_pull(item[1])
+                elif kind == "compare":
+                    self._show_comparison(item[1], item[2], item[3])
                 elif kind == "radar":
                     self._draw_radar(item[1], item[2], item[3])
                 elif kind == "radar_params":

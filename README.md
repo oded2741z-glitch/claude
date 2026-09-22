@@ -101,6 +101,51 @@ saved settings and when the app last talked to it.
 Changing a sensor's type in **Edit** resets its settings to that type's
 defaults, because a lidar and a camera keep different ones.
 
+**⇄ Compare** puts the settings saved for the selected sensor next to the
+ones it is actually running - the same table the **Compare with ...**
+button on every dashboard opens. See below.
+
+### Comparing a sensor with the project
+
+Every dashboard has a **⇄ Compare with ...** button, and the sensors list
+has **⇄ Compare** for the selected row. Both read the sensor and open one
+table:
+
+| Setting | Saved in project | On the sensor | |
+| --- | --- | --- | --- |
+| Lidar mode | 1024x10 | 2048x10 | differs |
+| Lidar port | 7502 | 7502 | same |
+| UDP profile | RNG19_RFL8_SIG16_NIR16 | RNG19_RFL8_SIG16_NIR16_DUAL | differs |
+
+Rows that differ are orange, and the header counts them ("5 of 9 settings
+differ"). `not set` means the project has no value for that setting,
+`not reported` means the sensor does not expose it; settings that are
+blank on both sides are left out. Values are compared the way a person
+would - `1` and `1.0` match, and so do `H264` and `h264`.
+
+**Copy the sensor's values into the project** adopts just the differing
+rows, so it is a targeted pull rather than an all-or-nothing one.
+**Refresh** reads the sensor again. The differences also go to the log, so
+there is a record of what was found.
+
+What gets read depends on the type:
+
+* **Ouster lidar** - `get_config`: mode, timestamp and operating mode,
+  signal multiplier, UDP profile, azimuth window and ports.
+* **Camera** - the capture's resolution, frame rate, pixel format and
+  image controls, plus the device's own IP, MTU, bitrate, GOP and encoding
+  when ONVIF is available and a password is already held for this session.
+  A network camera whose video stream cannot be opened still gets compared
+  over ONVIF, with a note in the log.
+* **Arbe radar** - the driver's ROS 2 parameters, from `ros2 param dump`.
+* **Inertial (IMU / INS)** - the column layout the unit is really sending,
+  derived from two seconds of its output, or the driver's ROS 2
+  parameters. Adopting the layout overwrites the saved one.
+
+A sensor set to replay a recording has nothing live to compare against, so
+the app says so instead of opening an empty table. The same goes for a
+busy serial port: stop the stream first.
+
 ### Ouster lidar dashboard
 
 **Reading data from the sensor**

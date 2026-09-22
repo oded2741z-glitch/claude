@@ -105,6 +105,41 @@ defaults, because a lidar and a camera keep different ones.
 ones it is actually running - the same table the **Compare with ...**
 button on every dashboard opens. See below.
 
+### 3D mount layout
+
+Sensors are not just attached to a piece of equipment, they sit somewhere
+on it. Each sensor carries a **mount** - `x`, `y`, `z` in metres and
+`roll`, `pitch`, `yaw` in degrees - and each equipment item carries a body
+size, so the whole rig can be drawn to scale.
+
+**⬔ 3D layout**, on the equipment list and on the sensors list, opens the
+layout window for that equipment:
+
+* The equipment is drawn from its type: a vehicle gets a body, a cabin and
+  four wheels, a drone gets arms and rotor discs, a mast gets its legs, a
+  gantry its posts and beam, a bench its top and legs.
+* Each sensor is a coloured marker - blue lidar, green camera, orange
+  radar, purple inertial - with an arrow showing where it looks, and its
+  name beside it.
+* Drag to turn the view, or pick one of **Isometric / Top / Side / Front /
+  Rear**. Click a sensor to select it.
+
+The frame is **x forward, y left, z up**, with the origin on the ground at
+the centre of the equipment's footprint - the convention the sensor
+extrinsics of a vehicle rig are usually written in.
+
+To place a sensor, select it and either type `x`, `y`, `z`, `roll`,
+`pitch`, `yaw` and press **Apply position**, or pick a spot from **Place
+at**: front bumper, roof front / centre / rear, rear, left side, right
+side or underside. The presets are worked out from the body's size, so
+they follow it when the size changes. Positions are saved to the project
+as soon as they are applied.
+
+**Length / width / height** set the body size in metres; **Apply size**
+redraws the equipment and moves the presets with it. Equipment saved
+before this existed gets a default size from its type, and sensors get a
+mount at the origin.
+
 ### Baseline (legacy) settings
 
 When a sensor is created, its settings are frozen as a **baseline** - the
@@ -525,6 +560,10 @@ stream first rather than fighting the reader for the device.
   ]
 }
 ```
+
+Each equipment item carries a `body` block - `{"length", "width",
+"height"}` in metres - and each sensor a `mount` block - `{"x", "y", "z",
+"roll", "pitch", "yaw"}` - giving its place on that equipment.
 
 Each sensor also carries a `legacy` block - `{"kind", "created", "note",
 "config"}` - holding the settings frozen when it was created.

@@ -8,7 +8,9 @@ hierarchy and lets you talk to each one:
     Project  ->  Equipment  ->  Sensor  ->  Sensor dashboard
 
   * Projects    - a site, a customer, a research program ...
-  * Equipment   - the vehicle / mast / robot the sensors are mounted on
+  * Equipment   - the vehicle / mast / robot the sensors are mounted on,
+                  with a body size and a 3D layout showing where on it
+                  each sensor sits
   * Sensors     - one entry per physical device, of one of four types:
                     - Ouster lidar, reached by hostname / IP (ouster-sdk)
                     - Camera: USB (0, /dev/video0) or network
@@ -83,7 +85,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.6.0"
+__version__ = "2.7.0"
 
 import numpy as np
 
@@ -175,6 +177,8 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d import proj3d
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
 # ----------------------------------------------------------------- theme ----
@@ -339,6 +343,25 @@ UDP_PROFILES = [
 EQUIPMENT_TYPES = ["Vehicle", "Drone / UAV", "Robot / AMR", "Mast / Tripod",
                    "Rail / Gantry", "Building / Fixed", "Lab bench", "Other"]
 
+# --- mounting geometry ------------------------------------------------------
+# One frame for everything: x forward, y left, z up, origin on the ground at
+# the centre of the equipment's footprint. Metres and degrees.
+DEFAULT_MOUNT = {"x": "0", "y": "0", "z": "0",
+                 "roll": "0", "pitch": "0", "yaw": "0"}
+MOUNT_KEYS = ("x", "y", "z", "roll", "pitch", "yaw")
+# length (x) x width (y) x height (z), in metres
+DEFAULT_BODY = {"length": "2.0", "width": "1.0", "height": "1.0"}
+BODY_PRESETS = {
+    "Vehicle": {"length": "4.80", "width": "1.90", "height": "1.60"},
+    "Drone / UAV": {"length": "0.90", "width": "0.90", "height": "0.30"},
+    "Robot / AMR": {"length": "1.10", "width": "0.70", "height": "0.60"},
+    "Mast / Tripod": {"length": "0.50", "width": "0.50", "height": "6.00"},
+    "Rail / Gantry": {"length": "6.00", "width": "3.00", "height": "4.00"},
+    "Building / Fixed": {"length": "0.60", "width": "4.00", "height": "3.00"},
+    "Lab bench": {"length": "1.80", "width": "0.80", "height": "0.90"},
+    "Other": dict(DEFAULT_BODY),
+}
+
 # --- sensor kinds -----------------------------------------------------------
 # Every sensor in the tree carries a "kind"; the dashboard is built from it.
 KIND_OUSTER = "ouster"
@@ -356,6 +379,9 @@ KIND_ADDRESS_LABELS = {
     KIND_ARBE: "ROS 2 node / recording",
     KIND_IMU: "Serial port / recording",
 }
+# marker colour per sensor kind, so a mount layout reads at a glance
+MOUNT_COLORS = {KIND_OUSTER: "#4dabf7", KIND_CAMERA: "#51cf66",
+                KIND_ARBE: "#ff922b", KIND_IMU: "#cc5de8"}
 
 CAMERA_BACKENDS = ["auto", "v4l2", "ffmpeg", "gstreamer", "dshow",
                    "avfoundation"]
@@ -554,7 +580,7 @@ class Store:
         for project in data["projects"]:
             project.setdefault("equipment", [])
             for equipment in project["equipment"]:
-                equipment.setdefault("sensors", [])
+                self.normalize_equipment(equipment)
                 for sensor in equipment["sensors"]:
                     self.normalize_sensor(sensor)
         return data
@@ -627,6 +653,10 @@ class Store:
             net = {}
         sensor["network"] = {**copy.deepcopy(DEFAULT_SENSOR_NETWORK), **net}
         sensor.setdefault("last_seen", "")
+        mount = sensor.get("mount")
+        if not isinstance(mount, dict):
+            mount = {}
+        sensor["mount"] = {**copy.deepcopy(DEFAULT_MOUNT), **mount}
         # the baseline a sensor can always be taken back to. Records written
         # before baselines existed adopt their current settings as one.
         legacy = sensor.get("legacy")
@@ -638,6 +668,17 @@ class Store:
             legacy.setdefault("created", sensor.get("created", ""))
             legacy.setdefault("note", "")
         return sensor
+
+    @staticmethod
+    def normalize_equipment(equipment: dict) -> dict:
+        """Give the equipment a body size, so it can be drawn to scale."""
+        equipment.setdefault("sensors", [])
+        body = equipment.get("body")
+        if not isinstance(body, dict):
+            body = {}
+        preset = BODY_PRESETS.get(equipment.get("type", ""), DEFAULT_BODY)
+        equipment["body"] = {**copy.deepcopy(preset), **body}
+        return equipment
 
     @staticmethod
     def make_legacy(sensor: dict, adopted: bool = False) -> dict:
@@ -670,6 +711,7 @@ class Store:
     def add_equipment(self, project: dict, values: dict) -> dict:
         equipment = {"id": new_id(), "created": now_stamp(), "sensors": []}
         equipment.update(values)
+        self.normalize_equipment(equipment)
         project.setdefault("equipment", []).append(equipment)
         self.save()
         return equipment
@@ -2157,6 +2199,471 @@ class ImuReader(threading.Thread):
         return state["writer"]
 
 
+def box_faces(cx, cy, cz, length, width, height):
+    """The six faces of a box centred at (cx, cy) and rising from cz."""
+    x0, x1 = cx - length / 2.0, cx + length / 2.0
+    y0, y1 = cy - width / 2.0, cy + width / 2.0
+    z0, z1 = cz, cz + height
+    return [
+        [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0)],   # bottom
+        [(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)],   # top
+        [(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)],   # right
+        [(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)],   # left
+        [(x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1)],   # back
+        [(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)],   # front
+    ]
+
+
+def disc(cx, cy, cz, radius, segments=16):
+    """A flat circle, for rotors and the like."""
+    return [[(cx + radius * math.cos(2 * math.pi * i / segments),
+              cy + radius * math.sin(2 * math.pi * i / segments), cz)
+             for i in range(segments)]]
+
+
+def equipment_shapes(kind: str, length: float, width: float,
+                     height: float) -> list:
+    """A simple solid for each equipment type: [(faces, colour, alpha)]."""
+    body = "#3d4457"
+    accent = "#59627d"
+    if kind == "Vehicle":
+        wheel = min(height * 0.28, length * 0.12)
+        shapes = [(box_faces(0, 0, wheel * 0.6, length, width * 0.92,
+                             height * 0.45), body, 0.85),
+                  (box_faces(-length * 0.05, 0, wheel * 0.6 + height * 0.45,
+                             length * 0.45, width * 0.82, height * 0.4),
+                   accent, 0.85)]
+        for sx in (length * 0.32, -length * 0.32):
+            for sy in (width * 0.46, -width * 0.46):
+                shapes.append((box_faces(sx, sy, 0, wheel * 1.6,
+                                         width * 0.12, wheel * 1.4),
+                               "#23283a", 0.95))
+        return shapes
+    if kind == "Drone / UAV":
+        arm = max(length, width) * 0.5
+        shapes = [(box_faces(0, 0, height * 0.35, length * 0.45,
+                             width * 0.45, height * 0.5), body, 0.9)]
+        for sx, sy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+            ax, ay = sx * arm * 0.5, sy * arm * 0.5
+            shapes.append((box_faces(ax, ay, height * 0.45, arm * 0.7,
+                                     width * 0.06, height * 0.08),
+                           accent, 0.9))
+            shapes.append((disc(sx * arm * 0.72, sy * arm * 0.72,
+                                height * 0.62, arm * 0.34),
+                           "#23283a", 0.55))
+        return shapes
+    if kind == "Mast / Tripod":
+        shapes = [(box_faces(0, 0, 0, length * 1.8, width * 1.8,
+                             height * 0.02), accent, 0.9),
+                  (box_faces(0, 0, 0, length * 0.35, width * 0.35, height),
+                   body, 0.9)]
+        for sx, sy in ((1, 0), (-0.5, 0.87), (-0.5, -0.87)):
+            shapes.append((box_faces(sx * length * 0.7, sy * width * 0.7, 0,
+                                     length * 0.12, width * 0.12,
+                                     height * 0.25), accent, 0.8))
+        return shapes
+    if kind == "Rail / Gantry":
+        post = min(length, width) * 0.1
+        shapes = [(box_faces(0, 0, height, length, width * 0.12,
+                             post), body, 0.9)]
+        for sy in (width * 0.5 - post, -(width * 0.5 - post)):
+            for sx in (length * 0.45, -length * 0.45):
+                shapes.append((box_faces(sx, sy, 0, post, post, height),
+                               accent, 0.9))
+        return shapes
+    if kind == "Lab bench":
+        leg = min(length, width) * 0.08
+        shapes = [(box_faces(0, 0, height * 0.92, length, width,
+                             height * 0.08), body, 0.9)]
+        for sx in (length * 0.44, -length * 0.44):
+            for sy in (width * 0.42, -width * 0.42):
+                shapes.append((box_faces(sx, sy, 0, leg, leg, height * 0.92),
+                               accent, 0.9))
+        return shapes
+    if kind == "Robot / AMR":
+        return [(box_faces(0, 0, 0, length, width, height * 0.7), body, 0.9),
+                (box_faces(0, 0, height * 0.7, length * 0.5, width * 0.6,
+                           height * 0.3), accent, 0.9)]
+    # Building / Fixed, Other: a plain slab
+    return [(box_faces(0, 0, 0, length, width, height), body, 0.85)]
+
+
+def rotation_matrix(roll: float, pitch: float, yaw: float):
+    """Z-Y-X rotation from degrees, applied as yaw, then pitch, then roll."""
+    r, p, y = math.radians(roll), math.radians(pitch), math.radians(yaw)
+    cr, sr, cp, sp, cy, sy = (math.cos(r), math.sin(r), math.cos(p),
+                              math.sin(p), math.cos(y), math.sin(y))
+    return np.array([
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr]])
+
+
+def mount_direction(mount: dict):
+    """Where a mounted sensor is looking: its +x after the rotations."""
+    values = [float(mount.get(key, 0) or 0)
+              for key in ("roll", "pitch", "yaw")]
+    return rotation_matrix(*values) @ np.array([1.0, 0.0, 0.0])
+
+
+def mount_presets(length: float, width: float, height: float) -> dict:
+    """Common mounting spots, worked out from the body's size."""
+    return {
+        "front bumper": {"x": f"{length / 2:.2f}", "y": "0",
+                         "z": f"{height * 0.30:.2f}", "yaw": "0"},
+        "roof front": {"x": f"{length * 0.30:.2f}", "y": "0",
+                       "z": f"{height:.2f}", "yaw": "0"},
+        "roof centre": {"x": "0", "y": "0", "z": f"{height:.2f}",
+                        "yaw": "0"},
+        "roof rear": {"x": f"{-length * 0.30:.2f}", "y": "0",
+                      "z": f"{height:.2f}", "yaw": "180"},
+        "rear": {"x": f"{-length / 2:.2f}", "y": "0",
+                 "z": f"{height * 0.30:.2f}", "yaw": "180"},
+        "left side": {"x": "0", "y": f"{width / 2:.2f}",
+                      "z": f"{height * 0.75:.2f}", "yaw": "90"},
+        "right side": {"x": "0", "y": f"{-width / 2:.2f}",
+                       "z": f"{height * 0.75:.2f}", "yaw": "-90"},
+        "underside": {"x": "0", "y": "0", "z": "0", "yaw": "0",
+                      "pitch": "90"},
+    }
+
+
+class MountLayoutWindow:
+    """Where each sensor sits on its equipment, drawn in 3D.
+
+    The frame is x forward, y left, z up, with the origin on the ground at
+    the centre of the equipment's footprint.
+    """
+
+    VIEWS = {"Isometric": (22, -60), "Top": (89, -90), "Side": (0, -90),
+             "Front": (0, 0), "Rear": (0, 180)}
+
+    def __init__(self, app, equipment: dict):
+        self.app = app
+        self.equipment = Store.normalize_equipment(equipment)
+        self.sensors = [Store.normalize_sensor(s)
+                        for s in equipment.get("sensors", [])]
+        self.selected = self.sensors[0] if self.sensors else None
+        self.markers = {}          # sensor id -> (x, y, z) for picking
+
+        self.win = tk.Toplevel(app.root)
+        self.win.title(f"Mount layout  ·  {equipment.get('name', '')}")
+        self.win.geometry("1180x740")
+        self.win.configure(bg=Theme.BG)
+        self.win.transient(app.root)
+        self.win.protocol("WM_DELETE_WINDOW", self.close)
+
+        body = ttk.Frame(self.win, style="TFrame", padding=(10, 8))
+        body.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(body, style="TFrame", width=360)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left.pack_propagate(False)
+        right = ttk.Frame(body, style="TFrame")
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._build_body_panel(left)
+        self._build_position_panel(left)    # pinned to the bottom
+        self._build_sensor_panel(left)      # takes what is left over
+        self._build_canvas(right)
+        self.redraw()
+        if self.selected is not None:
+            self._select(self.selected)
+
+    # -- panels ---------------------------------------------------------------
+    def _build_body_panel(self, parent):
+        box = ttk.LabelFrame(parent, text="  EQUIPMENT  ", padding=10)
+        box.pack(fill=tk.X, pady=(0, 6))
+        equipment = self.equipment
+        ttk.Label(box, text=f"{equipment.get('name', '')}  ·  "
+                            f"{equipment.get('type', 'Other')}",
+                  style="TLabel").pack(anchor=tk.W)
+        grid = ttk.Frame(box, style="Panel.TFrame")
+        grid.pack(fill=tk.X, pady=(6, 0))
+        self.body_vars = {}
+        for i, (key, label) in enumerate((("length", "Length (x) [m]:"),
+                                          ("width", "Width (y) [m]:"),
+                                          ("height", "Height (z) [m]:"))):
+            ttk.Label(grid, text=label,
+                      style="Muted.TLabel").grid(row=i, column=0, sticky=tk.W,
+                                                 pady=1)
+            self.body_vars[key] = tk.StringVar(
+                value=str(equipment["body"].get(key, "1")))
+            ttk.Entry(grid, textvariable=self.body_vars[key],
+                      width=8).grid(row=i, column=1, padx=6, pady=1)
+        ttk.Button(box, text="Apply size",
+                   command=self.on_apply_body).pack(fill=tk.X, pady=(6, 0))
+
+    def _build_sensor_panel(self, parent):
+        box = ttk.LabelFrame(parent, text="  SENSORS ON THIS EQUIPMENT  ",
+                             padding=6)
+        box.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.tree_box = box
+        columns = ("name", "kind", "pos")
+        self.tree = ttk.Treeview(box, columns=columns, show="headings",
+                                 selectmode="browse", height=8)
+        for key, heading, width in (("name", "Sensor", 130),
+                                    ("kind", "Type", 90),
+                                    ("pos", "x / y / z [m]", 120)):
+            self.tree.heading(key, text=heading, anchor=tk.W)
+            self.tree.column(key, width=width, anchor=tk.W)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self._refresh_tree()
+
+    def _build_position_panel(self, parent):
+        box = ttk.LabelFrame(parent, text="  POSITION ON THE EQUIPMENT  ",
+                             padding=10)
+        box.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(box, text="x forward, y left, z up. The origin is on the "
+                            "ground at the centre of the equipment.",
+                  style="Hint.TLabel", wraplength=320,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 6))
+        grid = ttk.Frame(box, style="Panel.TFrame")
+        grid.pack(fill=tk.X)
+        self.mount_vars = {}
+        fields = (("x", "x [m]"), ("y", "y [m]"), ("z", "z [m]"),
+                  ("roll", "roll [°]"), ("pitch", "pitch [°]"),
+                  ("yaw", "yaw [°]"))
+        for i, (key, label) in enumerate(fields):
+            row, column = divmod(i, 2)
+            ttk.Label(grid, text=label,
+                      style="Muted.TLabel").grid(row=row, column=column * 2,
+                                                 sticky=tk.W, pady=1)
+            self.mount_vars[key] = tk.StringVar(value="0")
+            entry = ttk.Entry(grid, textvariable=self.mount_vars[key],
+                              width=8)
+            entry.grid(row=row, column=column * 2 + 1, padx=(4, 12), pady=1)
+            entry.bind("<Return>", lambda e: self.on_apply_mount())
+        ttk.Label(box, text="Place at:",
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(8, 0))
+        self.preset_var = tk.StringVar()
+        presets = ttk.Combobox(box, textvariable=self.preset_var,
+                               values=list(mount_presets(1, 1, 1)),
+                               state="readonly")
+        presets.pack(fill=tk.X, pady=3)
+        presets.bind("<<ComboboxSelected>>", lambda e: self.on_preset())
+        ttk.Button(box, text="Apply position", style="Accent.TButton",
+                   command=self.on_apply_mount).pack(fill=tk.X, pady=(6, 3))
+        row = ttk.Frame(box, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=3)
+        ttk.Label(row, text="View:",
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+        self.view_var = tk.StringVar(value="Isometric")
+        view = ttk.Combobox(row, textvariable=self.view_var,
+                            values=list(self.VIEWS), state="readonly",
+                            width=12)
+        view.pack(side=tk.LEFT)
+        view.bind("<<ComboboxSelected>>", lambda e: self.redraw())
+        ttk.Button(box, text="Close",
+                   command=self.close).pack(fill=tk.X, pady=(6, 0))
+
+    def _build_canvas(self, parent):
+        box = ttk.LabelFrame(parent, text="  3D LAYOUT  ", padding=6)
+        box.pack(fill=tk.BOTH, expand=True)
+        self.fig = Figure(figsize=(8, 6), dpi=90, facecolor=Theme.PANEL)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=box)
+        widget = self.canvas.get_tk_widget()
+        widget.configure(bg=Theme.PANEL, highlightthickness=0)
+        widget.pack(fill=tk.BOTH, expand=True)
+        self.ax = self.fig.add_subplot(111, projection="3d")
+        self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
+        ttk.Label(box, text="Drag to turn the view. Click a sensor to select "
+                            "it, then edit its position on the left.",
+                  style="Hint.TLabel").pack(anchor=tk.W, pady=(4, 0))
+
+    # -- data -----------------------------------------------------------------
+    def _dimensions(self):
+        out = []
+        for key in ("length", "width", "height"):
+            try:
+                out.append(max(0.05, float(self.equipment["body"][key])))
+            except (TypeError, ValueError):
+                out.append(1.0)
+        return out
+
+    def _refresh_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        for sensor in self.sensors:
+            mount = sensor["mount"]
+            position = " / ".join(f"{float(mount.get(k, 0) or 0):g}"
+                                  for k in ("x", "y", "z"))
+            self.tree.insert("", tk.END, iid=sensor["id"], values=(
+                sensor.get("name", ""),
+                KIND_LABELS.get(sensor.get("kind"), "").split(" (")[0],
+                position))
+
+    def _on_tree_select(self, _event=None):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        for sensor in self.sensors:
+            if sensor["id"] == selection[0]:
+                self._select(sensor, from_tree=True)
+                return
+
+    def _select(self, sensor, from_tree=False):
+        self.selected = sensor
+        for key in MOUNT_KEYS:
+            self.mount_vars[key].set(str(sensor["mount"].get(key, "0")))
+        if not from_tree:
+            try:
+                self.tree.selection_set(sensor["id"])
+            except tk.TclError:
+                pass
+        self.redraw()
+
+    # -- actions --------------------------------------------------------------
+    def on_apply_body(self):
+        values = {}
+        for key, var in self.body_vars.items():
+            try:
+                number = float(var.get())
+                if number <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Equipment size",
+                                     "Length, width and height must be "
+                                     "positive numbers, in metres.",
+                                     parent=self.win)
+                return
+            values[key] = f"{number:g}"
+        self.equipment["body"] = values
+        self.app.store.save()
+        self.app.log(f"Body size of '{self.equipment.get('name')}' set to "
+                     f"{values['length']} x {values['width']} x "
+                     f"{values['height']} m.")
+        self.redraw()
+
+    def on_preset(self):
+        name = self.preset_var.get()
+        preset = mount_presets(*self._dimensions()).get(name)
+        if not preset:
+            return
+        for key in MOUNT_KEYS:
+            self.mount_vars[key].set(preset.get(key, "0"))
+        self.on_apply_mount()
+
+    def on_apply_mount(self):
+        if self.selected is None:
+            messagebox.showinfo("Position",
+                                "Select a sensor in the list first.",
+                                parent=self.win)
+            return
+        values = {}
+        for key in MOUNT_KEYS:
+            try:
+                values[key] = f"{float(self.mount_vars[key].get()):g}"
+            except ValueError:
+                messagebox.showerror(
+                    "Position",
+                    f"'{key}' must be a number - metres for x, y and z, "
+                    "degrees for roll, pitch and yaw.", parent=self.win)
+                return
+        self.selected["mount"] = values
+        self.app.store.save()
+        self.app.log(f"'{self.selected.get('name')}' mounted at "
+                     f"x={values['x']} y={values['y']} z={values['z']} m, "
+                     f"yaw={values['yaw']}°.")
+        self._refresh_tree()
+        self.tree.selection_set(self.selected["id"])
+        self.redraw()
+
+    def _on_canvas_click(self, event):
+        """Pick the sensor whose marker is nearest to the click."""
+        if event.inaxes is not self.ax or not self.markers:
+            return
+        best, best_distance = None, 40.0     # pixels
+        for sensor_id, point in self.markers.items():
+            try:
+                x, y, _ = proj3d.proj_transform(point[0], point[1], point[2],
+                                                self.ax.get_proj())
+                px, py = self.ax.transData.transform((x, y))
+            except Exception:
+                continue
+            distance = math.hypot(px - event.x, py - event.y)
+            if distance < best_distance:
+                best, best_distance = sensor_id, distance
+        if best is None:
+            return
+        for sensor in self.sensors:
+            if sensor["id"] == best:
+                self._select(sensor)
+                return
+
+    # -- drawing --------------------------------------------------------------
+    def redraw(self):
+        length, width, height = self._dimensions()
+        ax = self.ax
+        ax.clear()
+        ax.set_facecolor(Theme.BG)
+        self.markers = {}
+
+        for faces, color, alpha in equipment_shapes(
+                self.equipment.get("type", "Other"), length, width, height):
+            collection = Poly3DCollection(faces, facecolors=color,
+                                          edgecolors="#6b7490", linewidths=0.4)
+            collection.set_alpha(alpha)
+            ax.add_collection3d(collection)
+
+        reach = max(length, width, height)
+        for sensor in self.sensors:
+            mount = sensor["mount"]
+            point = [float(mount.get(k, 0) or 0) for k in ("x", "y", "z")]
+            self.markers[sensor["id"]] = point
+            chosen = (self.selected is not None
+                      and sensor["id"] == self.selected["id"])
+            color = MOUNT_COLORS.get(sensor.get("kind"), Theme.FG)
+            ax.scatter([point[0]], [point[1]], [point[2]],
+                       s=150 if chosen else 70, c=color, depthshade=False,
+                       edgecolors="#ffffff" if chosen else color,
+                       linewidths=1.6 if chosen else 0.0, zorder=5)
+            direction = mount_direction(mount) * reach * 0.35
+            ax.quiver(point[0], point[1], point[2], *direction, color=color,
+                      linewidth=2.0 if chosen else 1.2,
+                      arrow_length_ratio=0.25)
+            ax.text(point[0], point[1], point[2] + reach * 0.06,
+                    sensor.get("name", ""), color=Theme.FG if chosen
+                    else Theme.MUTED, fontsize=8 if chosen else 7)
+
+        extent = max(length / 2.0, width / 2.0, height)
+        for point in self.markers.values():
+            extent = max(extent, abs(point[0]), abs(point[1]), abs(point[2]))
+        span = extent * 1.2
+        # equal ranges keep the proportions honest; the centre is lifted so
+        # the body sits in the middle of the frame rather than at the floor
+        for setter, centre in ((ax.set_xlim3d, 0.0), (ax.set_ylim3d, 0.0),
+                               (ax.set_zlim3d, span * 0.45)):
+            setter(centre - span, centre + span)
+        ax.set_box_aspect((1, 1, 1))
+        ax.set_xlabel("x forward [m]", color=Theme.MUTED, fontsize=8)
+        ax.set_ylabel("y left [m]", color=Theme.MUTED, fontsize=8)
+        ax.set_zlabel("z up [m]", color=Theme.MUTED, fontsize=8)
+        ax.tick_params(colors=Theme.MUTED, labelsize=7)
+        for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+            pane.set_pane_color((0.07, 0.08, 0.11, 1.0))
+            pane._axinfo["grid"]["color"] = Theme.BORDER
+        elevation, azimuth = self.VIEWS.get(self.view_var.get(),
+                                            self.VIEWS["Isometric"])
+        ax.view_init(elev=elevation, azim=azimuth)
+        ax.set_title(f"{self.equipment.get('name', '')}  ·  "
+                     f"{len(self.sensors)} sensor(s)", fontsize=9,
+                     color=Theme.FG, loc="left")
+        self.canvas.draw_idle()
+
+    def close(self):
+        if self.win is None:
+            return
+        window, self.win = self.win, None
+        try:
+            self.app.layout_windows.remove(self)
+        except (ValueError, AttributeError):
+            pass
+        try:
+            window.destroy()
+        except tk.TclError:
+            pass
+
+
 class CameraViewWindow:
     """A detached live view of the camera, for a second monitor.
 
@@ -2321,6 +2828,7 @@ class OusterGuiApp:
         self.imu_shown = ()
         self.imu_rate = None
         self.view_windows = []          # detached camera views
+        self.layout_windows = []        # open 3D mount layouts
         self.last_camera_frame = None
         self._onvif_passwords = {}      # sensor id -> password, this session
 
@@ -2617,6 +3125,7 @@ class OusterGuiApp:
             [("Open", self.open_equipment, "Accent.TButton"),
              ("New equipment", self.new_equipment, None),
              ("Edit", self.edit_equipment, None),
+             ("⬔ 3D layout", self.open_layout_from_equipment, None),
              ("Delete", self.delete_equipment, None)],
             self.open_equipment,
             "No equipment in this project yet - click 'New equipment'.")
@@ -2666,6 +3175,35 @@ class OusterGuiApp:
         self.store.delete(self.project.setdefault("equipment", []), equipment)
         self.log(f"Equipment '{equipment.get('name')}' deleted.")
         self.show_equipment()
+
+    def open_layout_from_equipment(self):
+        """3D layout of the equipment selected in the equipment list."""
+        equipment = self._require_selection("Equipment")
+        if equipment is None:
+            return
+        self.open_layout(equipment)
+
+    def open_layout(self, equipment=None):
+        """Show where each sensor sits on the equipment, in 3D."""
+        equipment = equipment or self.equipment
+        if equipment is None:
+            return
+        if not equipment.get("sensors"):
+            if not messagebox.askyesno(
+                    "3D layout",
+                    f"'{equipment.get('name')}' has no sensors yet, so the "
+                    "layout will only show the equipment itself.\n\n"
+                    "Open it anyway?"):
+                return
+        window = MountLayoutWindow(self, equipment)
+        self.layout_windows.append(window)
+        self.log(f"Opened the 3D mount layout for "
+                 f"'{equipment.get('name')}'.")
+
+    def _close_layout_windows(self):
+        for window in list(self.layout_windows):
+            window.close()
+        self.layout_windows = []
 
     def open_equipment(self):
         equipment = self._require_selection("Equipment")
@@ -2728,6 +3266,7 @@ class OusterGuiApp:
              ("New sensor", self.new_sensor, None),
              ("Edit", self.edit_sensor, None),
              ("⇄ Compare", self.compare_selected, None),
+             ("⬔ 3D layout", self.open_layout, None),
              ("Delete", self.delete_sensor, None)],
             self.open_sensor,
             "No sensors on this equipment yet - click 'New sensor'.")
@@ -6280,6 +6819,7 @@ class OusterGuiApp:
         self.store.save()
         self.on_stop_stream()
         self._close_view_windows()
+        self._close_layout_windows()
         for proc in (self.record_proc, self.viz_proc):
             if proc is not None:
                 try:

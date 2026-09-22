@@ -105,6 +105,37 @@ defaults, because a lidar and a camera keep different ones.
 ones it is actually running - the same table the **Compare with ...**
 button on every dashboard opens. See below.
 
+### Baseline (legacy) settings
+
+When a sensor is created, its settings are frozen as a **baseline** - the
+values it can always be taken back to. The baseline is a copy, so tuning
+the sensor afterwards never touches it. Sensors saved before this existed
+adopt their current settings as their baseline the first time the project
+is opened.
+
+Every dashboard has a **BASELINE (LEGACY) SETTINGS** panel showing when
+the baseline was frozen, with three actions:
+
+| Action | What it does |
+| --- | --- |
+| **⇄ Compare with baseline** | the same table as below, with the baseline in the right column |
+| **↺ Restore baseline settings** | takes the differing settings back to the baseline, after listing them |
+| **✎ Update baseline to current...** | replaces the baseline - **behind a warning** |
+
+Restoring changes the project only; nothing reaches the sensor until you
+push. It lists exactly what will change and does nothing if the settings
+already match.
+
+Replacing the baseline is the one destructive action here, so it asks
+first, with a warning icon, **No** preselected, and the count of settings
+that would change. The previous baseline is written to the log before it
+is replaced, so the old values are still on record even after the swap.
+
+Changing a sensor's **type** resets its settings and takes a fresh
+baseline, since the old one describes a different kind of device. A
+baseline left over from another type cannot be restored - the panel says
+so and disables restoring, while still letting you replace it.
+
 ### Comparing a sensor with the project
 
 Every dashboard has a **⇄ Compare with ...** button, and the sensors list
@@ -495,8 +526,12 @@ stream first rather than fighting the reader for the device.
 }
 ```
 
-A sensor without a `kind` is read as an Ouster lidar, so files written by
-earlier versions load unchanged.
+Each sensor also carries a `legacy` block - `{"kind", "created", "note",
+"config"}` - holding the settings frozen when it was created.
+
+A sensor without a `kind` is read as an Ouster lidar, and one without a
+`legacy` block adopts its current settings as its baseline, so files
+written by earlier versions load unchanged.
 
 The file is written atomically (via a `.tmp` file and `os.replace`), so an
 interrupted save cannot corrupt the tree. Back it up or copy it to another

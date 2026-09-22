@@ -47,7 +47,9 @@ From a camera's dashboard you can:
     capture when a preview is open, and read back what the camera kept.
   * Record the live image to MP4 / AVI.
 
-Every dashboard also has a Compare button: it reads the sensor and shows
+A sensor's settings are frozen as a baseline when it is created, so it can
+always be taken back to them; replacing that baseline is possible but asks
+first. Every dashboard also has a Compare button: it reads the sensor and shows
 the settings saved in the project next to the live ones, marking each row
 same / differs / not set / not reported, and can adopt just the rows that
 differ.
@@ -81,7 +83,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 import numpy as np
 
@@ -625,7 +627,26 @@ class Store:
             net = {}
         sensor["network"] = {**copy.deepcopy(DEFAULT_SENSOR_NETWORK), **net}
         sensor.setdefault("last_seen", "")
+        # the baseline a sensor can always be taken back to. Records written
+        # before baselines existed adopt their current settings as one.
+        legacy = sensor.get("legacy")
+        if not isinstance(legacy, dict) or not isinstance(
+                legacy.get("config"), dict):
+            sensor["legacy"] = Store.make_legacy(sensor, adopted=True)
+        else:
+            legacy.setdefault("kind", kind)
+            legacy.setdefault("created", sensor.get("created", ""))
+            legacy.setdefault("note", "")
         return sensor
+
+    @staticmethod
+    def make_legacy(sensor: dict, adopted: bool = False) -> dict:
+        """Freeze a sensor's current settings as its baseline."""
+        return {"kind": sensor.get("kind", KIND_OUSTER),
+                "created": now_stamp(),
+                "note": ("adopted from the settings already stored"
+                         if adopted else "taken when the sensor was created"),
+                "config": copy.deepcopy(sensor.get("config", {}))}
 
     @staticmethod
     def find(items: list, item_id: str):
@@ -657,6 +678,8 @@ class Store:
         sensor = {"id": new_id(), "created": now_stamp()}
         sensor.update(values)
         self.normalize_sensor(sensor)
+        # a new sensor's settings are its baseline from the start
+        sensor["legacy"] = self.make_legacy(sensor)
         equipment.setdefault("sensors", []).append(sensor)
         self.save()
         return sensor
@@ -823,6 +846,13 @@ COMPARE_LABELS = {
     "gop": "GOP (ONVIF)", "mtu": "MTU (ONVIF)", "net_ip": "IP (ONVIF)",
     "net_gateway": "Gateway (ONVIF)", "topic": "Topic", "layout": "Layout",
     "baud": "Baud",
+    # the rest of each kind's settings, shown when comparing with a baseline
+    "persist": "Persist", "backend": "Capture backend",
+    "source_type": "Data source", "node": "Driver node",
+    "domain_id": "ROS_DOMAIN_ID", "qos": "QoS", "color_by": "Colour by",
+    "max_range": "Max range", "min_snr": "Min SNR", "port": "Port",
+    "line_ending": "Line ending", "window": "Samples shown",
+    "onvif_port": "ONVIF port", "onvif_user": "ONVIF user",
 }
 # row states
 SAME, DIFFERS, UNSET, UNREPORTED = ("same", "differs", "not set",
@@ -2753,14 +2783,20 @@ class OusterGuiApp:
         if not dialog.result:
             return
         kind, values = self._split_kind(dialog.result)
-        if kind != sensor.get("kind"):
-            # a different kind needs a different config block
+        kind_changed = kind != sensor.get("kind")
+        if kind_changed:
+            # a different kind needs a different config block, which leaves
+            # the old baseline meaningless
             sensor["config"] = {}
+            sensor.pop("legacy", None)
             self.log(f"Sensor type changed to {KIND_LABELS[kind]}; its "
-                     "settings were reset to the defaults.")
+                     "settings were reset to the defaults and a new "
+                     "baseline was taken.")
         sensor.update(values)
         sensor["kind"] = kind
         Store.normalize_sensor(sensor)
+        if kind_changed:
+            sensor["legacy"] = Store.make_legacy(sensor)
         self.store.save()
         self.log(f"Sensor '{sensor['name']}' updated.")
         self.show_sensors()
@@ -2839,24 +2875,28 @@ class OusterGuiApp:
             self._build_camera_connection_panel(left)
             self._build_camera_config_panel(left)
             self._build_camera_device_panel(left)
+            self._build_legacy_panel(left)
             self._build_camera_stream_panel(left)
             self._build_log_panel(left)
             self._build_camera_viz_panel(right)
         elif self.sensor_kind() == KIND_ARBE:
             self._build_arbe_connection_panel(left)
             self._build_arbe_config_panel(left)
+            self._build_legacy_panel(left)
             self._build_arbe_stream_panel(left)
             self._build_log_panel(left)
             self._build_arbe_viz_panel(right)
         elif self.sensor_kind() == KIND_IMU:
             self._build_imu_connection_panel(left)
             self._build_imu_config_panel(left)
+            self._build_legacy_panel(left)
             self._build_imu_stream_panel(left)
             self._build_log_panel(left)
             self._build_imu_viz_panel(right)
         else:
             self._build_connection_panel(left)
             self._build_config_panel(left)
+            self._build_legacy_panel(left)
             self._build_stream_panel(left)
             self._build_record_panel(left)
             self._build_log_panel(left)
@@ -4822,6 +4862,167 @@ class OusterGuiApp:
 
         threading.Thread(target=work, daemon=True).start()
 
+    # --------------------------------------------------------- baseline ----
+    def _build_legacy_panel(self, parent):
+        """The frozen settings a sensor can always be taken back to."""
+        legacy = self.sensor.get("legacy") or {}
+        stale = legacy.get("kind") != self.sensor_kind()
+        box = ttk.LabelFrame(parent, text="  BASELINE (LEGACY) SETTINGS  ",
+                             padding=10)
+        box.pack(fill=tk.X, pady=4)
+        taken = legacy.get("created", "?")
+        note = legacy.get("note", "")
+        ttk.Label(box, text=f"Frozen on {taken}"
+                            + (f"\n{note}" if note else ""),
+                  style="Muted.TLabel", justify=tk.LEFT).pack(anchor=tk.W)
+        if stale:
+            ttk.Label(box, text="This baseline was taken while the sensor "
+                                "was a different type, so it cannot be "
+                                "restored. Update it to freeze the current "
+                                "settings instead.",
+                      style="Hint.TLabel", wraplength=300,
+                      justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 0))
+        else:
+            ttk.Label(box, text="The settings as they were when this sensor "
+                                "was created. Restoring is always available.",
+                      style="Hint.TLabel", wraplength=300,
+                      justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 0))
+        compare = ttk.Button(box, text="⇄  Compare with baseline",
+                             command=self.on_compare_legacy)
+        compare.pack(fill=tk.X, pady=(8, 3))
+        restore = ttk.Button(box, text="↺  Restore baseline settings",
+                             style="Accent.TButton",
+                             command=self.on_restore_legacy)
+        restore.pack(fill=tk.X, pady=3)
+        if stale:
+            for button in (compare, restore):
+                button.state(["disabled"])
+        ttk.Button(box, text="✎  Update baseline to current...",
+                   command=self.on_update_legacy).pack(fill=tk.X, pady=3)
+        ttk.Label(box, text="Updating replaces what you can return to, so "
+                            "it asks for confirmation first.",
+                  style="Hint.TLabel", wraplength=300,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 0))
+
+    def _legacy_or_warn(self):
+        """The baseline, if there is a usable one for this sensor's type."""
+        legacy = (self.sensor or {}).get("legacy") or {}
+        config = legacy.get("config")
+        if not isinstance(config, dict) or not config:
+            messagebox.showinfo("Baseline",
+                                "This sensor has no baseline stored yet. "
+                                "Use 'Update baseline to current' to freeze "
+                                "its settings.")
+            return None
+        if legacy.get("kind") != self.sensor_kind():
+            messagebox.showerror(
+                "Baseline",
+                "The stored baseline belongs to a different sensor type "
+                f"({KIND_LABELS.get(legacy.get('kind'), '?')}), so it "
+                "cannot be applied here.\n\nUpdate the baseline to freeze "
+                "the current settings instead.")
+            return None
+        return legacy
+
+    def _save_current_config(self):
+        """Persist the dashboard form, whichever kind it belongs to."""
+        if not self.cfg_vars:
+            return self.sensor["config"]
+        saver = {KIND_OUSTER: self.on_save_config,
+                 KIND_CAMERA: self.on_save_camera_config,
+                 KIND_ARBE: self.on_save_arbe_config,
+                 KIND_IMU: self.on_save_imu_config}[self.sensor_kind()]
+        return None if saver() is None else self.sensor["config"]
+
+    def on_compare_legacy(self):
+        legacy = self._legacy_or_warn()
+        if legacy is None or self._save_current_config() is None:
+            return
+        self._show_comparison(self.sensor_kind(),
+                              copy.deepcopy(self.sensor["config"]),
+                              copy.deepcopy(legacy["config"]),
+                              against="baseline")
+
+    def _legacy_differences(self, legacy):
+        kind = self.sensor_kind()
+        order = COMPARABLE_KEYS.get(kind, [])
+        saved = self._expand_params(kind, self.sensor["config"])
+        base = self._expand_params(kind, legacy["config"])
+        rows = compare_settings({k: v for k, v in saved.items()
+                                 if k in order or k in base}, base, order)
+        return [r for r in rows if r[3] == DIFFERS]
+
+    def on_restore_legacy(self):
+        legacy = self._legacy_or_warn()
+        if legacy is None or self._save_current_config() is None:
+            return
+        differing = self._legacy_differences(legacy)
+        if not differing:
+            messagebox.showinfo("Restore baseline",
+                                "The current settings already match the "
+                                "baseline - nothing to restore.")
+            return
+        listed = "\n".join(f"  {COMPARE_LABELS.get(k, k)}: {mine or '-'}"
+                           f"  ->  {theirs or '-'}"
+                           for k, mine, theirs, _ in differing[:20])
+        if not messagebox.askyesno(
+                "Restore baseline",
+                f"Take {len(differing)} setting(s) back to the baseline "
+                f"frozen on {legacy.get('created', '?')}?\n\n{listed}"
+                + ("\n  ..." if len(differing) > 20 else "")
+                + "\n\nThis changes the project only - nothing is written "
+                  "to the sensor until you push."):
+            return
+        self._adopt_values(self.sensor_kind(),
+                           self._expand_params(self.sensor_kind(),
+                                               legacy["config"]),
+                           differing, source="the baseline")
+
+    def on_update_legacy(self):
+        """Editing the baseline: allowed, but only behind a warning."""
+        if self._save_current_config() is None:
+            return
+        legacy = (self.sensor or {}).get("legacy") or {}
+        old_config = legacy.get("config")
+        if not isinstance(old_config, dict) or not old_config:
+            old_config = None
+        usable = old_config and legacy.get("kind") == self.sensor_kind()
+        differing = self._legacy_differences(legacy) if usable else []
+        if usable and not differing:
+            messagebox.showinfo("Update baseline",
+                                "The baseline already matches the current "
+                                "settings.")
+            return
+        listed = "\n".join(f"  {COMPARE_LABELS.get(k, k)}: {theirs or '-'}"
+                           f"  ->  {mine or '-'}"
+                           for k, mine, theirs, _ in differing[:20])
+        if not messagebox.askyesno(
+                "Replace the baseline?",
+                "The baseline is what this sensor can always be taken back "
+                f"to. It was frozen on {legacy.get('created', '?')}.\n\n"
+                "Replacing it with the current settings means the old "
+                "values are no longer restorable from here.\n\n"
+                + (f"{len(differing)} setting(s) would change:\n{listed}"
+                   + ("\n  ..." if len(differing) > 20 else "")
+                   if differing else "")
+                + "\n\nThe previous baseline is written to the log first. "
+                  "Replace it?",
+                icon=messagebox.WARNING, default=messagebox.NO):
+            return
+        if old_config:
+            self.log(f"Previous baseline ({legacy.get('created', '?')}), "
+                     "kept here for the record:")
+            for key in sorted(old_config):
+                value = old_config[key]
+                if value not in ("", UNCHANGED, None):
+                    self.log(f"    {key} = {value}")
+        self.sensor["legacy"] = Store.make_legacy(self.sensor)
+        self.sensor["legacy"]["note"] = "replaced by hand"
+        self.store.save()
+        self.log("Baseline replaced with the current settings "
+                 f"({self.sensor['legacy']['created']}).")
+        self.show_dashboard()          # redraw the panel's date and note
+
     # ------------------------------------------------------- comparison ----
     def on_compare_sensor(self):
         """Put the settings saved for this sensor next to the live ones."""
@@ -4830,13 +5031,8 @@ class OusterGuiApp:
             return
         kind = self.sensor_kind()
         # make "saved" mean what is on screen, as Pull and Push already do
-        if self.cfg_vars:
-            saver = {KIND_OUSTER: self.on_save_config,
-                     KIND_CAMERA: self.on_save_camera_config,
-                     KIND_ARBE: self.on_save_arbe_config,
-                     KIND_IMU: self.on_save_imu_config}[kind]
-            if saver() is None:
-                return
+        if self._save_current_config() is None:
+            return
         if not self._compare_ready(kind, sensor):
             return
         config = copy.deepcopy(sensor["config"])
@@ -5000,20 +5196,36 @@ class OusterGuiApp:
             live["layout"] = suggestion
         return live
 
-    def _show_comparison(self, kind, saved, live):
-        """The comparison table, with the option to adopt the live values."""
+    def _expand_params(self, kind, config: dict) -> dict:
+        """Driver parameter lines read as individual settings."""
+        if kind not in (KIND_ARBE, KIND_IMU):
+            return dict(config)
+        field = "parameters" if kind == KIND_ARBE else "commands"
+        out = dict(config)
+        # the raw block is not a setting of its own; its lines are
+        out.pop(field, None)
+        out.update(dict(self.parse_param_lines(config.get(field, ""))))
+        return out
+
+    def _show_comparison(self, kind, saved, live, against="sensor"):
+        """The comparison table, with the option to adopt the other side.
+
+        `against` is "sensor" for a live read, or "baseline" for the
+        settings frozen when the sensor was created.
+        """
         sensor = self.sensor
         order = COMPARABLE_KEYS.get(kind, [])
-        if kind in (KIND_ARBE, KIND_IMU):
-            field = "parameters" if kind == KIND_ARBE else "commands"
-            saved = dict(saved)
-            saved.update(dict(self.parse_param_lines(saved.get(field, ""))))
+        baseline = against == "baseline"
+        saved = self._expand_params(kind, saved)
+        if baseline:
+            live = self._expand_params(kind, live)
         rows = compare_settings({k: v for k, v in saved.items()
                                  if k in order or k in live}, live, order)
         differing = [r for r in rows if r[3] == DIFFERS]
 
         win = tk.Toplevel(self.root)
-        win.title(f"Compare  ·  {sensor.get('name', '')}")
+        win.title(("Compare with baseline  ·  " if baseline
+                   else "Compare  ·  ") + sensor.get("name", ""))
         win.geometry("880x540")
         win.configure(bg=Theme.BG)
         win.transient(self.root)
@@ -5023,9 +5235,10 @@ class OusterGuiApp:
         ttk.Label(head, text=f"{sensor.get('name', '')}  ·  "
                              f"{sensor.get('host', '')}",
                   style="Title.TLabel", font=CRUMB_FONT).pack(anchor=tk.W)
-        summary = (f"{len(differing)} of {len(rows)} settings differ"
-                   if differing else
-                   f"all {len(rows)} settings match the sensor")
+        other = "the baseline" if baseline else "the sensor"
+        summary = (f"{len(differing)} of {len(rows)} settings differ "
+                   f"from {other}" if differing else
+                   f"all {len(rows)} settings match {other}")
         ttk.Label(head, text=summary,
                   style="Subtitle.TLabel").pack(anchor=tk.W, pady=(2, 0))
 
@@ -5036,7 +5249,8 @@ class OusterGuiApp:
                             selectmode="browse")
         for key, heading, width in (("setting", "Setting", 190),
                                     ("saved", "Saved in project", 265),
-                                    ("live", "On the sensor", 265),
+                                    ("live", "In the baseline" if baseline
+                                     else "On the sensor", 265),
                                     ("state", "", 105)):
             tree.heading(key, text=heading, anchor=tk.W)
             tree.column(key, width=width, anchor=tk.W,
@@ -5054,36 +5268,43 @@ class OusterGuiApp:
                 COMPARE_LABELS.get(key, key), mine or "-", theirs or "-",
                 state))
 
-        note = ("Orange rows differ. 'not set' means the project has no "
-                "value for that setting, 'not reported' means the sensor "
-                "does not expose it.")
+        tail = ("." if baseline
+                else ", 'not reported' means the sensor does not expose it.")
+        note = ("Orange rows differ. 'not set' means that side has no "
+                "value for the setting" + tail)
         ttk.Label(win, text=note, style="Hint.TLabel", wraplength=840,
                   justify=tk.LEFT).pack(anchor=tk.W, padx=12)
 
         buttons = ttk.Frame(win, style="TFrame")
         buttons.pack(fill=tk.X, padx=12, pady=(6, 12))
         adopt = ttk.Button(
-            buttons, text=f"Copy the sensor's values into the project "
-                          f"({len(differing)})",
+            buttons,
+            text=(f"Restore the baseline ({len(differing)})" if baseline else
+                  f"Copy the sensor's values into the project "
+                  f"({len(differing)})"),
             style="Accent.TButton",
-            command=lambda: (self._adopt_live_values(kind, live, differing),
+            command=lambda: (self._adopt_values(kind, live, differing,
+                                                source=other),
                              win.destroy()))
         adopt.pack(side=tk.LEFT)
         if not differing:
             adopt.state(["disabled"])
-        ttk.Button(buttons, text="Refresh",
-                   command=lambda: (win.destroy(),
-                                    self.on_compare_sensor())).pack(
-            side=tk.LEFT, padx=6)
+        if not baseline:
+            ttk.Button(buttons, text="Refresh",
+                       command=lambda: (win.destroy(),
+                                        self.on_compare_sensor())).pack(
+                side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Close",
                    command=win.destroy).pack(side=tk.RIGHT)
         self.log(summary + ".")
         for key, mine, theirs, _state in differing:
             self.log(f"  {COMPARE_LABELS.get(key, key)}: project={mine}, "
-                     f"sensor={theirs}")
+                     + (f"baseline={theirs}" if baseline
+                        else f"sensor={theirs}"))
 
-    def _adopt_live_values(self, kind, live: dict, differing: list):
-        """Write the sensor's values over the saved ones (a targeted pull)."""
+    def _adopt_values(self, kind, live: dict, differing: list,
+                      source="the sensor"):
+        """Write the other side's values over the saved ones."""
         if not differing:
             return
         keys = [row[0] for row in differing]
@@ -5111,7 +5332,7 @@ class OusterGuiApp:
                     pass
         self.sensor["last_seen"] = now_stamp()
         self.store.save()
-        self.log(f"Adopted {len(differing)} value(s) from the sensor into "
+        self.log(f"Adopted {len(differing)} value(s) from {source} into "
                  "the project.")
 
     def compare_selected(self):

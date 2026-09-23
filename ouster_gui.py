@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.9.0"
+__version__ = "2.10.0"
 
 import numpy as np
 
@@ -2686,7 +2686,6 @@ class MountLayoutWindow:
         self.view_var = tk.StringVar(value="Isometric")
         self.model_label = tk.StringVar()
         self.body_label = tk.StringVar()
-        self.info_label = tk.StringVar()
 
         self.win = tk.Toplevel(app.root)
         self.win.title(f"Mount layout  ·  {equipment.get('name', '')}")
@@ -2736,15 +2735,232 @@ class MountLayoutWindow:
                             f"{body.get('height', '?')} m "
                             "(length x width x height)")
 
+    # the rows of the SELECTED SENSOR panel: (key, label, editable)
+    INFO_ROWS = (("name", "Name", True), ("kind", "Type", False),
+                 ("host", "Address", True), ("model", "Model", True),
+                 ("serial", "Serial", True), ("last_seen", "Last contact",
+                                              False),
+                 ("settings", "Settings", False),
+                 ("position", "Position", True),
+                 ("orientation", "Orientation", True),
+                 ("height", "Height", False))
+
     def _build_selected_panel(self, parent):
         box = ttk.LabelFrame(parent, text="  SELECTED SENSOR  ", padding=8)
         box.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
-        ttk.Label(box, textvariable=self.info_label, style="Info.TLabel",
-                  justify=tk.LEFT).pack(anchor=tk.W)
-        ttk.Label(box, text="Its real-world data, as the project has it. "
-                            "Press Config to change the mounting numbers.",
-                  style="Hint.TLabel", wraplength=320,
-                  justify=tk.LEFT).pack(anchor=tk.W, pady=(6, 0))
+        self.editing = False
+        self.info_values = {}       # row key -> StringVar shown in view mode
+        self.info_views = {}        # row key -> the read-only label
+        self.info_editors = {}      # row key -> the editing widget
+        self.edit_vars = {key: tk.StringVar() for key in
+                          ("name", "host", "model", "serial") + MOUNT_KEYS}
+        self.info_rows = ttk.Frame(box, style="Panel.TFrame")
+        self.info_rows.pack(fill=tk.X)
+        self.info_rows.columnconfigure(1, weight=1)
+        for row, (key, label, editable) in enumerate(self.INFO_ROWS):
+            ttk.Label(self.info_rows, text=label, style="Info.TLabel",
+                      foreground=Theme.MUTED).grid(row=row, column=0,
+                                                   sticky=tk.W, padx=(0, 8))
+            self.info_values[key] = tk.StringVar()
+            view = ttk.Label(self.info_rows, textvariable=self.info_values[key],
+                             style="Info.TLabel")
+            view.grid(row=row, column=1, sticky=tk.W)
+            self.info_views[key] = view
+            if editable:
+                self.info_editors[key] = self._make_editor(key)
+        self.info_empty = ttk.Label(box, style="Info.TLabel",
+                                    text="No sensor selected.\nPick one in "
+                                         "the list, or click it in the 3D "
+                                         "view.", justify=tk.LEFT)
+
+        self.info_hint = tk.StringVar()
+        self.info_hint_label = ttk.Label(
+            box, textvariable=self.info_hint, style="Hint.TLabel",
+            wraplength=320, justify=tk.LEFT)
+        self.info_hint_label.pack(anchor=tk.W, pady=(6, 0))
+        buttons = ttk.Frame(box, style="Panel.TFrame")
+        buttons.pack(fill=tk.X, pady=(6, 0))
+        self.edit_button = ttk.Button(buttons, text="✎  Edit",
+                                      command=self.on_edit_info)
+        self.save_button = ttk.Button(buttons, text="Save",
+                                      style="Accent.TButton",
+                                      command=self.on_save_info)
+        self.cancel_button = ttk.Button(buttons, text="Cancel",
+                                        command=self.on_cancel_info)
+        self._show_view_mode()
+
+    def _make_editor(self, key):
+        """The entry (or entries) that replace a row while editing."""
+        if key in ("position", "orientation"):
+            frame = ttk.Frame(self.info_rows, style="Panel.TFrame")
+            parts = (("x", "y", "z") if key == "position"
+                     else ("roll", "pitch", "yaw"))
+            unit = "m" if key == "position" else "°"
+            # labels above the boxes, so three of them fit the narrow panel
+            for column, part in enumerate(parts):
+                ttk.Label(frame, text=f"{part} [{unit}]",
+                          style="Hint.TLabel").grid(row=0, column=column,
+                                                    sticky=tk.W,
+                                                    padx=(0, 6))
+                entry = ttk.Entry(frame, textvariable=self.edit_vars[part],
+                                  width=7)
+                entry.grid(row=1, column=column, sticky=tk.W, padx=(0, 6))
+                entry.bind("<Return>", lambda e: self.on_save_info())
+                entry.bind("<Escape>", lambda e: self.on_cancel_info())
+            return frame
+        entry = ttk.Entry(self.info_rows, textvariable=self.edit_vars[key],
+                          width=24)
+        entry.bind("<Return>", lambda e: self.on_save_info())
+        entry.bind("<Escape>", lambda e: self.on_cancel_info())
+        return entry
+
+    def _show_view_mode(self):
+        self.editing = False
+        for key, editor in self.info_editors.items():
+            editor.grid_remove()
+            self.info_views[key].grid()
+        self.save_button.pack_forget()
+        self.cancel_button.pack_forget()
+        self.edit_button.pack(fill=tk.X)
+        self.info_hint.set("Its real-world data. Edit changes it here; "
+                           "Config has the size and presets.")
+        if self.selected is None:
+            self.edit_button.state(["disabled"])
+        else:
+            self.edit_button.state(["!disabled"])
+
+    def _show_edit_mode(self):
+        self.editing = True
+        for row, (key, _label, editable) in enumerate(self.INFO_ROWS):
+            if not editable:
+                continue
+            self.info_views[key].grid_remove()
+            self.info_editors[key].grid(row=row, column=1, sticky=tk.W,
+                                        pady=1)
+        self.edit_button.pack_forget()
+        self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X,
+                              padx=(0, 3))
+        self.cancel_button.pack(side=tk.LEFT, expand=True, fill=tk.X,
+                                padx=(3, 0))
+        self.info_hint.set("Save writes to the project; Cancel puts it "
+                           "back.")
+
+    def _edit_values(self) -> dict:
+        return {key: var.get().strip() for key, var in self.edit_vars.items()}
+
+    def _record_values(self, sensor) -> dict:
+        values = {key: str(sensor.get(key, "") or "")
+                  for key in ("name", "host", "model", "serial")}
+        values.update({key: str(sensor["mount"].get(key, "0"))
+                       for key in MOUNT_KEYS})
+        return values
+
+    def _edits_pending(self) -> bool:
+        if not self.editing or self.selected is None:
+            return False
+        before = self._record_values(self.selected)
+        after = self._edit_values()
+        for key, value in after.items():
+            if key in MOUNT_KEYS:
+                try:
+                    if abs(float(value or 0) - float(before[key] or 0)) \
+                            > 1e-9:
+                        return True
+                except ValueError:
+                    return True
+            elif value != before[key]:
+                return True
+        return False
+
+    def _can_leave_edit(self) -> bool:
+        """Before moving on, settle unsaved edits. False means stay put."""
+        if not self.editing:
+            return True
+        if not self._edits_pending():
+            self._show_view_mode()
+            return True
+        answer = messagebox.askyesnocancel(
+            "Unsaved changes",
+            f"Save the changes to '{self.selected.get('name', '')}' "
+            "before moving on?", parent=self.win)
+        if answer is None:
+            return False
+        if answer:
+            return self.on_save_info(stay=False)
+        self._show_view_mode()
+        return True
+
+    def on_edit_info(self):
+        if self.selected is None:
+            return
+        for key, value in self._record_values(self.selected).items():
+            self.edit_vars[key].set(value)
+        self._show_edit_mode()
+        try:
+            self.info_editors["name"].focus_set()
+        except (KeyError, tk.TclError):
+            pass
+
+    def on_cancel_info(self):
+        self._show_view_mode()
+        self._refresh_info()
+
+    def on_save_info(self, stay: bool = True) -> bool:
+        """Validate the edited rows and write them to the sensor.
+
+        `stay=False` is the save on the way to another sensor: the caller
+        does the moving, so the selection is left alone here.
+        """
+        sensor = self.selected
+        if sensor is None:
+            return False
+        values = self._edit_values()
+        for key, label in (("name", "Name"), ("host", "Address")):
+            if not values[key]:
+                messagebox.showerror("Selected sensor",
+                                     f"{label} cannot be empty.",
+                                     parent=self.win)
+                return False
+        mount = {}
+        for key in MOUNT_KEYS:
+            try:
+                mount[key] = f"{float(values[key] or 0):g}"
+            except ValueError:
+                messagebox.showerror(
+                    "Selected sensor",
+                    f"'{key}' must be a number - metres for x, y and z, "
+                    "degrees for roll, pitch and yaw.", parent=self.win)
+                return False
+        before = self._record_values(sensor)
+        changed = [key for key in ("name", "host", "model", "serial")
+                   if values[key] != before[key]]
+        changed += [key for key in MOUNT_KEYS
+                    if float(mount[key]) != float(before[key] or 0)]
+        for key in ("name", "host", "model", "serial"):
+            sensor[key] = values[key]
+        sensor["mount"] = mount
+        self.app.store.save()
+        self._show_view_mode()
+        # update the row in place: rebuilding the list would drop the
+        # selection mid-navigation
+        self.tree.item(sensor["id"], values=self._tree_values(sensor))
+        self._refresh_app_row(sensor)
+        if stay:
+            self._select(sensor, from_tree=True)   # redraw, refresh Config
+        self.app.log(f"'{sensor['name']}' updated from the layout: "
+                     + (", ".join(changed) if changed else "no changes")
+                     + ".")
+        return True
+
+    def _refresh_app_row(self, sensor):
+        """Keep the sensors list behind this window in step, if showing."""
+        tree = getattr(self.app, "_tree", None)
+        try:
+            if tree is not None and tree.exists(sensor["id"]):
+                for column in ("name", "host", "model"):
+                    tree.set(sensor["id"], column, sensor.get(column, ""))
+        except tk.TclError:
+            pass
 
     def _build_footer(self, parent):
         box = ttk.Frame(parent, style="TFrame")
@@ -2804,20 +3020,30 @@ class MountLayoutWindow:
                 out.append(1.0)
         return out
 
+    @staticmethod
+    def _tree_values(sensor) -> tuple:
+        mount = sensor["mount"]
+        position = " / ".join(f"{float(mount.get(k, 0) or 0):g}"
+                              for k in ("x", "y", "z"))
+        return (sensor.get("name", ""),
+                KIND_LABELS.get(sensor.get("kind"), "").split(" (")[0],
+                position)
+
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())
         for sensor in self.sensors:
-            mount = sensor["mount"]
-            position = " / ".join(f"{float(mount.get(k, 0) or 0):g}"
-                                  for k in ("x", "y", "z"))
-            self.tree.insert("", tk.END, iid=sensor["id"], values=(
-                sensor.get("name", ""),
-                KIND_LABELS.get(sensor.get("kind"), "").split(" (")[0],
-                position))
+            self.tree.insert("", tk.END, iid=sensor["id"],
+                             values=self._tree_values(sensor))
 
     def _on_tree_select(self, _event=None):
         selection = self.tree.selection()
         if not selection:
+            return
+        if self.selected is not None and selection[0] == self.selected["id"]:
+            return
+        if not self._can_leave_edit():
+            # stay on the sensor being edited
+            self.tree.selection_set(self.selected["id"])
             return
         for sensor in self.sensors:
             if sensor["id"] == selection[0]:
@@ -2852,9 +3078,12 @@ class MountLayoutWindow:
         """The selected sensor's real data, for the panel on the left."""
         sensor = self.selected
         if sensor is None:
-            self.info_label.set("No sensor selected.\nPick one in the list, "
-                                "or click it in the 3D view.")
+            self.info_rows.pack_forget()
+            self.info_empty.pack(anchor=tk.W, before=self.info_hint_label)
+            self._show_view_mode()
             return
+        self.info_empty.pack_forget()
+        self.info_rows.pack(fill=tk.X, before=self.info_hint_label)
         mount = sensor["mount"]
 
         def number(key):
@@ -2863,25 +3092,30 @@ class MountLayoutWindow:
             except ValueError:
                 return 0.0
 
-        rows = [("Name", sensor.get("name", "")),
-                ("Type", KIND_LABELS.get(sensor.get("kind"), "")),
-                ("Address", sensor.get("host", "") or "-"),
-                ("Model", sensor.get("model", "") or "-")]
-        if sensor.get("serial"):
-            rows.append(("Serial", sensor["serial"]))
-        rows += [
-            ("Last contact", sensor.get("last_seen") or "never"),
-            ("Settings", self.sensor_summary(sensor) or "-"),
-            ("Position", f"x {number('x'):+.2f}  y {number('y'):+.2f}  "
-                         f"z {number('z'):+.2f} m"),
-            ("Orientation", f"roll {number('roll'):g}°  "
-                            f"pitch {number('pitch'):g}°  "
-                            f"yaw {number('yaw'):g}°"),
-            ("Height", f"{number('z'):.2f} m above the ground"),
-        ]
-        width = max(len(label) for label, _ in rows)
-        self.info_label.set("\n".join(f"{label.ljust(width)} : {value}"
-                                      for label, value in rows))
+        shown = {
+            "name": sensor.get("name", ""),
+            "kind": KIND_LABELS.get(sensor.get("kind"), ""),
+            "host": sensor.get("host", "") or "-",
+            "model": sensor.get("model", "") or "-",
+            "serial": sensor.get("serial", "") or "-",
+            "last_seen": sensor.get("last_seen") or "never",
+            "settings": self.sensor_summary(sensor) or "-",
+            "position": f"x {number('x'):+.2f}  y {number('y'):+.2f}  "
+                        f"z {number('z'):+.2f} m",
+            "orientation": f"roll {number('roll'):g}°  "
+                           f"pitch {number('pitch'):g}°  "
+                           f"yaw {number('yaw'):g}°",
+            "height": f"{number('z'):.2f} m above the ground",
+        }
+        for key, value in shown.items():
+            self.info_values[key].set(value)
+
+    def info_text(self) -> str:
+        """The panel as plain text: one 'Label : value' line per row."""
+        if self.selected is None:
+            return self.info_empty.cget("text")
+        return "\n".join(f"{label} : {self.info_values[key].get()}"
+                         for key, label, _ in self.INFO_ROWS)
 
     def _select(self, sensor, from_tree=False):
         self.selected = sensor
@@ -2971,6 +3205,10 @@ class MountLayoutWindow:
             if distance < best_distance:
                 best, best_distance = sensor_id, distance
         if best is None:
+            return
+        if self.selected is not None and best == self.selected["id"]:
+            return
+        if not self._can_leave_edit():
             return
         for sensor in self.sensors:
             if sensor["id"] == best:

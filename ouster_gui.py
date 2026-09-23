@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.13.0"
+__version__ = "2.13.1"
 
 import numpy as np
 
@@ -569,7 +569,7 @@ class Store:
     Layout::
 
         {"version": 2,
-         "projects": [{"id", "name", "site", "notes", "created",
+         "projects": [{"id", "name", "notes", "created",
                        "equipment": [{"id", "name", "type", "serial",
                                       "notes", "created",
                                       "sensors": [{"id", "name", "host",
@@ -641,7 +641,6 @@ class Store:
             return
 
         project = self.add_project({"name": "Imported",
-                                    "site": "",
                                     "notes": "Imported from "
                                              f"{LEGACY_SETTINGS_PATH}"})
         equipment = self.add_equipment(project, {"name": "Imported equipment",
@@ -4043,7 +4042,6 @@ class OusterGuiApp:
             n_equipment, n_sensors = Store.project_counts(project)
             rows.append((project, {
                 "name": project.get("name", ""),
-                "site": project.get("site", ""),
                 "equipment": str(n_equipment),
                 "sensors": str(n_sensors),
                 "created": project.get("created", ""),
@@ -4052,8 +4050,7 @@ class OusterGuiApp:
         self._build_list_screen(
             "Projects",
             "Pick a project to open its equipment, or create a new one.",
-            [("name", "Project", 260), ("site", "Site / customer", 220),
-             ("equipment", "Equipment", 90), ("sensors", "Sensors", 80),
+            [("name", "Project", 480), ("equipment", "Equipment", 90), ("sensors", "Sensors", 80),
              ("created", "Created", 150)],
             rows,
             [("Open", self.open_project, "Accent.TButton"),
@@ -4067,7 +4064,6 @@ class OusterGuiApp:
     _PROJECT_FIELDS = [
         {"key": "name", "label": "Project name", "required": True,
          "hint": "e.g. 'Highway survey 2026' or 'Lab R&D'"},
-        {"key": "site", "label": "Site / customer"},
         {"key": "notes", "label": "Notes", "kind": "text"},
     ]
 

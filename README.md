@@ -94,8 +94,8 @@ Each level is a list with the same four actions:
 | **Edit** | Rename / change the details of the selected entry - for a sensor: type, name, address, model, serial and notes |
 | **Delete** | Remove the entry and everything under it (from the app only - the sensors themselves are never touched) |
 
-The projects list shows how much equipment and how many sensors each
-project holds; the sensors list shows each sensor's type, address, model,
+A project is just a name and notes. The projects list shows how much
+equipment and how many sensors each project holds; the sensors list shows each sensor's type, address, model,
 saved settings and when the app last talked to it.
 
 Changing a sensor's type in **Edit** resets its settings to that type's
@@ -551,7 +551,6 @@ stream first rather than fighting the reader for the device.
     {
       "id": "3f2a1c9b8d4e",
       "name": "Highway 6 survey",
-      "site": "Netivei Israel",
       "notes": "mobile mapping",
       "created": "2026-08-08 18:09",
       "equipment": [

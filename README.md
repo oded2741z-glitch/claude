@@ -94,9 +94,29 @@ Each level is a list with the same four actions:
 | **Edit** | Rename / change the details of the selected entry - for a sensor: type, name, address, model, serial and notes |
 | **Delete** | Remove the entry and everything under it (from the app only - the sensors themselves are never touched) |
 
-A project is just a name and notes. The projects list shows how much
-equipment and how many sensors each project holds; the sensors list shows each sensor's type, address, model,
+A project is just a name and notes, and equipment a name, a type and
+notes. The projects list shows how much equipment and how many sensors
+each project holds; the sensors list shows each sensor's type, address, model,
 saved settings and when the app last talked to it.
+
+#### Equipment types
+
+The **Type** list in the equipment form is yours to change: **✎ Edit
+list**, beside it, opens the list of types with, for each one, the
+built-in shape it is **drawn as** in the 3D layout and how many equipment
+items use it.
+
+| Button | What it does |
+| --- | --- |
+| **Add...** | A new type - a name, and which built-in shape draws it (a `Truck` drawn as `Vehicle`, a `Boat` as `Other`) |
+| **Edit...** | Rename a type or change its shape (also: double-click). Equipment already using it follows the new name |
+| **Remove** | Drop an unused type. A type still in use is refused, naming the equipment, so nothing is left with a type that is not on the list. At least one type always stays |
+| **▲ Up / ▼ Down** | The order the list is offered in |
+| **Defaults** | Back to the built-in list; types still in use are kept at the end |
+
+Nothing is stored until **Save**; **Cancel** drops every change. A new type
+also takes its default body size from its shape, so a new `Truck` drawn as
+`Vehicle` starts out vehicle-sized.
 
 Changing a sensor's type in **Edit** resets its settings to that type's
 defaults, because a lidar and a camera keep different ones.
@@ -558,7 +578,6 @@ stream first rather than fighting the reader for the device.
           "id": "7c1d0e5a2b93",
           "name": "Van #3",
           "type": "Vehicle",
-          "serial": "VAN-003",
           "sensors": [
             {
               "id": "a4b8c2d16e07",
@@ -674,6 +693,12 @@ sensor a `mount` block - `{"x", "y", "z",
 
 Each sensor also carries a `legacy` block - `{"kind", "created", "note",
 "config"}` - holding the settings frozen when it was created.
+
+Once the equipment type list has been edited, it is kept under
+`"app": {"equipment_types": [{"name": "Truck", "shape": "Vehicle"}, ...]}`,
+in the order shown; `shape` is the built-in drawing the type uses. With no
+such entry the built-in list is used. A `serial` or project `site` written
+by an earlier version is left in the file, just no longer shown.
 
 A sensor without a `kind` is read as an Ouster lidar, and one without a
 `legacy` block adopts its current settings as its baseline, so files

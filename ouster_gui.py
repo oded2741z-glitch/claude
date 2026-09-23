@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.13.1"
+__version__ = "2.14.0"
 
 import numpy as np
 
@@ -350,6 +350,8 @@ UDP_PROFILES = [
 ]
 EQUIPMENT_TYPES = ["Vehicle", "Drone / UAV", "Robot / AMR", "Mast / Tripod",
                    "Rail / Gantry", "Building / Fixed", "Lab bench", "Other"]
+# the built-in 3D drawings; a user-made type is drawn as one of these
+EQUIPMENT_SHAPES = list(EQUIPMENT_TYPES)
 
 # --- mounting geometry ------------------------------------------------------
 # One frame for everything: x forward, y left, z up, origin on the ground at
@@ -563,6 +565,14 @@ def now_stamp() -> str:
     return time.strftime("%Y-%m-%d %H:%M")
 
 
+def resolve_shape(types, type_name: str) -> str:
+    """The built-in drawing for a type name, given the user's type list."""
+    for item in types or []:
+        if item.get("name") == type_name:
+            return item.get("shape", "Other")
+    return type_name if type_name in EQUIPMENT_SHAPES else "Other"
+
+
 class Store:
     """The project tree, persisted as a single JSON file.
 
@@ -570,13 +580,14 @@ class Store:
 
         {"version": 2,
          "projects": [{"id", "name", "notes", "created",
-                       "equipment": [{"id", "name", "type", "serial",
-                                      "notes", "created",
+                       "equipment": [{"id", "name", "type", "notes",
+                                      "created",
                                       "sensors": [{"id", "name", "host",
                                                    "model", "notes",
                                                    "created", "last_seen",
                                                    "config": {...},
-                                                   "network": {...}}]}]}]}
+                                                   "network": {...}}]}]}],
+         "app": {"equipment_types": [{"name", "shape"}], ...}}
     """
 
     def __init__(self, path: str = STORE_PATH):
@@ -600,10 +611,16 @@ class Store:
             data["projects"] = []
         if not isinstance(data.get("app"), dict):
             data["app"] = {}
+        types = self.clean_types(data["app"].get("equipment_types"))
+        if types:
+            data["app"]["equipment_types"] = types
+        else:
+            data["app"].pop("equipment_types", None)
         for project in data["projects"]:
             project.setdefault("equipment", [])
             for equipment in project["equipment"]:
-                self.normalize_equipment(equipment)
+                self.normalize_equipment(equipment, resolve_shape(
+                    types or None, equipment.get("type", "")))
                 for sensor in equipment["sensors"]:
                     self.normalize_sensor(sensor)
         return data
@@ -645,7 +662,7 @@ class Store:
                                              f"{LEGACY_SETTINGS_PATH}"})
         equipment = self.add_equipment(project, {"name": "Imported equipment",
                                                  "type": "Other",
-                                                 "serial": "", "notes": ""})
+                                                 "notes": ""})
         for name, values in entries:
             sensor = self.add_sensor(equipment, {
                 "name": name,
@@ -698,13 +715,18 @@ class Store:
         return sensor
 
     @staticmethod
-    def normalize_equipment(equipment: dict) -> dict:
-        """Give the equipment a body size, so it can be drawn to scale."""
+    def normalize_equipment(equipment: dict, shape: str = "") -> dict:
+        """Give the equipment a body size, so it can be drawn to scale.
+
+        `shape` is the built-in drawing its type uses, which decides the
+        default size; without it the type name itself is tried.
+        """
         equipment.setdefault("sensors", [])
         body = equipment.get("body")
         if not isinstance(body, dict):
             body = {}
-        preset = BODY_PRESETS.get(equipment.get("type", ""), DEFAULT_BODY)
+        preset = BODY_PRESETS.get(shape or equipment.get("type", ""),
+                                  DEFAULT_BODY)
         equipment["body"] = {**copy.deepcopy(preset), **body}
         model = equipment.get("model")
         if not isinstance(model, dict):
@@ -743,7 +765,8 @@ class Store:
     def add_equipment(self, project: dict, values: dict) -> dict:
         equipment = {"id": new_id(), "created": now_stamp(), "sensors": []}
         equipment.update(values)
-        self.normalize_equipment(equipment)
+        self.normalize_equipment(equipment,
+                                 self.shape_of(equipment.get("type", "")))
         project.setdefault("equipment", []).append(equipment)
         self.save()
         return equipment
@@ -766,6 +789,62 @@ class Store:
             pass
         self.save()
 
+    # -- equipment types ------------------------------------------------------
+    @staticmethod
+    def clean_types(types) -> list:
+        """A usable type list from whatever the file held: unique names,
+        each drawn as a known shape. Empty when nothing usable is there."""
+        out, seen = [], set()
+        for item in types if isinstance(types, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name or name.lower() in seen:
+                continue
+            shape = item.get("shape")
+            if shape not in EQUIPMENT_SHAPES:
+                shape = name if name in EQUIPMENT_SHAPES else "Other"
+            seen.add(name.lower())
+            out.append({"name": name, "shape": shape})
+        return out
+
+    def equipment_types(self) -> list:
+        """The types offered for equipment, in order: [{"name", "shape"}]."""
+        types = self.data["app"].get("equipment_types")
+        if not types:
+            return [{"name": name, "shape": name} for name in EQUIPMENT_TYPES]
+        return [dict(item) for item in types]
+
+    def type_names(self) -> list:
+        return [item["name"] for item in self.equipment_types()]
+
+    def shape_of(self, type_name: str) -> str:
+        """The built-in drawing used for equipment of this type."""
+        return resolve_shape(self.equipment_types(), type_name)
+
+    def type_usage(self) -> dict:
+        """Type name -> the names of the equipment using it, everywhere."""
+        usage = {}
+        for project in self.projects:
+            for equipment in project.get("equipment", []):
+                usage.setdefault(equipment.get("type", ""), []).append(
+                    equipment.get("name", ""))
+        return usage
+
+    def set_equipment_types(self, types: list, renames: dict) -> int:
+        """Store a new type list; renamed types follow onto the equipment
+        that uses them. Returns how many equipment items were renamed."""
+        self.data["app"]["equipment_types"] = self.clean_types(types)
+        moved = 0
+        for project in self.projects:
+            for equipment in project.get("equipment", []):
+                new = renames.get(equipment.get("type", ""))
+                if new:
+                    equipment["type"] = new
+                    moved += 1
+        self.save()
+        return moved
+
     # -- stats --------------------------------------------------------------
     @staticmethod
     def project_counts(project: dict):
@@ -780,6 +859,10 @@ class FormDialog(tk.Toplevel):
 
         {"key", "label", "kind": entry|combo|text|check,
          "values": [...], "hint": "...", "required": bool}
+
+    A combo can also take "readonly": True, and "edit": a callback
+    `edit(dialog, current) -> (values, new_current) | None` that puts an
+    "Edit list" button beside it for changing the choices themselves.
     """
 
     def __init__(self, parent, title, fields, initial=None, ok_text="Save"):
@@ -792,6 +875,7 @@ class FormDialog(tk.Toplevel):
         self._fields = fields
         self._vars = {}
         self._texts = {}
+        self._edit_buttons = {}     # combo key -> its "Edit list" button
 
         initial = initial or {}
         body = ttk.Frame(self, style="Panel.TFrame", padding=14)
@@ -820,9 +904,24 @@ class FormDialog(tk.Toplevel):
                 self._vars[key] = var
             elif kind == "combo":
                 var = tk.StringVar(value=str(value))
-                widget = ttk.Combobox(body, textvariable=var,
-                                      values=spec.get("values", []), width=42)
-                widget.pack(fill=tk.X, pady=2)
+                holder = body
+                if spec.get("edit"):
+                    holder = ttk.Frame(body, style="Panel.TFrame")
+                    holder.pack(fill=tk.X, pady=2)
+                widget = ttk.Combobox(
+                    holder, textvariable=var, values=spec.get("values", []),
+                    width=30 if spec.get("edit") else 42,
+                    state="readonly" if spec.get("readonly") else "normal")
+                if spec.get("edit"):
+                    widget.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                    button = ttk.Button(
+                        holder, text="✎ Edit list",
+                        command=lambda sp=spec, w=widget, v=var:
+                        self._edit_choices(sp, w, v))
+                    button.pack(side=tk.LEFT, padx=(6, 0))
+                    self._edit_buttons[key] = button
+                else:
+                    widget.pack(fill=tk.X, pady=2)
                 self._vars[key] = var
             elif kind == "password":
                 var = tk.StringVar(value=str(value))
@@ -867,6 +966,21 @@ class FormDialog(tk.Toplevel):
         except Exception:
             pass
 
+    def _edit_choices(self, spec, widget, var):
+        """Let the owner of a combo's choices change them, then refresh."""
+        outcome = spec["edit"](self, var.get())
+        try:
+            self.grab_set()                 # the editor took the grab
+            self.focus_set()
+        except tk.TclError:
+            return
+        if outcome is None:
+            return
+        values, current = outcome
+        spec["values"] = list(values)
+        widget.configure(values=list(values))
+        var.set(current)
+
     def _values(self) -> dict:
         values = {key: var.get() for key, var in self._vars.items()}
         for key, widget in self._texts.items():
@@ -889,6 +1003,195 @@ class FormDialog(tk.Toplevel):
 
     def _cancel(self):
         self.result = None
+        self.destroy()
+
+
+class EquipmentTypesDialog(tk.Toplevel):
+    """Edit the list of equipment types: add, rename, reorder, remove, and
+    choose which built-in drawing each one uses in the 3D layout.
+
+    Nothing is stored until Save. Afterwards `result` is the saved list
+    ([{"name", "shape"}]) and `renames` maps old names to new ones; both
+    stay None / {} when the dialog is cancelled.
+    """
+
+    def __init__(self, parent, store: Store):
+        super().__init__(parent)
+        self.title("Equipment types")
+        self.configure(bg=Theme.BG)
+        self.transient(parent)
+        self.store = store
+        self.result = None
+        self.renames = {}
+        self.moved = 0              # equipment items whose type was renamed
+        self.usage = store.type_usage()
+        # "orig" is the name the type had when the dialog opened (None for
+        # new ones), so renames can follow onto the equipment using it
+        self.types = [{**item, "orig": item["name"]}
+                      for item in store.equipment_types()]
+
+        body = ttk.Frame(self, style="Panel.TFrame", padding=12)
+        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 6))
+        ttk.Label(body, text="The types offered for equipment, in this "
+                             "order. 'Drawn as' is the built-in shape used "
+                             "in the 3D layout.",
+                  style="Hint.TLabel", wraplength=460,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 8))
+        row = ttk.Frame(body, style="Panel.TFrame")
+        row.pack(fill=tk.BOTH, expand=True)
+        self.tree = ttk.Treeview(row, columns=("name", "shape", "used"),
+                                 show="headings", height=10,
+                                 selectmode="browse")
+        for key, heading, width in (("name", "Type", 170),
+                                    ("shape", "Drawn as", 130),
+                                    ("used", "In use", 70)):
+            self.tree.heading(key, text=heading, anchor=tk.W)
+            self.tree.column(key, width=width, anchor=tk.W)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.tree.bind("<Double-1>", lambda e: self.on_edit())
+        side = ttk.Frame(row, style="Panel.TFrame")
+        side.pack(side=tk.LEFT, fill=tk.Y, padx=(8, 0))
+        for text, command in (("Add...", self.on_add),
+                              ("Edit...", self.on_edit),
+                              ("Remove", self.on_remove),
+                              ("▲ Up", lambda: self.on_move(-1)),
+                              ("▼ Down", lambda: self.on_move(1)),
+                              ("Defaults", self.on_defaults)):
+            ttk.Button(side, text=text, command=command,
+                       width=10).pack(fill=tk.X, pady=2)
+
+        buttons = ttk.Frame(self, style="TFrame")
+        buttons.pack(fill=tk.X, padx=12, pady=(0, 12))
+        ttk.Button(buttons, text="Cancel",
+                   command=self.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Save", style="Accent.TButton",
+                   command=self.on_save).pack(side=tk.RIGHT, padx=6)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self._refresh()
+        self.update_idletasks()
+        FormDialog._center(self, parent)
+        self.grab_set()
+        parent.wait_window(self)
+
+    # -- helpers --------------------------------------------------------------
+    def _used_by(self, item) -> list:
+        return self.usage.get(item["orig"], []) if item["orig"] else []
+
+    def _refresh(self, select=None):
+        self.tree.delete(*self.tree.get_children())
+        for index, item in enumerate(self.types):
+            used = len(self._used_by(item))
+            self.tree.insert("", tk.END, iid=str(index),
+                             values=(item["name"], item["shape"],
+                                     str(used) if used else "-"))
+        if select is not None and 0 <= select < len(self.types):
+            self.tree.selection_set(str(select))
+            self.tree.see(str(select))
+
+    def _selected_index(self):
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo("Equipment types", "Select a type first.",
+                                parent=self)
+            return None
+        return int(selection[0])
+
+    def _ask(self, title, initial) -> dict:
+        """Name and shape for one type, or None. Refuses duplicates."""
+        fields = [{"key": "name", "label": "Type name", "required": True,
+                   "hint": "e.g. 'Truck', 'Boat' or 'Handheld rig'"},
+                  {"key": "shape", "label": "Drawn as", "kind": "combo",
+                   "readonly": True, "values": EQUIPMENT_SHAPES,
+                   "default": "Other"}]
+        while True:
+            dialog = FormDialog(self, title, fields, initial=initial,
+                                ok_text="OK")
+            self.grab_set()
+            if not dialog.result:
+                return None
+            name = dialog.result["name"]
+            clash = [item for item in self.types
+                     if item["name"].lower() == name.lower()
+                     and item is not initial.get("_item")]
+            if not clash:
+                return dialog.result
+            messagebox.showerror("Equipment types",
+                                 f"There is already a type called "
+                                 f"'{clash[0]['name']}'.", parent=self)
+            initial = {**initial, **dialog.result}
+
+    # -- actions --------------------------------------------------------------
+    def on_add(self):
+        values = self._ask("Add equipment type", {"shape": "Other"})
+        if values:
+            self.types.append({"name": values["name"],
+                               "shape": values["shape"], "orig": None})
+            self._refresh(select=len(self.types) - 1)
+
+    def on_edit(self):
+        index = self._selected_index()
+        if index is None:
+            return
+        item = self.types[index]
+        values = self._ask("Edit equipment type", {**item, "_item": item})
+        if values:
+            item["name"], item["shape"] = values["name"], values["shape"]
+            self._refresh(select=index)
+
+    def on_remove(self):
+        index = self._selected_index()
+        if index is None:
+            return
+        item = self.types[index]
+        used = self._used_by(item)
+        if used:
+            names = ", ".join(f"'{n}'" for n in used[:5])
+            more = f" and {len(used) - 5} more" if len(used) > 5 else ""
+            messagebox.showerror(
+                "Equipment types",
+                f"'{item['name']}' is used by {names}{more}. Change their "
+                "type first, then remove it.", parent=self)
+            return
+        if len(self.types) == 1:
+            messagebox.showerror("Equipment types",
+                                 "Keep at least one type.", parent=self)
+            return
+        del self.types[index]
+        self._refresh(select=min(index, len(self.types) - 1))
+
+    def on_move(self, step):
+        index = self._selected_index()
+        if index is None:
+            return
+        target = index + step
+        if 0 <= target < len(self.types):
+            self.types[index], self.types[target] = (self.types[target],
+                                                     self.types[index])
+            self._refresh(select=target)
+
+    def on_defaults(self):
+        """Back to the built-in list, keeping any type still in use."""
+        # in-use types go back to the name they had, so nothing is renamed
+        kept = [{**item, "name": item["orig"]} for item in self.types
+                if self._used_by(item) and item["orig"] not in EQUIPMENT_TYPES]
+        self.types = [{"name": name, "shape": name, "orig": name}
+                      for name in EQUIPMENT_TYPES] + kept
+        self._refresh(select=0)
+        if kept:
+            messagebox.showinfo(
+                "Equipment types",
+                "Kept, because equipment still uses them: "
+                + ", ".join(f"'{item['name']}'" for item in kept) + ".",
+                parent=self)
+
+    def on_save(self):
+        self.renames = {item["orig"]: item["name"] for item in self.types
+                        if item["orig"] and item["orig"] != item["name"]}
+        self.result = [{"name": item["name"], "shape": item["shape"]}
+                       for item in self.types]
+        self.moved = self.store.set_equipment_types(self.result,
+                                                    self.renames)
         self.destroy()
 
 
@@ -2725,7 +3028,8 @@ class MountLayoutWindow:
 
     def __init__(self, app, equipment: dict):
         self.app = app
-        self.equipment = Store.normalize_equipment(equipment)
+        self.equipment = Store.normalize_equipment(
+            equipment, app.store.shape_of(equipment.get("type", "")))
         self.sensors = [Store.normalize_sensor(s)
                         for s in equipment.get("sensors", [])]
         self.selected = self.sensors[0] if self.sensors else None
@@ -3081,6 +3385,10 @@ class MountLayoutWindow:
         # the 2D limits are fitted to the plot's shape, so refit them
         if self._in_2d() and self._drag is None:
             self.redraw()
+
+    def _shape(self) -> str:
+        """The built-in drawing this equipment's type uses."""
+        return self.app.store.shape_of(self.equipment.get("type", ""))
 
     def _in_2d(self) -> bool:
         return self.mode_var.get() == self.MODE_2D
@@ -3455,7 +3763,7 @@ class MountLayoutWindow:
                 edgecolors="none", alpha=0.25))
         else:
             for faces, color, _alpha in equipment_shapes(
-                    self.equipment.get("type", "Other"), length, width,
+                    self._shape(), length, width,
                     height):
                 ax.add_collection(PolyCollection(
                     [[(p[hi], p[vi]) for p in face] for face in faces],
@@ -3547,7 +3855,7 @@ class MountLayoutWindow:
         drawn = self._draw_model(ax, length, width, height)
         if not drawn:
             for faces, color, alpha in equipment_shapes(
-                    self.equipment.get("type", "Other"), length, width,
+                    self._shape(), length, width,
                     height):
                 collection = Poly3DCollection(
                     faces, facecolors=color, edgecolors="#6b7490",
@@ -3631,7 +3939,7 @@ class MountLayoutWindow:
         path = str(model.get("path", "")).strip()
         if not path:
             self.model_label.set("No 3D model - drawing the built-in "
-                                 f"{self.equipment.get('type', 'shape')}.")
+                                 f"{self._shape()} shape.")
             return None
         loaded = self.app.load_model(path)
         if loaded is None:
@@ -4124,7 +4432,6 @@ class OusterGuiApp:
             rows.append((equipment, {
                 "name": equipment.get("name", ""),
                 "type": equipment.get("type", ""),
-                "serial": equipment.get("serial", ""),
                 "sensors": str(len(equipment.get("sensors", []))),
                 "created": equipment.get("created", ""),
             }))
@@ -4133,8 +4440,7 @@ class OusterGuiApp:
             f"Equipment · {project.get('name', '')}",
             "The platform the sensors are mounted on: a vehicle, a mast, "
             "a robot ...",
-            [("name", "Equipment", 260), ("type", "Type", 180),
-             ("serial", "Serial / asset ID", 180),
+            [("name", "Equipment", 420), ("type", "Type", 200),
              ("sensors", "Sensors", 80), ("created", "Created", 150)],
             rows,
             [("Open", self.open_equipment, "Accent.TButton"),
@@ -4147,18 +4453,37 @@ class OusterGuiApp:
         self.status_var.set(f"{len(project.get('equipment', []))} equipment "
                             f"item(s) in '{project.get('name', '')}'.")
 
-    _EQUIPMENT_FIELDS = [
-        {"key": "name", "label": "Equipment name", "required": True,
-         "hint": "e.g. 'Van #3' or 'Mast - north gate'"},
-        {"key": "type", "label": "Type", "kind": "combo",
-         "values": EQUIPMENT_TYPES, "default": EQUIPMENT_TYPES[0]},
-        {"key": "serial", "label": "Serial / asset ID"},
-        {"key": "notes", "label": "Notes", "kind": "text"},
-    ]
+    def _equipment_fields(self) -> list:
+        names = self.store.type_names()
+        return [
+            {"key": "name", "label": "Equipment name", "required": True,
+             "hint": "e.g. 'Van #3' or 'Mast - north gate'"},
+            {"key": "type", "label": "Type", "kind": "combo",
+             "readonly": True, "values": names, "default": names[0],
+             "edit": self.edit_equipment_types},
+            {"key": "notes", "label": "Notes", "kind": "text"},
+        ]
+
+    def edit_equipment_types(self, parent, current: str = ""):
+        """Open the type list editor. Returns (names, current) or None."""
+        dialog = EquipmentTypesDialog(parent, self.store)
+        if dialog.result is None:
+            return None
+        names = self.store.type_names()
+        message = f"Equipment types saved: {', '.join(names)}."
+        if dialog.renames:
+            message += " Renamed " + ", ".join(
+                f"'{old}' -> '{new}'" for old, new in dialog.renames.items())
+            message += f" ({dialog.moved} equipment item(s) updated)."
+        self.log(message)
+        current = dialog.renames.get(current, current)
+        if current not in names and not self.store.type_usage().get(current):
+            current = names[0]
+        return names, current
 
     def new_equipment(self):
         dialog = FormDialog(self.root, "New equipment",
-                            self._EQUIPMENT_FIELDS, ok_text="Create")
+                            self._equipment_fields(), ok_text="Create")
         if dialog.result:
             equipment = self.store.add_equipment(self.project, dialog.result)
             self.log(f"Equipment '{equipment['name']}' added to "
@@ -4170,7 +4495,7 @@ class OusterGuiApp:
         if equipment is None:
             return
         dialog = FormDialog(self.root, "Edit equipment",
-                            self._EQUIPMENT_FIELDS, initial=equipment)
+                            self._equipment_fields(), initial=equipment)
         if dialog.result:
             equipment.update(dialog.result)
             self.store.save()

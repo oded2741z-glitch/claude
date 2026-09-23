@@ -91,7 +91,7 @@ Each level is a list with the same four actions:
 | --- | --- |
 | **Open** | Go one level deeper (also: double-click a row, or press Enter) |
 | **New ...** | Create an entry at this level |
-| **Edit** | Rename / change the details of the selected entry |
+| **Edit** | Rename / change the details of the selected entry - for a sensor: type, name, address, model, serial and notes |
 | **Delete** | Remove the entry and everything under it (from the app only - the sensors themselves are never touched) |
 
 The projects list shows how much equipment and how many sensors each
@@ -129,15 +129,15 @@ layout window for that equipment:
   terms (`1024x10, ports 7502/7503`, `1920x1080 @ 30 fps`, the radar's
   topic, the unit's port and baud) and its mounting numbers, including
   how high above the ground it sits.
-* **✎ Edit** turns that panel into a form, in place: name, address,
-  model, serial, position (x / y / z in metres) and orientation (roll /
-  pitch / yaw in degrees). **Save** writes them to the project, redraws
-  the sensor in 3D and updates the list; **Cancel** (or Esc) puts the
-  values back. Type, settings, last contact and height are not editable
-  there - they come from the sensor's dashboard, from the sensor itself,
-  or are worked out from the position. A name and an address are
-  required, and position and orientation must be numbers; anything else
-  is refused with nothing written.
+* **✎ Edit** makes the sensor's **position** (x / y / z in metres) and
+  **orientation** (roll / pitch / yaw in degrees) editable in place.
+  **Save** writes them to the project, redraws the sensor in 3D and
+  updates the list; **Cancel** (or Esc) puts the values back. The six
+  values must be numbers; anything else is refused with nothing written.
+  Everything else in the panel stays read-only here: name, address,
+  model and serial are changed from the sensors list (**Edit** there),
+  type and settings from the sensor's dashboard, last contact comes from
+  the sensor itself, and height is worked out from z.
 * Moving to another sensor with unsaved edits - in the list or by
   clicking in 3D - asks first: **Yes** saves and moves on, **No**
   discards and moves on, **Cancel** stays on the sensor being edited.

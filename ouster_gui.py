@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.10.0"
+__version__ = "2.11.0"
 
 import numpy as np
 
@@ -2736,10 +2736,11 @@ class MountLayoutWindow:
                             "(length x width x height)")
 
     # the rows of the SELECTED SENSOR panel: (key, label, editable)
-    INFO_ROWS = (("name", "Name", True), ("kind", "Type", False),
-                 ("host", "Address", True), ("model", "Model", True),
-                 ("serial", "Serial", True), ("last_seen", "Last contact",
-                                              False),
+    # identity rows are read-only here: they belong to sensor management
+    INFO_ROWS = (("name", "Name", False), ("kind", "Type", False),
+                 ("host", "Address", False), ("model", "Model", False),
+                 ("serial", "Serial", False), ("last_seen", "Last contact",
+                                               False),
                  ("settings", "Settings", False),
                  ("position", "Position", True),
                  ("orientation", "Orientation", True),
@@ -2752,8 +2753,7 @@ class MountLayoutWindow:
         self.info_values = {}       # row key -> StringVar shown in view mode
         self.info_views = {}        # row key -> the read-only label
         self.info_editors = {}      # row key -> the editing widget
-        self.edit_vars = {key: tk.StringVar() for key in
-                          ("name", "host", "model", "serial") + MOUNT_KEYS}
+        self.edit_vars = {key: tk.StringVar() for key in MOUNT_KEYS}
         self.info_rows = ttk.Frame(box, style="Panel.TFrame")
         self.info_rows.pack(fill=tk.X)
         self.info_rows.columnconfigure(1, weight=1)
@@ -2808,11 +2808,7 @@ class MountLayoutWindow:
                 entry.bind("<Return>", lambda e: self.on_save_info())
                 entry.bind("<Escape>", lambda e: self.on_cancel_info())
             return frame
-        entry = ttk.Entry(self.info_rows, textvariable=self.edit_vars[key],
-                          width=24)
-        entry.bind("<Return>", lambda e: self.on_save_info())
-        entry.bind("<Escape>", lambda e: self.on_cancel_info())
-        return entry
+        raise ValueError(f"no editor for the read-only row '{key}'")
 
     def _show_view_mode(self):
         self.editing = False
@@ -2822,8 +2818,9 @@ class MountLayoutWindow:
         self.save_button.pack_forget()
         self.cancel_button.pack_forget()
         self.edit_button.pack(fill=tk.X)
-        self.info_hint.set("Its real-world data. Edit changes it here; "
-                           "Config has the size and presets.")
+        self.info_hint.set("Edit changes the position here. Name, "
+                           "address, model and serial are managed from the "
+                           "sensors list.")
         if self.selected is None:
             self.edit_button.state(["disabled"])
         else:
@@ -2849,26 +2846,18 @@ class MountLayoutWindow:
         return {key: var.get().strip() for key, var in self.edit_vars.items()}
 
     def _record_values(self, sensor) -> dict:
-        values = {key: str(sensor.get(key, "") or "")
-                  for key in ("name", "host", "model", "serial")}
-        values.update({key: str(sensor["mount"].get(key, "0"))
-                       for key in MOUNT_KEYS})
-        return values
+        return {key: str(sensor["mount"].get(key, "0"))
+                for key in MOUNT_KEYS}
 
     def _edits_pending(self) -> bool:
         if not self.editing or self.selected is None:
             return False
         before = self._record_values(self.selected)
-        after = self._edit_values()
-        for key, value in after.items():
-            if key in MOUNT_KEYS:
-                try:
-                    if abs(float(value or 0) - float(before[key] or 0)) \
-                            > 1e-9:
-                        return True
-                except ValueError:
+        for key, value in self._edit_values().items():
+            try:
+                if abs(float(value or 0) - float(before[key] or 0)) > 1e-9:
                     return True
-            elif value != before[key]:
+            except ValueError:
                 return True
         return False
 
@@ -2897,8 +2886,8 @@ class MountLayoutWindow:
             self.edit_vars[key].set(value)
         self._show_edit_mode()
         try:
-            self.info_editors["name"].focus_set()
-        except (KeyError, tk.TclError):
+            self.info_editors["position"].winfo_children()[1].focus_set()
+        except (KeyError, IndexError, tk.TclError):
             pass
 
     def on_cancel_info(self):
@@ -2906,7 +2895,7 @@ class MountLayoutWindow:
         self._refresh_info()
 
     def on_save_info(self, stay: bool = True) -> bool:
-        """Validate the edited rows and write them to the sensor.
+        """Validate the edited mount and write it to the sensor.
 
         `stay=False` is the save on the way to another sensor: the caller
         does the moving, so the selection is left alone here.
@@ -2915,12 +2904,6 @@ class MountLayoutWindow:
         if sensor is None:
             return False
         values = self._edit_values()
-        for key, label in (("name", "Name"), ("host", "Address")):
-            if not values[key]:
-                messagebox.showerror("Selected sensor",
-                                     f"{label} cannot be empty.",
-                                     parent=self.win)
-                return False
         mount = {}
         for key in MOUNT_KEYS:
             try:
@@ -2932,35 +2915,20 @@ class MountLayoutWindow:
                     "degrees for roll, pitch and yaw.", parent=self.win)
                 return False
         before = self._record_values(sensor)
-        changed = [key for key in ("name", "host", "model", "serial")
-                   if values[key] != before[key]]
-        changed += [key for key in MOUNT_KEYS
-                    if float(mount[key]) != float(before[key] or 0)]
-        for key in ("name", "host", "model", "serial"):
-            sensor[key] = values[key]
+        changed = [key for key in MOUNT_KEYS
+                   if float(mount[key]) != float(before[key] or 0)]
         sensor["mount"] = mount
         self.app.store.save()
         self._show_view_mode()
         # update the row in place: rebuilding the list would drop the
         # selection mid-navigation
         self.tree.item(sensor["id"], values=self._tree_values(sensor))
-        self._refresh_app_row(sensor)
         if stay:
             self._select(sensor, from_tree=True)   # redraw, refresh Config
-        self.app.log(f"'{sensor['name']}' updated from the layout: "
-                     + (", ".join(changed) if changed else "no changes")
-                     + ".")
+        self.app.log(f"'{sensor['name']}' moved from the layout: "
+                     + (", ".join(f"{k}={mount[k]}" for k in changed)
+                        if changed else "no changes") + ".")
         return True
-
-    def _refresh_app_row(self, sensor):
-        """Keep the sensors list behind this window in step, if showing."""
-        tree = getattr(self.app, "_tree", None)
-        try:
-            if tree is not None and tree.exists(sensor["id"]):
-                for column in ("name", "host", "model"):
-                    tree.set(sensor["id"], column, sensor.get(column, ""))
-        except tk.TclError:
-            pass
 
     def _build_footer(self, parent):
         box = ttk.Frame(parent, style="TFrame")
@@ -4000,6 +3968,9 @@ class OusterGuiApp:
         {"key": "model", "label": "Model / product line",
          "hint": "optional, e.g. OS1-128 (filled in automatically after "
                  "the first connection to an Ouster sensor)"},
+        {"key": "serial", "label": "Serial number",
+         "hint": "optional (an Ouster sensor fills it in on first "
+                 "connection)"},
         {"key": "notes", "label": "Notes", "kind": "text"},
     ]
 

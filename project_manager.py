@@ -312,27 +312,33 @@ class ProjectManager(tk.Tk):
         make_button(nav, "Back", self.show_main_page).pack(side="left")
         self.breadcrumb = tk.Label(nav, text="", bg=BG_BAR, fg=FG_TEXT, font=FONT_BOLD, anchor="w")
         self.breadcrumb.pack(side="left", padx=10)
+        self.components_body = tk.Frame(self.components_page, bg=BG_BAR)
+        self.components_body.pack(fill="both", expand=True)
+        self.components_body.columnconfigure(0, weight=1, uniform="side")
+        self.components_body.columnconfigure(1, weight=2, uniform="side")
+        self.components_body.rowconfigure(0, weight=1)
         self.component_col = Column(
-            self.components_page,
+            self.components_body,
             "Components",
             self.on_component_select,
             self.add_component,
             self.edit_component,
             self.delete_component,
         )
-        self.component_col.frame.pack(fill="both", expand=True)
+        self.component_col.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
 
         self.current_page = "main"
         self.main_page.pack(fill="both", expand=True)
 
         details = tk.Frame(self, bg=BG_PANEL, highlightthickness=1, highlightbackground=BG_BAR)
         details.pack(fill="x", padx=12, pady=(8, 0))
+        self.details = details
         self.details_title = tk.Label(details, text="", bg=BG_PANEL, fg=ACCENT, font=FONT_BOLD, anchor="w")
         self.details_title.pack(fill="x", padx=10, pady=(8, 2))
         self.details_text = tk.Label(
             details, text="", bg=BG_PANEL, fg=FG_TEXT, font=FONT, anchor="nw", justify="left", height=4
         )
-        self.details_text.pack(fill="x", padx=10, pady=(0, 8))
+        self.details_text.pack(fill="both", expand=True, padx=10, pady=(0, 8))
         details.bind("<Configure>", lambda e: self.details_text.config(wraplength=max(e.width - 30, 100)))
 
         self.status = tk.Label(self, text="", bg=BG_BAR, fg=FG_MUTED, font=FONT, anchor="w")
@@ -434,12 +440,17 @@ class ProjectManager(tk.Tk):
         self.component_index = None
         self.main_page.pack_forget()
         self.components_page.pack(fill="both", expand=True)
+        self.details.pack_forget()
+        self.details.grid(in_=self.components_body, row=0, column=1, sticky="nsew", padx=(4, 0))
+        self.details.lift()
         self.refresh()
 
     def show_main_page(self):
         self.current_page = "main"
         self.component_index = None
         self.components_page.pack_forget()
+        self.details.grid_forget()
+        self.details.pack(fill="x", padx=12, pady=(8, 0), before=self.status)
         self.main_page.pack(fill="both", expand=True)
         self.refresh()
 

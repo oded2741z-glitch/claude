@@ -194,7 +194,7 @@ class ConfirmDialog(tk.Toplevel):
 
 
 class Column:
-    def __init__(self, parent, title, on_select, on_add, on_edit, on_delete):
+    def __init__(self, parent, title, on_select, on_add, on_edit, on_delete, on_open=None):
         self.frame = tk.Frame(parent, bg=BG_PANEL, highlightthickness=1, highlightbackground=BG_BAR)
 
         tk.Label(self.frame, text=title, bg=BG_PANEL, fg=ACCENT, font=FONT_BOLD).pack(anchor="w", padx=10, pady=(8, 4))
@@ -229,7 +229,7 @@ class Column:
         scrollbar.pack(side="right", fill="y")
         self.listbox.config(yscrollcommand=scrollbar.set)
         self.listbox.bind("<<ListboxSelect>>", lambda e: on_select())
-        self.listbox.bind("<Double-Button-1>", lambda e: on_edit())
+        self.listbox.bind("<Double-Button-1>", lambda e: (on_open or on_edit)())
 
         buttons = tk.Frame(self.frame, bg=BG_PANEL)
         buttons.pack(fill="x", padx=10, pady=8)
@@ -239,6 +239,10 @@ class Column:
         self.edit_button.pack(side="left", padx=6)
         self.delete_button = make_button(buttons, "Delete", on_delete, DANGER)
         self.delete_button.pack(side="left")
+        self.open_button = None
+        if on_open:
+            self.open_button = make_button(buttons, "Open", on_open, ACCENT)
+            self.open_button.pack(side="right")
 
     def fill(self, items, selected=None):
         self.listbox.delete(0, "end")
@@ -257,6 +261,8 @@ class Column:
         state = "normal" if has_selection else "disabled"
         self.edit_button.config(state=state)
         self.delete_button.config(state=state, fg=DANGER if has_selection else FG_MUTED)
+        if self.open_button:
+            self.open_button.config(state=state, fg=ACCENT if has_selection else FG_MUTED)
 
 
 class ProjectManager(tk.Tk):
@@ -264,8 +270,8 @@ class ProjectManager(tk.Tk):
         super().__init__()
         self.title("Project Manager")
         self.configure(bg=BG_BAR)
-        self.geometry("1000x600")
-        self.minsize(700, 400)
+        self.geometry("800x600")
+        self.minsize(600, 400)
         blank_icon(self)
 
         self.data = load_data()
@@ -278,24 +284,46 @@ class ProjectManager(tk.Tk):
         tk.Label(header, text="Project Manager", bg=BG_BAR, fg=ACCENT, font=FONT_TITLE).pack(side="left")
         make_button(header, "Quit", self.destroy, DANGER).pack(side="right")
 
-        columns = tk.Frame(self, bg=BG_BAR)
-        columns.pack(fill="both", expand=True, padx=12)
-        for i in range(3):
-            columns.columnconfigure(i, weight=1, uniform="col")
-        columns.rowconfigure(0, weight=1)
+        self.pages = tk.Frame(self, bg=BG_BAR)
+        self.pages.pack(fill="both", expand=True, padx=12)
 
+        self.main_page = tk.Frame(self.pages, bg=BG_BAR)
+        for i in range(2):
+            self.main_page.columnconfigure(i, weight=1, uniform="col")
+        self.main_page.rowconfigure(0, weight=1)
         self.project_col = Column(
-            columns, "Projects", self.on_project_select, self.add_project, self.edit_project, self.delete_project
+            self.main_page, "Projects", self.on_project_select, self.add_project, self.edit_project, self.delete_project
         )
         self.equipment_col = Column(
-            columns, "Equipment", self.on_equipment_select, self.add_equipment, self.edit_equipment, self.delete_equipment
-        )
-        self.component_col = Column(
-            columns, "Components", self.on_component_select, self.add_component, self.edit_component, self.delete_component
+            self.main_page,
+            "Equipment",
+            self.on_equipment_select,
+            self.add_equipment,
+            self.edit_equipment,
+            self.delete_equipment,
+            self.open_components,
         )
         self.project_col.frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        self.equipment_col.frame.grid(row=0, column=1, sticky="nsew", padx=4)
-        self.component_col.frame.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
+        self.equipment_col.frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        self.components_page = tk.Frame(self.pages, bg=BG_BAR)
+        nav = tk.Frame(self.components_page, bg=BG_BAR)
+        nav.pack(fill="x", pady=(0, 6))
+        make_button(nav, "Back", self.show_main_page).pack(side="left")
+        self.breadcrumb = tk.Label(nav, text="", bg=BG_BAR, fg=FG_TEXT, font=FONT_BOLD, anchor="w")
+        self.breadcrumb.pack(side="left", padx=10)
+        self.component_col = Column(
+            self.components_page,
+            "Components",
+            self.on_component_select,
+            self.add_component,
+            self.edit_component,
+            self.delete_component,
+        )
+        self.component_col.frame.pack(fill="both", expand=True)
+
+        self.current_page = "main"
+        self.main_page.pack(fill="both", expand=True)
 
         details = tk.Frame(self, bg=BG_PANEL, highlightthickness=1, highlightbackground=BG_BAR)
         details.pack(fill="x", padx=12, pady=(8, 0))
@@ -348,8 +376,14 @@ class ProjectManager(tk.Tk):
         self.equipment_col.set_enabled(self.project_index is not None, self.equipment_index is not None)
         self.component_col.set_enabled(self.equipment_index is not None, self.component_index is not None)
 
-        if self.component_index is not None:
+        if self.current_page == "components":
+            project, equipment = self.current_project(), self.current_equipment()
+            self.breadcrumb.config(text=f"{project['name']} / {equipment['name']}")
+
+        if self.current_page == "components" and self.component_index is not None:
             item, kind = self.current_component(), "Component"
+        elif self.current_page == "components":
+            item, kind = self.current_equipment(), "Equipment"
         elif self.equipment_index is not None:
             item, kind = self.current_equipment(), "Equipment"
         elif self.project_index is not None:
@@ -391,6 +425,22 @@ class ProjectManager(tk.Tk):
             return
         self.equipment_index = index
         self.component_index = None
+        self.refresh()
+
+    def open_components(self):
+        if self.current_equipment() is None:
+            return
+        self.current_page = "components"
+        self.component_index = None
+        self.main_page.pack_forget()
+        self.components_page.pack(fill="both", expand=True)
+        self.refresh()
+
+    def show_main_page(self):
+        self.current_page = "main"
+        self.component_index = None
+        self.components_page.pack_forget()
+        self.main_page.pack(fill="both", expand=True)
         self.refresh()
 
     def on_component_select(self):

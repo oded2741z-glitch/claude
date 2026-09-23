@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.8.0"
+__version__ = "2.9.0"
 
 import numpy as np
 
@@ -2552,6 +2552,110 @@ class ModelDialog(tk.Toplevel):
         self.destroy()
 
 
+class LayoutConfigDialog(tk.Toplevel):
+    """The editing half of the mount layout: body size, model, position.
+
+    Kept out of the layout window so that one stays a read-out of the rig,
+    and left non-modal so the 3D view updates as values are applied.
+    """
+
+    def __init__(self, parent, layout):
+        super().__init__(parent)
+        self.layout = layout
+        self.title(f"Config  ·  {layout.equipment.get('name', '')}")
+        self.geometry("420x560")
+        self.configure(bg=Theme.BG)
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+
+        equipment = ttk.LabelFrame(self, text="  EQUIPMENT  ", padding=10)
+        equipment.pack(fill=tk.X, padx=12, pady=(12, 6))
+        grid = ttk.Frame(equipment, style="Panel.TFrame")
+        grid.pack(fill=tk.X)
+        for i, (key, label) in enumerate((("length", "Length (x) [m]:"),
+                                          ("width", "Width (y) [m]:"),
+                                          ("height", "Height (z) [m]:"))):
+            ttk.Label(grid, text=label,
+                      style="Muted.TLabel").grid(row=i, column=0, sticky=tk.W,
+                                                 pady=1)
+            ttk.Entry(grid, textvariable=layout.body_vars[key],
+                      width=10).grid(row=i, column=1, padx=6, pady=1)
+        buttons = ttk.Frame(equipment, style="Panel.TFrame")
+        buttons.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(buttons, text="Apply size",
+                   command=layout.on_apply_body).pack(side=tk.LEFT,
+                                                      expand=True, fill=tk.X,
+                                                      padx=(0, 3))
+        ttk.Button(buttons, text="⬚  3D model...",
+                   command=layout.on_model).pack(side=tk.LEFT, expand=True,
+                                                 fill=tk.X, padx=(3, 0))
+
+        self.position = ttk.LabelFrame(
+            self, text="  POSITION ON THE EQUIPMENT  ", padding=10)
+        self.position.pack(fill=tk.X, padx=12, pady=6)
+        self.target = tk.StringVar()
+        ttk.Label(self.position, textvariable=self.target,
+                  style="TLabel").pack(anchor=tk.W)
+        ttk.Label(self.position,
+                  text="x forward, y left, z up. The origin is on the "
+                       "ground at the centre of the equipment.",
+                  style="Hint.TLabel", wraplength=360,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(2, 6))
+        grid = ttk.Frame(self.position, style="Panel.TFrame")
+        grid.pack(fill=tk.X)
+        fields = (("x", "x [m]"), ("y", "y [m]"), ("z", "z [m]"),
+                  ("roll", "roll [°]"), ("pitch", "pitch [°]"),
+                  ("yaw", "yaw [°]"))
+        self.entries = []
+        for i, (key, label) in enumerate(fields):
+            row, column = divmod(i, 2)
+            ttk.Label(grid, text=label,
+                      style="Muted.TLabel").grid(row=row, column=column * 2,
+                                                 sticky=tk.W, pady=1)
+            entry = ttk.Entry(grid, textvariable=layout.mount_vars[key],
+                              width=10)
+            entry.grid(row=row, column=column * 2 + 1, padx=(4, 14), pady=1)
+            entry.bind("<Return>", lambda e: layout.on_apply_mount())
+            self.entries.append(entry)
+        ttk.Label(self.position, text="Place at:",
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(8, 0))
+        self.presets = ttk.Combobox(self.position,
+                                    textvariable=layout.preset_var,
+                                    values=list(mount_presets(1, 1, 1)),
+                                    state="readonly")
+        self.presets.pack(fill=tk.X, pady=3)
+        self.presets.bind("<<ComboboxSelected>>",
+                          lambda e: layout.on_preset())
+        self.apply = ttk.Button(self.position, text="Apply position",
+                                style="Accent.TButton",
+                                command=layout.on_apply_mount)
+        self.apply.pack(fill=tk.X, pady=(6, 0))
+
+        ttk.Button(self, text="Close",
+                   command=self.close).pack(side=tk.BOTTOM, padx=12,
+                                            pady=(0, 12), fill=tk.X)
+        self.on_selection_changed()
+
+    def on_selection_changed(self):
+        """Follow the layout's selection, or grey the position section."""
+        sensor = self.layout.selected
+        state = "!disabled" if sensor is not None else "disabled"
+        for widget in self.entries + [self.presets, self.apply]:
+            try:
+                widget.state([state])
+            except tk.TclError:
+                pass
+        self.target.set(f"{sensor.get('name', '')}  ·  "
+                        f"{KIND_LABELS.get(sensor.get('kind'), '')}"
+                        if sensor is not None
+                        else "Select a sensor to place it.")
+
+    def close(self):
+        self.layout.config_dialog = None
+        self.destroy()
+
+
 class MountLayoutWindow:
     """Where each sensor sits on its equipment, drawn in 3D.
 
@@ -2570,6 +2674,19 @@ class MountLayoutWindow:
         self.selected = self.sensors[0] if self.sensors else None
         self.markers = {}          # sensor id -> (x, y, z) for picking
         self.model_bounds = None   # bounding box of a loaded STL, if any
+        self.config_dialog = None  # the editing window, when it is open
+        # the editing fields live in the config dialog, but their values
+        # belong to the layout, so they survive it being closed
+        self.body_vars = {key: tk.StringVar(
+            value=str(self.equipment["body"].get(key, "1")))
+            for key in ("length", "width", "height")}
+        self.mount_vars = {key: tk.StringVar(value="0")
+                           for key in MOUNT_KEYS}
+        self.preset_var = tk.StringVar()
+        self.view_var = tk.StringVar(value="Isometric")
+        self.model_label = tk.StringVar()
+        self.body_label = tk.StringVar()
+        self.info_label = tk.StringVar()
 
         self.win = tk.Toplevel(app.root)
         self.win.title(f"Mount layout  ·  {equipment.get('name', '')}")
@@ -2587,12 +2704,15 @@ class MountLayoutWindow:
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self._build_body_panel(left)
-        self._build_position_panel(left)    # pinned to the bottom
+        self._build_footer(left)            # pinned to the bottom
+        self._build_selected_panel(left)
         self._build_sensor_panel(left)      # takes what is left over
         self._build_canvas(right)
         self.redraw()
         if self.selected is not None:
             self._select(self.selected)
+        else:
+            self._refresh_info()
 
     # -- panels ---------------------------------------------------------------
     def _build_body_panel(self, parent):
@@ -2602,31 +2722,46 @@ class MountLayoutWindow:
         ttk.Label(box, text=f"{equipment.get('name', '')}  ·  "
                             f"{equipment.get('type', 'Other')}",
                   style="TLabel").pack(anchor=tk.W)
-        grid = ttk.Frame(box, style="Panel.TFrame")
-        grid.pack(fill=tk.X, pady=(6, 0))
-        self.body_vars = {}
-        for i, (key, label) in enumerate((("length", "Length (x) [m]:"),
-                                          ("width", "Width (y) [m]:"),
-                                          ("height", "Height (z) [m]:"))):
-            ttk.Label(grid, text=label,
-                      style="Muted.TLabel").grid(row=i, column=0, sticky=tk.W,
-                                                 pady=1)
-            self.body_vars[key] = tk.StringVar(
-                value=str(equipment["body"].get(key, "1")))
-            ttk.Entry(grid, textvariable=self.body_vars[key],
-                      width=8).grid(row=i, column=1, padx=6, pady=1)
-        buttons = ttk.Frame(box, style="Panel.TFrame")
-        buttons.pack(fill=tk.X, pady=(6, 0))
-        ttk.Button(buttons, text="Apply size",
-                   command=self.on_apply_body).pack(side=tk.LEFT, expand=True,
-                                                    fill=tk.X, padx=(0, 3))
-        ttk.Button(buttons, text="⬚  3D model...",
-                   command=self.on_model).pack(side=tk.LEFT, expand=True,
-                                               fill=tk.X, padx=(3, 0))
-        self.model_label = tk.StringVar()
+        ttk.Label(box, textvariable=self.body_label,
+                  style="Muted.TLabel").pack(anchor=tk.W, pady=(2, 0))
         ttk.Label(box, textvariable=self.model_label, style="Hint.TLabel",
                   wraplength=320, justify=tk.LEFT).pack(anchor=tk.W,
                                                         pady=(4, 0))
+        self._refresh_body_label()
+
+    def _refresh_body_label(self):
+        body = self.equipment["body"]
+        self.body_label.set(f"{body.get('length', '?')} x "
+                            f"{body.get('width', '?')} x "
+                            f"{body.get('height', '?')} m "
+                            "(length x width x height)")
+
+    def _build_selected_panel(self, parent):
+        box = ttk.LabelFrame(parent, text="  SELECTED SENSOR  ", padding=8)
+        box.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+        ttk.Label(box, textvariable=self.info_label, style="Info.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+        ttk.Label(box, text="Its real-world data, as the project has it. "
+                            "Press Config to change the mounting numbers.",
+                  style="Hint.TLabel", wraplength=320,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(6, 0))
+
+    def _build_footer(self, parent):
+        box = ttk.Frame(parent, style="TFrame")
+        box.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+        ttk.Button(box, text="⚙  Config...", style="Accent.TButton",
+                   command=self.on_config).pack(fill=tk.X)
+        row = ttk.Frame(box, style="TFrame")
+        row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(row, text="View:",
+                  style="Crumb.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+        view = ttk.Combobox(row, textvariable=self.view_var,
+                            values=list(self.VIEWS), state="readonly",
+                            width=12)
+        view.pack(side=tk.LEFT)
+        view.bind("<<ComboboxSelected>>", lambda e: self.redraw())
+        ttk.Button(row, text="Close",
+                   command=self.close).pack(side=tk.RIGHT)
 
     def _build_sensor_panel(self, parent):
         box = ttk.LabelFrame(parent, text="  SENSORS ON THIS EQUIPMENT  ",
@@ -2644,53 +2779,6 @@ class MountLayoutWindow:
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self._refresh_tree()
-
-    def _build_position_panel(self, parent):
-        box = ttk.LabelFrame(parent, text="  POSITION ON THE EQUIPMENT  ",
-                             padding=10)
-        box.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Label(box, text="x forward, y left, z up. The origin is on the "
-                            "ground at the centre of the equipment.",
-                  style="Hint.TLabel", wraplength=320,
-                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 6))
-        grid = ttk.Frame(box, style="Panel.TFrame")
-        grid.pack(fill=tk.X)
-        self.mount_vars = {}
-        fields = (("x", "x [m]"), ("y", "y [m]"), ("z", "z [m]"),
-                  ("roll", "roll [°]"), ("pitch", "pitch [°]"),
-                  ("yaw", "yaw [°]"))
-        for i, (key, label) in enumerate(fields):
-            row, column = divmod(i, 2)
-            ttk.Label(grid, text=label,
-                      style="Muted.TLabel").grid(row=row, column=column * 2,
-                                                 sticky=tk.W, pady=1)
-            self.mount_vars[key] = tk.StringVar(value="0")
-            entry = ttk.Entry(grid, textvariable=self.mount_vars[key],
-                              width=8)
-            entry.grid(row=row, column=column * 2 + 1, padx=(4, 12), pady=1)
-            entry.bind("<Return>", lambda e: self.on_apply_mount())
-        ttk.Label(box, text="Place at:",
-                  style="Muted.TLabel").pack(anchor=tk.W, pady=(8, 0))
-        self.preset_var = tk.StringVar()
-        presets = ttk.Combobox(box, textvariable=self.preset_var,
-                               values=list(mount_presets(1, 1, 1)),
-                               state="readonly")
-        presets.pack(fill=tk.X, pady=3)
-        presets.bind("<<ComboboxSelected>>", lambda e: self.on_preset())
-        ttk.Button(box, text="Apply position", style="Accent.TButton",
-                   command=self.on_apply_mount).pack(fill=tk.X, pady=(6, 3))
-        row = ttk.Frame(box, style="Panel.TFrame")
-        row.pack(fill=tk.X, pady=3)
-        ttk.Label(row, text="View:",
-                  style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 6))
-        self.view_var = tk.StringVar(value="Isometric")
-        view = ttk.Combobox(row, textvariable=self.view_var,
-                            values=list(self.VIEWS), state="readonly",
-                            width=12)
-        view.pack(side=tk.LEFT)
-        view.bind("<<ComboboxSelected>>", lambda e: self.redraw())
-        ttk.Button(row, text="Close",
-                   command=self.close).pack(side=tk.RIGHT)
 
     def _build_canvas(self, parent):
         box = ttk.LabelFrame(parent, text="  3D LAYOUT  ", padding=6)
@@ -2736,10 +2824,72 @@ class MountLayoutWindow:
                 self._select(sensor, from_tree=True)
                 return
 
+    @staticmethod
+    def sensor_summary(sensor: dict) -> str:
+        """The settings line for a sensor, in its own terms."""
+        config = sensor.get("config", {})
+        kind = sensor.get("kind", KIND_OUSTER)
+        if kind == KIND_CAMERA:
+            size = "x".join(v for v in (config.get("width"),
+                                        config.get("height")) if v)
+            fps = config.get("fps")
+            return size + (f" @ {fps} fps" if fps else "")
+        if kind == KIND_ARBE:
+            return (config.get("topic", "")
+                    if config.get("source_type") == ARBE_SOURCES[0]
+                    else "recording")
+        if kind == KIND_IMU:
+            source = config.get("source_type", "")
+            if source == "Serial port":
+                return f"{config.get('port', '')} @ {config.get('baud', '')}"
+            return config.get("topic", "") if source == "ROS 2 topic" \
+                else "recording"
+        mode = config.get("lidar_mode", "")
+        ports = f"{config.get('lidar_port', '')}/{config.get('imu_port', '')}"
+        return f"{mode}, ports {ports}"
+
+    def _refresh_info(self):
+        """The selected sensor's real data, for the panel on the left."""
+        sensor = self.selected
+        if sensor is None:
+            self.info_label.set("No sensor selected.\nPick one in the list, "
+                                "or click it in the 3D view.")
+            return
+        mount = sensor["mount"]
+
+        def number(key):
+            try:
+                return float(mount.get(key, 0) or 0)
+            except ValueError:
+                return 0.0
+
+        rows = [("Name", sensor.get("name", "")),
+                ("Type", KIND_LABELS.get(sensor.get("kind"), "")),
+                ("Address", sensor.get("host", "") or "-"),
+                ("Model", sensor.get("model", "") or "-")]
+        if sensor.get("serial"):
+            rows.append(("Serial", sensor["serial"]))
+        rows += [
+            ("Last contact", sensor.get("last_seen") or "never"),
+            ("Settings", self.sensor_summary(sensor) or "-"),
+            ("Position", f"x {number('x'):+.2f}  y {number('y'):+.2f}  "
+                         f"z {number('z'):+.2f} m"),
+            ("Orientation", f"roll {number('roll'):g}°  "
+                            f"pitch {number('pitch'):g}°  "
+                            f"yaw {number('yaw'):g}°"),
+            ("Height", f"{number('z'):.2f} m above the ground"),
+        ]
+        width = max(len(label) for label, _ in rows)
+        self.info_label.set("\n".join(f"{label.ljust(width)} : {value}"
+                                      for label, value in rows))
+
     def _select(self, sensor, from_tree=False):
         self.selected = sensor
         for key in MOUNT_KEYS:
             self.mount_vars[key].set(str(sensor["mount"].get(key, "0")))
+        self._refresh_info()
+        if self.config_dialog is not None:
+            self.config_dialog.on_selection_changed()
         if not from_tree:
             try:
                 self.tree.selection_set(sensor["id"])
@@ -2763,6 +2913,7 @@ class MountLayoutWindow:
                 return
             values[key] = f"{number:g}"
         self.equipment["body"] = values
+        self._refresh_body_label()
         self.app.store.save()
         self.app.log(f"Body size of '{self.equipment.get('name')}' set to "
                      f"{values['length']} x {values['width']} x "
@@ -2801,6 +2952,7 @@ class MountLayoutWindow:
                      f"yaw={values['yaw']}°.")
         self._refresh_tree()
         self.tree.selection_set(self.selected["id"])
+        self._refresh_info()
         self.redraw()
 
     def _on_canvas_click(self, event):
@@ -2893,9 +3045,21 @@ class MountLayoutWindow:
                      color=Theme.FG, loc="left")
         self.canvas.draw_idle()
 
+    def on_config(self):
+        """The editing controls: equipment size, model, sensor position."""
+        if self.config_dialog is not None:
+            try:
+                self.config_dialog.lift()
+                self.config_dialog.focus_set()
+                return
+            except tk.TclError:
+                self.config_dialog = None
+        self.config_dialog = LayoutConfigDialog(self.win, self)
+
     def on_model(self):
-        dialog = ModelDialog(self.win, self)
-        self.win.wait_window(dialog)
+        parent = self.config_dialog or self.win
+        dialog = ModelDialog(parent, self)
+        parent.wait_window(dialog)
 
     def _draw_model(self, ax, length, width, height) -> bool:
         """Draw the equipment's STL, if it has one. False falls back."""
@@ -2930,6 +3094,12 @@ class MountLayoutWindow:
     def close(self):
         if self.win is None:
             return
+        if self.config_dialog is not None:
+            try:
+                self.config_dialog.destroy()
+            except tk.TclError:
+                pass
+            self.config_dialog = None
         window, self.win = self.win, None
         try:
             self.app.layout_windows.remove(self)

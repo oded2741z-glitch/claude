@@ -123,20 +123,33 @@ layout window for that equipment:
   name beside it.
 * Drag to turn the view, or pick one of **Isometric / Top / Side / Front /
   Rear**. Click a sensor to select it.
+* Selecting a sensor - in the list or in the 3D view - fills the
+  **SELECTED SENSOR** panel with its real data: name, type, address,
+  model, serial, when the app last reached it, its settings in its own
+  terms (`1024x10, ports 7502/7503`, `1920x1080 @ 30 fps`, the radar's
+  topic, the unit's port and baud) and its mounting numbers, including
+  how high above the ground it sits.
+
+The main window stays a read-out of the rig. Everything that changes it
+lives behind **⚙ Config...**, which opens a separate window with the
+equipment's size, the **3D model** button, and the position fields for
+whichever sensor is selected. It is not modal, so the 3D view updates as
+values are applied, it retargets itself when the selection changes, and
+asking again focuses the one that is open rather than stacking another.
 
 The frame is **x forward, y left, z up**, with the origin on the ground at
 the centre of the equipment's footprint - the convention the sensor
 extrinsics of a vehicle rig are usually written in.
 
-To place a sensor, select it and either type `x`, `y`, `z`, `roll`,
-`pitch`, `yaw` and press **Apply position**, or pick a spot from **Place
-at**: front bumper, roof front / centre / rear, rear, left side, right
+To place a sensor, select it, press **Config...**, and either type `x`,
+`y`, `z`, `roll`, `pitch`, `yaw` and press **Apply position**, or pick a
+spot from **Place at**: front bumper, roof front / centre / rear, rear, left side, right
 side or underside. The presets are worked out from the body's size, so
 they follow it when the size changes. Positions are saved to the project
 as soon as they are applied.
 
-**Length / width / height** set the body size in metres; **Apply size**
-redraws the equipment and moves the presets with it. Equipment saved
+In the same window, **Length / width / height** set the body size in
+metres; **Apply size** redraws the equipment and moves the presets with it. Equipment saved
 before this existed gets a default size from its type, and sensors get a
 mount at the origin.
 

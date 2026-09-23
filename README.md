@@ -122,7 +122,8 @@ layout window for that equipment:
   radar, purple inertial - with an arrow showing where it looks, and its
   name beside it.
 * Drag to turn the view, or pick one of **Isometric / Top / Side / Front /
-  Rear**. Click a sensor to select it.
+  Rear**. Click a sensor to select it. To move a sensor with the mouse,
+  switch to **2D drag** (below).
 * Selecting a sensor - in the list or in the 3D view - fills the
   **SELECTED SENSOR** panel with its real data: name, type, address,
   model, serial, when the app last reached it, its settings in its own
@@ -175,6 +176,36 @@ In the same window, **Length / width / height** set the body size in
 metres; **Apply size** redraws the equipment and moves the presets with it. Equipment saved
 before this existed gets a default size from its type, and sensors get a
 mount at the origin.
+
+#### Dragging a sensor (2D drag mode)
+
+A 3D view cannot be dragged reliably - a point on the screen is a whole
+line in space - so moving a sensor with the mouse happens on a flat plane.
+Switch **Mode** above the drawing from **3D view** to **2D drag** and pick
+the **Plane** to work in:
+
+| Plane | Looking | Drags | Stays put |
+| --- | --- | --- | --- |
+| **Top** | down from above, x forward to the right, left side up | `x`, `y` | `z` |
+| **Side** | at the right side, x forward to the right | `x`, `z` | `y` |
+| **Front** | at the front, the equipment's left on your right | `y`, `z` | `x` |
+| **Rear** | at the back, the equipment's left on your left | `y`, `z` | `x` |
+
+Press on a sensor's marker and drag it. The grab point stays under the
+cursor rather than the marker jumping to it, the position readout follows
+under the drawing, and the list and the Config fields update live.
+Positions land on the **Snap** grid - `1 cm` by default, or `5 cm`,
+`10 cm`, or `free` - on both dragged axes. Releasing saves the new
+position to the project and logs it; **Esc** during a drag puts the sensor
+back where it was, with nothing saved. A click that does not move saves
+nothing.
+
+Dragging changes the **display position** only, the same values Config
+edits. The real, measured pose is never touched. Pressing on a different
+sensor while real values are being edited asks first, as a click in 3D
+does. The drawing is to scale in both directions, the equipment (built-in
+shape or STL model) shows as its silhouette on that plane, and the
+ground is marked on the planes that have `z`.
 
 #### Using your own model (STL)
 

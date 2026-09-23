@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.12.0"
+__version__ = "2.13.0"
 
 import numpy as np
 
@@ -178,6 +178,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.collections import PolyCollection
 from mpl_toolkits.mplot3d import proj3d
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
@@ -281,6 +282,12 @@ def apply_theme(root: tk.Tk):
                           ("disabled", Theme.FIELD)],
               foreground=[("disabled", Theme.MUTED)])
 
+    style.configure("TRadiobutton", background=Theme.PANEL,
+                    foreground=Theme.FG, focuscolor=Theme.PANEL)
+    style.map("TRadiobutton",
+              background=[("active", Theme.PANEL)],
+              indicatorcolor=[("selected", Theme.ORANGE),
+                              ("!selected", Theme.FIELD)])
     style.configure("TCheckbutton", background=Theme.PANEL,
                     foreground=Theme.FG, focuscolor=Theme.PANEL)
     style.map("TCheckbutton",
@@ -2237,6 +2244,34 @@ def same_measurement(a, b) -> bool:
         return a == b
 
 
+# The 2D drag views. Each shows two axes of the equipment frame head-on,
+# as a person standing there would see them: `h` runs across the screen,
+# `v` up it, and `flip` mirrors `h` so the view is not seen from behind.
+DRAG_PLANES = {
+    "Top": {"h": "x", "v": "y", "flip": False,
+            "caption": "Top - looking down: x forward to the right, y left "
+                       "upward"},
+    "Side": {"h": "x", "v": "z", "flip": False,
+             "caption": "Side - from the right: x forward to the right, "
+                        "z up"},
+    "Front": {"h": "y", "v": "z", "flip": False,
+              "caption": "Front - facing the equipment: its left (+y) on "
+                         "your right, z up"},
+    "Rear": {"h": "y", "v": "z", "flip": True,
+             "caption": "Rear - from behind: its left (+y) on your left, "
+                        "z up"},
+}
+AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+SNAP_STEPS = {"free": 0.0, "1 cm": 0.01, "5 cm": 0.05, "10 cm": 0.10}
+
+
+def snap_value(value: float, step: float) -> float:
+    """Round to the snap grid; clean up float noise either way."""
+    if step > 0:
+        value = round(value / step) * step
+    return round(value, 4)
+
+
 def box_faces(cx, cy, cz, length, width, height):
     """The six faces of a box centred at (cx, cy) and rising from cz."""
     x0, x1 = cx - length / 2.0, cx + length / 2.0
@@ -2687,6 +2722,7 @@ class MountLayoutWindow:
 
     VIEWS = {"Isometric": (22, -60), "Top": (89, -90), "Side": (0, -90),
              "Front": (0, 0), "Rear": (0, 180)}
+    MODE_3D, MODE_2D = "3D view", "2D drag"
 
     def __init__(self, app, equipment: dict):
         self.app = app
@@ -2706,6 +2742,13 @@ class MountLayoutWindow:
                            for key in MOUNT_KEYS}
         self.preset_var = tk.StringVar()
         self.view_var = tk.StringVar(value="Isometric")
+        # 3D to look around; 2D to drag sensors in one plane of the frame
+        self.mode_var = tk.StringVar(value=self.MODE_3D)
+        self.plane_var = tk.StringVar(value="Top")
+        self.snap_var = tk.StringVar(value="1 cm")
+        self.canvas_hint = tk.StringVar()
+        self._drag = None           # the drag in progress, if any
+        self.sensor_artists = {}    # sensor id -> 2D artists, while dragging
         self.model_label = tk.StringVar()
         self.body_label = tk.StringVar()
 
@@ -2966,11 +3009,11 @@ class MountLayoutWindow:
         row.pack(fill=tk.X, pady=(6, 0))
         ttk.Label(row, text="View:",
                   style="Crumb.TLabel").pack(side=tk.LEFT, padx=(0, 6))
-        view = ttk.Combobox(row, textvariable=self.view_var,
-                            values=list(self.VIEWS), state="readonly",
-                            width=12)
-        view.pack(side=tk.LEFT)
-        view.bind("<<ComboboxSelected>>", lambda e: self.redraw())
+        self.view_box = ttk.Combobox(row, textvariable=self.view_var,
+                                     values=list(self.VIEWS),
+                                     state="readonly", width=12)
+        self.view_box.pack(side=tk.LEFT)
+        self.view_box.bind("<<ComboboxSelected>>", lambda e: self.redraw())
         ttk.Button(row, text="Close",
                    command=self.close).pack(side=tk.RIGHT)
 
@@ -2992,8 +3035,34 @@ class MountLayoutWindow:
         self._refresh_tree()
 
     def _build_canvas(self, parent):
-        box = ttk.LabelFrame(parent, text="  3D LAYOUT  ", padding=6)
+        box = ttk.LabelFrame(parent, text="  LAYOUT  ", padding=6)
         box.pack(fill=tk.BOTH, expand=True)
+        bar = ttk.Frame(box, style="Panel.TFrame")
+        bar.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(bar, text="Mode:",
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 6))
+        for mode in (self.MODE_3D, self.MODE_2D):
+            ttk.Radiobutton(bar, text=mode, value=mode,
+                            variable=self.mode_var,
+                            command=self.on_mode_change).pack(side=tk.LEFT,
+                                                              padx=(0, 10))
+        ttk.Label(bar, text="Plane:",
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=(10, 6))
+        self.plane_box = ttk.Combobox(bar, textvariable=self.plane_var,
+                                      values=list(DRAG_PLANES),
+                                      state="disabled", width=8)
+        self.plane_box.pack(side=tk.LEFT)
+        self.plane_box.bind("<<ComboboxSelected>>",
+                            lambda e: self.redraw())
+        ttk.Label(bar, text="Snap:",
+                  style="Muted.TLabel").pack(side=tk.LEFT, padx=(12, 6))
+        self.snap_box = ttk.Combobox(bar, textvariable=self.snap_var,
+                                     values=list(SNAP_STEPS),
+                                     state="disabled", width=7)
+        self.snap_box.pack(side=tk.LEFT)
+        self.snap_box.bind("<<ComboboxSelected>>",
+                           lambda e: self._update_canvas_hint())
+
         self.fig = Figure(figsize=(8, 6), dpi=90, facecolor=Theme.PANEL)
         self.canvas = FigureCanvasTkAgg(self.fig, master=box)
         widget = self.canvas.get_tk_widget()
@@ -3001,9 +3070,48 @@ class MountLayoutWindow:
         widget.pack(fill=tk.BOTH, expand=True)
         self.ax = self.fig.add_subplot(111, projection="3d")
         self.canvas.mpl_connect("button_press_event", self._on_canvas_click)
-        ttk.Label(box, text="Drag to turn the view. Click a sensor to select "
-                            "it, then edit its position on the left.",
+        self.canvas.mpl_connect("motion_notify_event", self._on_drag_motion)
+        self.canvas.mpl_connect("button_release_event", self._on_drag_release)
+        self.canvas.mpl_connect("resize_event", self._on_canvas_resize)
+        self.win.bind("<Escape>", self._cancel_drag, add="+")
+        ttk.Label(box, textvariable=self.canvas_hint,
                   style="Hint.TLabel").pack(anchor=tk.W, pady=(4, 0))
+        self._update_canvas_hint()
+
+    def _on_canvas_resize(self, _event):
+        # the 2D limits are fitted to the plot's shape, so refit them
+        if self._in_2d() and self._drag is None:
+            self.redraw()
+
+    def _in_2d(self) -> bool:
+        return self.mode_var.get() == self.MODE_2D
+
+    def _update_canvas_hint(self, text=None):
+        if text is not None:
+            self.canvas_hint.set(text)
+        elif self._in_2d():
+            plane = DRAG_PLANES[self.plane_var.get()]
+            self.canvas_hint.set(
+                f"Drag a sensor to move its display position in {plane['h']}"
+                f" and {plane['v']} - the third axis stays put. Snap: "
+                f"{self.snap_var.get()}. Esc cancels a drag. The real, "
+                "measured pose is never changed.")
+        else:
+            self.canvas_hint.set("Drag to turn the view. Click a sensor to "
+                                 "select it. Switch to 2D drag to move one.")
+
+    def on_mode_change(self):
+        """Swap the axes between the 3D view and a 2D drag plane."""
+        self._drag = None
+        two_d = self._in_2d()
+        self.fig.clear()
+        self.ax = (self.fig.add_subplot(111) if two_d
+                   else self.fig.add_subplot(111, projection="3d"))
+        for box in (self.plane_box, self.snap_box):
+            box.configure(state="readonly" if two_d else "disabled")
+        self.view_box.configure(state="disabled" if two_d else "readonly")
+        self._update_canvas_hint()
+        self.redraw()
 
     # -- data -----------------------------------------------------------------
     def _dimensions(self):
@@ -3196,6 +3304,9 @@ class MountLayoutWindow:
 
     def _on_canvas_click(self, event):
         """Pick the sensor whose marker is nearest to the click."""
+        if self._in_2d():
+            self._on_drag_press(event)
+            return
         if event.inaxes is not self.ax or not self.markers:
             return
         best, best_distance = None, 40.0     # pixels
@@ -3220,8 +3331,214 @@ class MountLayoutWindow:
                 self._select(sensor)
                 return
 
+    # -- dragging (2D) --------------------------------------------------------
+    def _plane_point(self, point3):
+        plane = DRAG_PLANES[self.plane_var.get()]
+        return (point3[AXIS_INDEX[plane["h"]]],
+                point3[AXIS_INDEX[plane["v"]]])
+
+    def _on_drag_press(self, event):
+        """In 2D, pressing on a sensor picks it up."""
+        if event.inaxes is not self.ax or event.button != 1 \
+                or event.xdata is None:
+            return
+        best, best_distance = None, 15.0          # pixels
+        for sensor_id, point in self.markers.items():
+            px, py = self.ax.transData.transform(self._plane_point(point))
+            distance = math.hypot(px - event.x, py - event.y)
+            if distance < best_distance:
+                best, best_distance = sensor_id, distance
+        if best is None:
+            return
+        sensor = next(s for s in self.sensors if s["id"] == best)
+        if self.selected is None or self.selected["id"] != best:
+            if not self._can_leave_edit():
+                return
+            self._select(sensor)
+        plane = DRAG_PLANES[self.plane_var.get()]
+        h, v = plane["h"], plane["v"]
+        mount = sensor["mount"]
+        h0 = float(mount.get(h, 0) or 0)
+        v0 = float(mount.get(v, 0) or 0)
+        # keep the grab point under the cursor instead of jumping to it
+        self._drag = {"sensor": sensor, "start": dict(mount), "h": h,
+                      "v": v, "offset": (h0 - event.xdata,
+                                         v0 - event.ydata),
+                      "moved": False}
+
+    def _on_drag_motion(self, event):
+        drag = self._drag
+        if drag is None or event.inaxes is not self.ax \
+                or event.xdata is None:
+            return
+        step = SNAP_STEPS.get(self.snap_var.get(), 0.0)
+        new_h = snap_value(event.xdata + drag["offset"][0], step)
+        new_v = snap_value(event.ydata + drag["offset"][1], step)
+        sensor = drag["sensor"]
+        sensor["mount"][drag["h"]] = f"{new_h:g}"
+        sensor["mount"][drag["v"]] = f"{new_v:g}"
+        drag["moved"] = True
+        self.mount_vars[drag["h"]].set(f"{new_h:g}")
+        self.mount_vars[drag["v"]].set(f"{new_v:g}")
+        self.tree.item(sensor["id"], values=self._tree_values(sensor))
+        self._move_artists(sensor)
+        self._update_canvas_hint(f"{sensor.get('name', '')}: "
+                                 f"{drag['h']} = {new_h:g} m, "
+                                 f"{drag['v']} = {new_v:g} m   "
+                                 "(release to place, Esc to cancel)")
+        self.canvas.draw_idle()
+
+    def _on_drag_release(self, _event):
+        drag, self._drag = self._drag, None
+        if drag is None:
+            return
+        self._update_canvas_hint()
+        if not drag["moved"]:
+            return
+        sensor = drag["sensor"]
+        self.app.store.save()
+        self.app.log(f"'{sensor.get('name')}' dragged to "
+                     f"{drag['h']}={sensor['mount'][drag['h']]}, "
+                     f"{drag['v']}={sensor['mount'][drag['v']]} m "
+                     "(display position).")
+        self.redraw()
+
+    def _cancel_drag(self, _event=None):
+        drag, self._drag = self._drag, None
+        if drag is None:
+            return
+        sensor = drag["sensor"]
+        sensor["mount"] = drag["start"]
+        self.tree.item(sensor["id"], values=self._tree_values(sensor))
+        self._update_canvas_hint()
+        self._select(sensor, from_tree=True)      # resets the fields, redraws
+        self.app.log(f"Drag of '{sensor.get('name')}' cancelled.")
+
+    def _move_artists(self, sensor):
+        """Move one sensor's marker, arrow and label without a redraw."""
+        artists = self.sensor_artists.get(sensor["id"])
+        if artists is None:
+            return
+        point3 = [float(sensor["mount"].get(k, 0) or 0)
+                  for k in ("x", "y", "z")]
+        self.markers[sensor["id"]] = point3
+        h, v = self._plane_point(point3)
+        artists["marker"].set_offsets([[h, v]])
+        artists["label"].set_position((h, v + artists["lift"]))
+        dh, dv = artists["arrow_delta"]
+        artists["arrow"].remove()
+        artists["arrow"] = self.ax.quiver(
+            h, v, dh, dv, color=artists["color"], angles="xy",
+            scale_units="xy", scale=1, width=0.005, zorder=6)
+
     # -- drawing --------------------------------------------------------------
     def redraw(self):
+        if self._in_2d():
+            self._redraw_2d()
+        else:
+            self._redraw_3d()
+
+    def _redraw_2d(self):
+        """One plane of the frame, head-on, with sensors you can drag."""
+        length, width, height = self._dimensions()
+        plane = DRAG_PLANES[self.plane_var.get()]
+        hi, vi = AXIS_INDEX[plane["h"]], AXIS_INDEX[plane["v"]]
+        ax = self.ax
+        ax.clear()
+        ax.set_facecolor(Theme.BG)
+        self.markers = {}
+        self.sensor_artists = {}
+
+        placed = self._placed_model(length, width, height)
+        if placed is not None:
+            ax.add_collection(PolyCollection(
+                placed[:, :, [hi, vi]], facecolors="#3d4457",
+                edgecolors="none", alpha=0.25))
+        else:
+            for faces, color, _alpha in equipment_shapes(
+                    self.equipment.get("type", "Other"), length, width,
+                    height):
+                ax.add_collection(PolyCollection(
+                    [[(p[hi], p[vi]) for p in face] for face in faces],
+                    facecolors=color, edgecolors="#6b7490",
+                    linewidths=0.4, alpha=0.35))
+        if plane["v"] == "z":
+            ax.axhline(0.0, color=Theme.MUTED, linewidth=0.8, zorder=1)
+
+        reach = max(length, width, height)
+        hs = [-length / 2, length / 2] if plane["h"] == "x" \
+            else [-width / 2, width / 2]
+        vs = {"y": [-width / 2, width / 2], "z": [0.0, height]}[plane["v"]]
+        if self.model_bounds is not None:
+            low, high = self.model_bounds
+            hs += [low[hi], high[hi]]
+            vs += [low[vi], high[vi]]
+        labels = []
+        for sensor in self.sensors:
+            mount = sensor["mount"]
+            point3 = [float(mount.get(k, 0) or 0) for k in ("x", "y", "z")]
+            self.markers[sensor["id"]] = point3
+            h, v = point3[hi], point3[vi]
+            hs.append(h)
+            vs.append(v)
+            chosen = (self.selected is not None
+                      and sensor["id"] == self.selected["id"])
+            color = MOUNT_COLORS.get(sensor.get("kind"), Theme.FG)
+            direction = mount_direction(mount) * reach * 0.3
+            delta = (direction[hi], direction[vi])
+            hs.append(h + delta[0])           # keep the arrow tip in view
+            vs.append(v + delta[1])
+            lift = reach * 0.04
+            if any(abs(h - lh) < reach * 0.2 and abs(v + lift - lv) < reach
+                   * 0.04 for lh, lv in labels):
+                lift = -reach * 0.07          # crowded: label below instead
+            labels.append((h, v + lift))
+            self.sensor_artists[sensor["id"]] = {
+                "marker": ax.scatter(
+                    [h], [v], s=150 if chosen else 70, c=color, zorder=7,
+                    edgecolors="#ffffff" if chosen else color,
+                    linewidths=1.6 if chosen else 0.0),
+                "arrow": ax.quiver(h, v, *delta, color=color, angles="xy",
+                                   scale_units="xy", scale=1, width=0.005,
+                                   zorder=6),
+                "label": ax.text(h, v + lift, sensor.get("name", ""),
+                                 color=Theme.FG if chosen else Theme.MUTED,
+                                 fontsize=8 if chosen else 7, zorder=8),
+                "arrow_delta": delta, "lift": lift, "color": color,
+            }
+
+        pad = max(max(hs) - min(hs), max(vs) - min(vs)) * 0.15 + 0.3
+        h_low, h_high = min(hs) - pad, max(hs) + pad
+        v_low, v_high = min(vs) - pad, max(vs) + pad
+        # widen one span so a metre is as long across as it is up, filling
+        # the plot area instead of letting matplotlib shrink it
+        box = ax.get_position(original=True)
+        fig_w, fig_h = self.fig.get_size_inches()
+        shape = (box.height * fig_h) / max(box.width * fig_w, 1e-6)
+        h_span, v_span = h_high - h_low, v_high - v_low
+        if v_span < h_span * shape:
+            grow = (h_span * shape - v_span) / 2
+            v_low, v_high = v_low - grow, v_high + grow
+        else:
+            grow = (v_span / shape - h_span) / 2
+            h_low, h_high = h_low - grow, h_high + grow
+        ax.set_xlim(*((h_high, h_low) if plane["flip"] else (h_low, h_high)))
+        ax.set_ylim(v_low, v_high)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, color=Theme.BORDER, linewidth=0.5, alpha=0.7)
+        ax.tick_params(colors=Theme.MUTED, labelsize=8)
+        names = {"x": "x forward", "y": "y left", "z": "z up"}
+        ax.set_xlabel(f"{names[plane['h']]} [m]", color=Theme.MUTED,
+                      fontsize=8)
+        ax.set_ylabel(f"{names[plane['v']]} [m]", color=Theme.MUTED,
+                      fontsize=8)
+        for spine in ax.spines.values():
+            spine.set_color(Theme.BORDER)
+        ax.set_title(plane["caption"], fontsize=9, color=Theme.FG,
+                     loc="left")
+        self.canvas.draw_idle()
+
+    def _redraw_3d(self):
         length, width, height = self._dimensions()
         ax = self.ax
         ax.clear()
@@ -3304,26 +3621,26 @@ class MountLayoutWindow:
         dialog = ModelDialog(parent, self)
         parent.wait_window(dialog)
 
-    def _draw_model(self, ax, length, width, height) -> bool:
-        """Draw the equipment's STL, if it has one. False falls back."""
+    def _placed_model(self, length, width, height):
+        """The equipment's STL, placed in its frame - or None to fall back.
+
+        Shared by the 3D and the 2D views; also keeps the model label and
+        bounds current.
+        """
         self.model_bounds = None
         model = self.equipment.get("model") or {}
         path = str(model.get("path", "")).strip()
         if not path:
             self.model_label.set("No 3D model - drawing the built-in "
                                  f"{self.equipment.get('type', 'shape')}.")
-            return False
+            return None
         loaded = self.app.load_model(path)
         if loaded is None:
             self.model_label.set(f"Could not load {os.path.basename(path)} - "
                                  "showing the built-in shape instead.")
-            return False
+            return None
         triangles, total = loaded
         placed = fit_model(triangles, model, length, width, height)
-        collection = Poly3DCollection(placed, facecolors="#3d4457",
-                                      edgecolors="#59627d", linewidths=0.15)
-        collection.set_alpha(0.9)
-        ax.add_collection3d(collection)
         points = placed.reshape(-1, 3)
         self.model_bounds = (points.min(axis=0), points.max(axis=0))
         shown = len(placed)
@@ -3332,6 +3649,17 @@ class MountLayoutWindow:
             + (f", showing {shown}" if shown != total else "")
             + (", scaled to the equipment size" if model.get("fit", True)
                else f", scale x{model.get('scale', '1')}"))
+        return placed
+
+    def _draw_model(self, ax, length, width, height) -> bool:
+        """Draw the equipment's STL in 3D, if it has one. False falls back."""
+        placed = self._placed_model(length, width, height)
+        if placed is None:
+            return False
+        collection = Poly3DCollection(placed, facecolors="#3d4457",
+                                      edgecolors="#59627d", linewidths=0.15)
+        collection.set_alpha(0.9)
+        ax.add_collection3d(collection)
         return True
 
     def close(self):

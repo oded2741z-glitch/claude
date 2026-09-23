@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.11.0"
+__version__ = "2.12.0"
 
 import numpy as np
 
@@ -350,6 +350,10 @@ EQUIPMENT_TYPES = ["Vehicle", "Drone / UAV", "Robot / AMR", "Mast / Tripod",
 DEFAULT_MOUNT = {"x": "0", "y": "0", "z": "0",
                  "roll": "0", "pitch": "0", "yaw": "0"}
 MOUNT_KEYS = ("x", "y", "z", "roll", "pitch", "yaw")
+# The measured, real-world pose of a sensor, kept apart from the mount
+# above: the mount is where the sensor is *drawn*, the calibration is where
+# it *is*, as surveyed, for calibration work. Empty = not measured yet.
+DEFAULT_CALIBRATION = {key: "" for key in MOUNT_KEYS}
 # length (x) x width (y) x height (z), in metres
 DEFAULT_BODY = {"length": "2.0", "width": "1.0", "height": "1.0"}
 # an optional STL standing in for the built-in shape
@@ -669,6 +673,12 @@ class Store:
         if not isinstance(mount, dict):
             mount = {}
         sensor["mount"] = {**copy.deepcopy(DEFAULT_MOUNT), **mount}
+        calibration = sensor.get("calibration")
+        if not isinstance(calibration, dict):
+            calibration = {}
+        sensor["calibration"] = {**copy.deepcopy(DEFAULT_CALIBRATION),
+                                 **calibration}
+        sensor.setdefault("calibrated", "")
         # the baseline a sensor can always be taken back to. Records written
         # before baselines existed adopt their current settings as one.
         legacy = sensor.get("legacy")
@@ -2215,6 +2225,18 @@ class ImuReader(threading.Thread):
         return state["writer"]
 
 
+def same_measurement(a, b) -> bool:
+    """Two measured values agree. Empty means "not measured", so it only
+    matches another empty - unlike 1 and 1.0, which match."""
+    a, b = str(a).strip(), str(b).strip()
+    if not a or not b:
+        return a == b
+    try:
+        return abs(float(a) - float(b)) <= 1e-9
+    except ValueError:
+        return a == b
+
+
 def box_faces(cx, cy, cz, length, width, height):
     """The six faces of a box centred at (cx, cy) and rising from cz."""
     x0, x1 = cx - length / 2.0, cx + length / 2.0
@@ -2742,9 +2764,10 @@ class MountLayoutWindow:
                  ("serial", "Serial", False), ("last_seen", "Last contact",
                                                False),
                  ("settings", "Settings", False),
-                 ("position", "Position", True),
-                 ("orientation", "Orientation", True),
-                 ("height", "Height", False))
+                 ("position", "Real position", True),
+                 ("orientation", "Real orient.", True),
+                 ("height", "Real height", False),
+                 ("calibrated", "Measured on", False))
 
     def _build_selected_panel(self, parent):
         box = ttk.LabelFrame(parent, text="  SELECTED SENSOR  ", padding=8)
@@ -2818,9 +2841,9 @@ class MountLayoutWindow:
         self.save_button.pack_forget()
         self.cancel_button.pack_forget()
         self.edit_button.pack(fill=tk.X)
-        self.info_hint.set("Edit changes the position here. Name, "
-                           "address, model and serial are managed from the "
-                           "sensors list.")
+        self.info_hint.set("Real, measured pose for calibration - it "
+                           "does not move the 3D view (Config does). "
+                           "Identity is managed from the sensors list.")
         if self.selected is None:
             self.edit_button.state(["disabled"])
         else:
@@ -2839,14 +2862,15 @@ class MountLayoutWindow:
                               padx=(0, 3))
         self.cancel_button.pack(side=tk.LEFT, expand=True, fill=tk.X,
                                 padx=(3, 0))
-        self.info_hint.set("Save writes to the project; Cancel puts it "
-                           "back.")
+        self.info_hint.set("Enter the surveyed values. Leave a box empty "
+                           "if it was not measured. The 3D view is not "
+                           "changed.")
 
     def _edit_values(self) -> dict:
         return {key: var.get().strip() for key, var in self.edit_vars.items()}
 
     def _record_values(self, sensor) -> dict:
-        return {key: str(sensor["mount"].get(key, "0"))
+        return {key: str(sensor["calibration"].get(key, ""))
                 for key in MOUNT_KEYS}
 
     def _edits_pending(self) -> bool:
@@ -2854,10 +2878,7 @@ class MountLayoutWindow:
             return False
         before = self._record_values(self.selected)
         for key, value in self._edit_values().items():
-            try:
-                if abs(float(value or 0) - float(before[key] or 0)) > 1e-9:
-                    return True
-            except ValueError:
+            if not same_measurement(value, before[key]):
                 return True
         return False
 
@@ -2895,39 +2916,45 @@ class MountLayoutWindow:
         self._refresh_info()
 
     def on_save_info(self, stay: bool = True) -> bool:
-        """Validate the edited mount and write it to the sensor.
+        """Validate the measured pose and store it as the calibration.
 
-        `stay=False` is the save on the way to another sensor: the caller
-        does the moving, so the selection is left alone here.
+        This never touches the mount, so the 3D view does not move: the
+        drawing is Config's business. `stay` is kept for the caller that
+        saves on the way to another sensor.
         """
         sensor = self.selected
         if sensor is None:
             return False
         values = self._edit_values()
-        mount = {}
+        measured = {}
         for key in MOUNT_KEYS:
+            text = values[key]
+            if not text:
+                measured[key] = ""             # not measured
+                continue
             try:
-                mount[key] = f"{float(values[key] or 0):g}"
+                measured[key] = f"{float(text):g}"
             except ValueError:
                 messagebox.showerror(
-                    "Selected sensor",
+                    "Real position",
                     f"'{key}' must be a number - metres for x, y and z, "
-                    "degrees for roll, pitch and yaw.", parent=self.win)
+                    "degrees for roll, pitch and yaw - or empty if it was "
+                    "not measured.", parent=self.win)
                 return False
         before = self._record_values(sensor)
         changed = [key for key in MOUNT_KEYS
-                   if float(mount[key]) != float(before[key] or 0)]
-        sensor["mount"] = mount
+                   if not same_measurement(measured[key], before[key])]
+        sensor["calibration"] = measured
+        if changed:
+            sensor["calibrated"] = now_stamp()
         self.app.store.save()
         self._show_view_mode()
-        # update the row in place: rebuilding the list would drop the
-        # selection mid-navigation
-        self.tree.item(sensor["id"], values=self._tree_values(sensor))
-        if stay:
-            self._select(sensor, from_tree=True)   # redraw, refresh Config
-        self.app.log(f"'{sensor['name']}' moved from the layout: "
-                     + (", ".join(f"{k}={mount[k]}" for k in changed)
-                        if changed else "no changes") + ".")
+        self._refresh_info()
+        self.app.log(f"'{sensor['name']}' real pose saved for calibration: "
+                     + (", ".join(f"{k}={measured[k] or '-'}"
+                                  for k in changed)
+                        if changed else "no changes")
+                     + " (the 3D view is unchanged).")
         return True
 
     def _build_footer(self, parent):
@@ -3052,14 +3079,19 @@ class MountLayoutWindow:
             return
         self.info_empty.pack_forget()
         self.info_rows.pack(fill=tk.X, before=self.info_hint_label)
-        mount = sensor["mount"]
+        calibration = sensor["calibration"]
 
-        def number(key):
+        def measured(key, fmt):
+            text = str(calibration.get(key, "")).strip()
+            if not text:
+                return "-"
             try:
-                return float(mount.get(key, 0) or 0)
+                return fmt.format(float(text))
             except ValueError:
-                return 0.0
+                return text
 
+        any_measured = any(str(calibration.get(k, "")).strip()
+                           for k in MOUNT_KEYS)
         shown = {
             "name": sensor.get("name", ""),
             "kind": KIND_LABELS.get(sensor.get("kind"), ""),
@@ -3068,12 +3100,17 @@ class MountLayoutWindow:
             "serial": sensor.get("serial", "") or "-",
             "last_seen": sensor.get("last_seen") or "never",
             "settings": self.sensor_summary(sensor) or "-",
-            "position": f"x {number('x'):+.2f}  y {number('y'):+.2f}  "
-                        f"z {number('z'):+.2f} m",
-            "orientation": f"roll {number('roll'):g}°  "
-                           f"pitch {number('pitch'):g}°  "
-                           f"yaw {number('yaw'):g}°",
-            "height": f"{number('z'):.2f} m above the ground",
+            "position": (f"x {measured('x', '{:+.3f}')}  "
+                         f"y {measured('y', '{:+.3f}')}  "
+                         f"z {measured('z', '{:+.3f}')} m"
+                         if any_measured else "not measured"),
+            "orientation": (f"roll {measured('roll', '{:g}')}°  "
+                            f"pitch {measured('pitch', '{:g}')}°  "
+                            f"yaw {measured('yaw', '{:g}')}°"
+                            if any_measured else "not measured"),
+            "height": (f"{measured('z', '{:.3f}')} m above the ground"
+                       if str(calibration.get("z", "")).strip() else "-"),
+            "calibrated": sensor.get("calibrated") or "never",
         }
         for key, value in shown.items():
             self.info_values[key].set(value)

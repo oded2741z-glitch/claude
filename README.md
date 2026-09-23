@@ -127,27 +127,36 @@ layout window for that equipment:
   **SELECTED SENSOR** panel with its real data: name, type, address,
   model, serial, when the app last reached it, its settings in its own
   terms (`1024x10, ports 7502/7503`, `1920x1080 @ 30 fps`, the radar's
-  topic, the unit's port and baud) and its mounting numbers, including
-  how high above the ground it sits.
-* **✎ Edit** makes the sensor's **position** (x / y / z in metres) and
-  **orientation** (roll / pitch / yaw in degrees) editable in place.
-  **Save** writes them to the project, redraws the sensor in 3D and
-  updates the list; **Cancel** (or Esc) puts the values back. The six
-  values must be numbers; anything else is refused with nothing written.
-  Everything else in the panel stays read-only here: name, address,
-  model and serial are changed from the sensors list (**Edit** there),
-  type and settings from the sensor's dashboard, last contact comes from
-  the sensor itself, and height is worked out from z.
+  topic, the unit's port and baud) and its **real, measured pose** with
+  the date it was measured.
+* Each sensor has **two poses**, kept apart on purpose:
+
+  | | Where it is edited | What it is for |
+  | --- | --- | --- |
+  | **Display position** | **⚙ Config** (and the **Place at** presets) | where the sensor is *drawn* in the 3D view |
+  | **Real position** | **✎ Edit** in the SELECTED SENSOR panel | where the sensor *actually is*, as measured - the numbers used for real calibration |
+
+  The real pose never moves the drawing, and Config never touches the
+  measurement. **Edit** opens the six real values (x / y / z in metres,
+  roll / pitch / yaw in degrees); **Save** stores them with the date they
+  were measured, **Cancel** (or Esc) puts them back. A box left empty
+  means *not measured* - a partial survey is fine, and the panel shows
+  `-` for the missing values or `not measured` when there are none. Values
+  must be numbers; anything else is refused with nothing written. Saving
+  without a change keeps the original measurement date.
+
+  Name, address, model and serial stay read-only in the panel - they are
+  changed from the sensors list (**Edit** there) - as do type and
+  settings (the sensor's dashboard) and last contact (the sensor itself).
 * Moving to another sensor with unsaved edits - in the list or by
   clicking in 3D - asks first: **Yes** saves and moves on, **No**
   discards and moves on, **Cancel** stays on the sensor being edited.
   With nothing changed, it just moves.
 
-Everything else that changes the rig lives behind **⚙ Config...**, which
+Everything that changes the *drawing* lives behind **⚙ Config...**, which
 opens a separate window with the equipment's size, the **3D model**
-button, and the position fields and **Place at** presets for whichever
-sensor is selected - the same numbers **Edit** changes, so either route
-works and each sees the other's changes. It is not modal, so the 3D view updates as
+button, and the display position fields and **Place at** presets for
+whichever sensor is selected. It is not modal, so the 3D view updates as
 values are applied, it retargets itself when the selection changes, and
 asking again focuses the one that is open rather than stacking another.
 
@@ -620,6 +629,12 @@ stream first rather than fighting the reader for the device.
   ]
 }
 ```
+
+Each sensor also carries a `calibration` block - `{"x", "y", "z", "roll",
+"pitch", "yaw"}`, empty strings where nothing was measured - and a
+`calibrated` date: the real, surveyed pose, separate from the `mount`
+that only positions it in the 3D view. Records written before this get an
+empty calibration on load.
 
 Each equipment item carries a `body` block - `{"length", "width",
 "height"}` in metres - and a `model` block - `{"path", "fit", "scale",

@@ -27,6 +27,7 @@ BTN_COLOR = "#333333"
 QUIT_COLOR = "#FF0000"      
 TEXT_COLOR = "#FFFFFF"     
 ACCENT_COLOR = "#FFFFFF"   
+ON_COLOR = "#FF6600"
 
 FONT_BOLD = ("Segoe UI", 9, "bold") 
 CONFIG_FILE = "config.txt"
@@ -451,7 +452,7 @@ class Video360App:
         if self.pip_cap.isOpened():
             self.pip_enabled = True
             self.pip_idx = idx
-            self.btn_pip.config(text="PiP: ON")
+            self.btn_pip.config(text="PiP: ON", fg=ON_COLOR)
             self.save_config()
 
     def toggle_pip(self):
@@ -460,14 +461,14 @@ class Video360App:
                 self.pip_cap = FrameReader(self.pip_idx)
                 if self.pip_cap.isOpened():
                     self.pip_enabled = True
-                    self.btn_pip.config(text="PiP: ON")
+                    self.btn_pip.config(text="PiP: ON", fg=ON_COLOR)
                 else:
                     self.ask_camera_index("PIP USB CAMERA", self._on_pip_selected)
             else:
                 self.ask_camera_index("PIP USB CAMERA", self._on_pip_selected)
         else:
             self.pip_enabled = False
-            self.btn_pip.config(text="PiP: OFF")
+            self.btn_pip.config(text="PiP: OFF", fg=TEXT_COLOR)
             if self.pip_cap:
                 self.pip_cap.release()
                 self.pip_cap = None
@@ -476,7 +477,7 @@ class Video360App:
     def toggle_topmost(self):
         self.is_topmost = not getattr(self, 'is_topmost', False)
         self.root.attributes("-topmost", self.is_topmost)
-        self.btn_topmost.config(text="Top: ON" if self.is_topmost else "Top: OFF")
+        self.btn_topmost.config(text="Top: ON" if self.is_topmost else "Top: OFF", fg=ON_COLOR if self.is_topmost else TEXT_COLOR)
 
     def setup_ui(self):
         self.top_bar = tk.Frame(self.main_frame, bg=BG_COLOR, height=35); self.top_bar.pack(side="top", fill="x"); self.top_bar.pack_propagate(False)
@@ -487,7 +488,7 @@ class Video360App:
         btn_quit = tk.Button(self.top_bar, text="X", bg=QUIT_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=4, font=FONT_BOLD, command=self.quit_app)
         btn_quit.pack(side="right", fill="y", padx=2, pady=2)
         
-        self.btn_topmost = tk.Button(self.top_bar, text="Top: ON" if self.is_topmost else "Top: OFF", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=8, command=self.toggle_topmost)
+        self.btn_topmost = tk.Button(self.top_bar, text="Top: ON" if self.is_topmost else "Top: OFF", bg=BTN_COLOR, fg=ON_COLOR if self.is_topmost else TEXT_COLOR, bd=0, relief="flat", width=8, command=self.toggle_topmost)
         self.btn_topmost.pack(side="right", fill="y", padx=2, pady=2)
         
         btn_full = tk.Button(self.top_bar, text="Full", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=6, command=self.toggle_fullscreen)
@@ -496,7 +497,7 @@ class Video360App:
         btn_cfg = tk.Button(self.top_bar, text="Config", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=6, command=self.open_config)
         btn_cfg.pack(side="right", fill="y", padx=2, pady=2)
 
-        self.btn_pip = tk.Button(self.top_bar, text="PiP: ON" if self.pip_enabled else "PiP: OFF", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=8, command=self.toggle_pip)
+        self.btn_pip = tk.Button(self.top_bar, text="PiP: ON" if self.pip_enabled else "PiP: OFF", bg=BTN_COLOR, fg=ON_COLOR if self.pip_enabled else TEXT_COLOR, bd=0, relief="flat", width=8, command=self.toggle_pip)
         self.btn_pip.pack(side="right", fill="y", padx=2, pady=2)
 
         self.mouse_controls_frame = tk.Frame(self.top_bar, bg=BG_COLOR)

@@ -138,9 +138,25 @@ layout window for that equipment:
 * The equipment is drawn from its type: a vehicle gets a body, a cabin and
   four wheels, a drone gets arms and rotor discs, a mast gets its legs, a
   gantry its posts and beam, a bench its top and legs.
-* Each sensor is a coloured marker - blue lidar, green camera, orange
-  radar, purple inertial - with an arrow showing where it looks, and its
-  name beside it.
+* Each sensor is drawn as a small 3D model of its kind, in its colour,
+  with an arrow showing where it looks and its name beside it:
+
+  | Kind | Model | Colour |
+  | --- | --- | --- |
+  | Ouster lidar | a squat drum with the dark optical window round its middle | blue |
+  | Camera | a body with the lens sticking out forward | green |
+  | Arbe radar | a flat panel, its dark radome facing forward | orange |
+  | Inertial | a small block with an arrow on top along its x axis | purple |
+
+  The model turns with the sensor's roll / pitch / yaw, so a camera
+  pitched down or a radar turned sideways reads at a glance; the selected
+  one is outlined in white. Models are drawn over the equipment, so one
+  mounted inside or behind it is never lost.
+
+  **Sensor size**, above the drawing, sets how big they are. **real size**
+  draws each at its true size (an OS1 is 87 mm across - a speck on a van);
+  **small / medium / large** size them against the equipment, keeping
+  the kinds' proportions to one another. The choice is remembered.
 * Drag to turn the view, or pick one of **Isometric / Top / Side / Front /
   Rear**. Click a sensor to select it. To move a sensor with the mouse,
   switch to **2D drag** (below).
@@ -211,8 +227,9 @@ the **Plane** to work in:
 | **Front** | at the front, the equipment's left on your right | `y`, `z` | `x` |
 | **Rear** | at the back, the equipment's left on your left | `y`, `z` | `x` |
 
-Press on a sensor's marker and drag it. The grab point stays under the
-cursor rather than the marker jumping to it, the position readout follows
+The sensor models are drawn flat on the plane, the side facing you on
+top. Press on a sensor and drag it. The grab point stays under the
+cursor rather than the sensor jumping to it, the position readout follows
 under the drawing, and the list and the Config fields update live.
 Positions land on the **Snap** grid - `1 cm` by default, or `5 cm`,
 `10 cm`, or `free` - on both dragged axes. Releasing saves the new

@@ -86,7 +86,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.14.0"
+__version__ = "2.15.0"
 
 import numpy as np
 
@@ -2550,16 +2550,16 @@ def same_measurement(a, b) -> bool:
 # as a person standing there would see them: `h` runs across the screen,
 # `v` up it, and `flip` mirrors `h` so the view is not seen from behind.
 DRAG_PLANES = {
-    "Top": {"h": "x", "v": "y", "flip": False,
+    "Top": {"h": "x", "v": "y", "flip": False, "toward": ("z", 1),
             "caption": "Top - looking down: x forward to the right, y left "
                        "upward"},
-    "Side": {"h": "x", "v": "z", "flip": False,
+    "Side": {"h": "x", "v": "z", "flip": False, "toward": ("y", -1),
              "caption": "Side - from the right: x forward to the right, "
                         "z up"},
-    "Front": {"h": "y", "v": "z", "flip": False,
+    "Front": {"h": "y", "v": "z", "flip": False, "toward": ("x", 1),
               "caption": "Front - facing the equipment: its left (+y) on "
                          "your right, z up"},
-    "Rear": {"h": "y", "v": "z", "flip": True,
+    "Rear": {"h": "y", "v": "z", "flip": True, "toward": ("x", -1),
              "caption": "Rear - from behind: its left (+y) on your left, "
                         "z up"},
 }
@@ -2761,6 +2761,96 @@ def mount_direction(mount: dict):
     values = [float(mount.get(key, 0) or 0)
               for key in ("roll", "pitch", "yaw")]
     return rotation_matrix(*values) @ np.array([1.0, 0.0, 0.0])
+
+
+# --- sensor models ----------------------------------------------------------
+# Each kind is drawn as a small solid in its own frame - x where it looks,
+# z up - built from its real size in metres, then scaled for legibility.
+# "real size" draws it as it is; the others size every sensor alike against
+# the equipment, keeping the kinds' proportions to one another.
+ICON_SIZES = {"real size": 0.0, "small": 0.07, "medium": 0.11, "large": 0.16}
+ICON_REFERENCE = 0.12       # the metres a sensor's largest side is taken as
+
+
+def cylinder_faces(radius: float, z0: float, z1: float, segments: int = 16):
+    """A closed upright cylinder: side quads plus the two caps."""
+    ring = [(radius * math.cos(2 * math.pi * i / segments),
+             radius * math.sin(2 * math.pi * i / segments))
+            for i in range(segments)]
+    faces = [[(*ring[i], z0), (*ring[(i + 1) % segments], z0),
+              (*ring[(i + 1) % segments], z1), (*ring[i], z1)]
+             for i in range(segments)]
+    faces.append([(x, y, z0) for x, y in ring])
+    faces.append([(x, y, z1) for x, y in ring])
+    return faces
+
+
+def box_between(x0, x1, y0, y1, z0, z1):
+    """An axis-aligned box from its two corners."""
+    return box_faces((x0 + x1) / 2, (y0 + y1) / 2, z0, x1 - x0, y1 - y0,
+                     z1 - z0)
+
+
+def sensor_icon(kind: str) -> list:
+    """The parts of a sensor's model: [(faces, "body" | "dark")], metres."""
+    if kind == KIND_OUSTER:
+        # an OS1: a squat drum with the dark optical window round its middle
+        return [(cylinder_faces(0.0435, -0.037, -0.012), "body"),
+                (cylinder_faces(0.0425, -0.012, 0.022), "dark"),
+                (cylinder_faces(0.0435, 0.022, 0.037), "body")]
+    if kind == KIND_CAMERA:
+        # a body with the lens sticking out forward along x
+        lens = [[(z, y, x) for x, y, z in face]
+                for face in cylinder_faces(0.021, 0.03, 0.062)]
+        return [(box_between(-0.05, 0.03, -0.035, 0.035, -0.03, 0.03),
+                 "body"), (lens, "dark")]
+    if kind == KIND_ARBE:
+        # a flat imaging radar, its radome facing forward
+        return [(box_between(-0.02, 0.012, -0.075, 0.075, -0.05, 0.05),
+                 "body"),
+                (box_between(0.012, 0.018, -0.068, 0.068, -0.044, 0.044),
+                 "dark")]
+    if kind == KIND_IMU:
+        # a small block, with an arrow on top along its x axis
+        return [(box_between(-0.025, 0.025, -0.02, 0.02, -0.015, 0.015),
+                 "body"),
+                ([[(0.022, 0.0, 0.016), (-0.008, 0.012, 0.016),
+                   (-0.008, -0.012, 0.016)]], "dark")]
+    return [(box_between(-0.03, 0.03, -0.03, 0.03, -0.03, 0.03), "body")]
+
+
+def icon_scale(size: str, reach: float) -> float:
+    fraction = ICON_SIZES.get(size, ICON_SIZES["medium"])
+    return 1.0 if fraction <= 0 else reach * fraction / ICON_REFERENCE
+
+
+def place_icon(kind: str, mount: dict, scale: float) -> list:
+    """The sensor's model in the equipment frame: [(faces, part)], each
+    face an (n, 3) array, rotated by the mount and moved to its spot."""
+    values = [float(mount.get(key, 0) or 0) for key in MOUNT_KEYS]
+    rotation = rotation_matrix(*values[3:])
+    origin = np.array(values[:3])
+    return [([np.asarray(face) * scale @ rotation.T + origin
+              for face in faces], part)
+            for faces, part in sensor_icon(kind)]
+
+
+def shade(color: str, factor: float) -> str:
+    """A darker (factor < 1) version of a #rrggbb colour."""
+    red, green, blue = (int(color[i:i + 2], 16) for i in (1, 3, 5))
+    return "#{:02x}{:02x}{:02x}".format(
+        *(max(0, min(255, int(c * factor))) for c in (red, green, blue)))
+
+
+def icon_polygons(parts: list, color: str):
+    """Flatten placed parts into (faces, facecolours) for one collection."""
+    faces, colors = [], []
+    for part_faces, part in parts:
+        tone = color if part == "body" else shade(color, 0.35)
+        for face in part_faces:
+            faces.append(face)
+            colors.append(tone)
+    return faces, colors
 
 
 def mount_presets(length: float, width: float, height: float) -> dict:
@@ -3049,6 +3139,9 @@ class MountLayoutWindow:
         self.mode_var = tk.StringVar(value=self.MODE_3D)
         self.plane_var = tk.StringVar(value="Top")
         self.snap_var = tk.StringVar(value="1 cm")
+        size = app.store.data["app"].get("sensor_icon_size", "medium")
+        self.icon_var = tk.StringVar(
+            value=size if size in ICON_SIZES else "medium")
         self.canvas_hint = tk.StringVar()
         self._drag = None           # the drag in progress, if any
         self.sensor_artists = {}    # sensor id -> 2D artists, while dragging
@@ -3365,6 +3458,14 @@ class MountLayoutWindow:
         self.snap_box.pack(side=tk.LEFT)
         self.snap_box.bind("<<ComboboxSelected>>",
                            lambda e: self._update_canvas_hint())
+        self.icon_box = ttk.Combobox(bar, textvariable=self.icon_var,
+                                     values=list(ICON_SIZES),
+                                     state="readonly", width=9)
+        self.icon_box.pack(side=tk.RIGHT)
+        self.icon_box.bind("<<ComboboxSelected>>",
+                           lambda e: self.on_icon_size())
+        ttk.Label(bar, text="Sensor size:",
+                  style="Muted.TLabel").pack(side=tk.RIGHT, padx=(12, 6))
 
         self.fig = Figure(figsize=(8, 6), dpi=90, facecolor=Theme.PANEL)
         self.canvas = FigureCanvasTkAgg(self.fig, master=box)
@@ -3385,6 +3486,30 @@ class MountLayoutWindow:
         # the 2D limits are fitted to the plot's shape, so refit them
         if self._in_2d() and self._drag is None:
             self.redraw()
+
+    def on_icon_size(self):
+        """How big the sensor models are drawn; remembered for next time."""
+        self.app.store.data["app"]["sensor_icon_size"] = self.icon_var.get()
+        self.app.store.save()
+        self.redraw()
+
+    def _icon_scale(self) -> float:
+        return icon_scale(self.icon_var.get(), max(self._dimensions()))
+
+    def _icon_2d(self, sensor, color):
+        """The sensor's model flattened onto the drag plane, far faces
+        first so the side facing the viewer ends up on top."""
+        plane = DRAG_PLANES[self.plane_var.get()]
+        hi, vi = AXIS_INDEX[plane["h"]], AXIS_INDEX[plane["v"]]
+        depth_axis, toward = plane["toward"]
+        di = AXIS_INDEX[depth_axis]
+        faces, colors = icon_polygons(
+            place_icon(sensor.get("kind", ""), sensor["mount"],
+                       self._icon_scale()), color)
+        order = sorted(range(len(faces)),
+                       key=lambda i: toward * faces[i][:, di].mean())
+        return ([faces[i][:, [hi, vi]] for i in order],
+                [colors[i] for i in order])
 
     def _shape(self) -> str:
         """The built-in drawing this equipment's type uses."""
@@ -3731,6 +3856,7 @@ class MountLayoutWindow:
         self.markers[sensor["id"]] = point3
         h, v = self._plane_point(point3)
         artists["marker"].set_offsets([[h, v]])
+        artists["icon"].set_verts(self._icon_2d(sensor, artists["color"])[0])
         artists["label"].set_position((h, v + artists["lift"]))
         dh, dv = artists["arrow_delta"]
         artists["arrow"].remove()
@@ -3800,11 +3926,19 @@ class MountLayoutWindow:
                    * 0.04 for lh, lv in labels):
                 lift = -reach * 0.07          # crowded: label below instead
             labels.append((h, v + lift))
+            flat, tones = self._icon_2d(sensor, color)
+            for face in flat:
+                hs.extend(face[:, 0])
+                vs.extend(face[:, 1])
             self.sensor_artists[sensor["id"]] = {
+                "icon": ax.add_collection(PolyCollection(
+                    flat, facecolors=tones, zorder=6.5,
+                    edgecolors="#ffffff" if chosen else shade(color, 0.6),
+                    linewidths=0.9 if chosen else 0.3)),
                 "marker": ax.scatter(
-                    [h], [v], s=150 if chosen else 70, c=color, zorder=7,
-                    edgecolors="#ffffff" if chosen else color,
-                    linewidths=1.6 if chosen else 0.0),
+                    [h], [v], s=28 if chosen else 14, c=color, zorder=7,
+                    edgecolors="#ffffff" if chosen else shade(color, 0.5),
+                    linewidths=1.2 if chosen else 0.6),
                 "arrow": ax.quiver(h, v, *delta, color=color, angles="xy",
                                    scale_units="xy", scale=1, width=0.005,
                                    zorder=6),
@@ -3852,6 +3986,8 @@ class MountLayoutWindow:
         ax.set_facecolor(Theme.BG)
         self.markers = {}
 
+        # sensors are drawn over the equipment, never lost inside it
+        ax.computed_zorder = False
         drawn = self._draw_model(ax, length, width, height)
         if not drawn:
             for faces, color, alpha in equipment_shapes(
@@ -3859,11 +3995,12 @@ class MountLayoutWindow:
                     height):
                 collection = Poly3DCollection(
                     faces, facecolors=color, edgecolors="#6b7490",
-                    linewidths=0.4)
+                    linewidths=0.4, zorder=1)
                 collection.set_alpha(alpha)
                 ax.add_collection3d(collection)
 
         reach = max(length, width, height)
+        scale = self._icon_scale()
         for sensor in self.sensors:
             mount = sensor["mount"]
             point = [float(mount.get(k, 0) or 0) for k in ("x", "y", "z")]
@@ -3871,17 +4008,19 @@ class MountLayoutWindow:
             chosen = (self.selected is not None
                       and sensor["id"] == self.selected["id"])
             color = MOUNT_COLORS.get(sensor.get("kind"), Theme.FG)
-            ax.scatter([point[0]], [point[1]], [point[2]],
-                       s=150 if chosen else 70, c=color, depthshade=False,
-                       edgecolors="#ffffff" if chosen else color,
-                       linewidths=1.6 if chosen else 0.0, zorder=5)
+            faces, tones = icon_polygons(
+                place_icon(sensor.get("kind", ""), mount, scale), color)
+            ax.add_collection3d(Poly3DCollection(
+                faces, facecolors=tones, zorder=5,
+                edgecolors="#ffffff" if chosen else shade(color, 0.6),
+                linewidths=0.9 if chosen else 0.3))
             direction = mount_direction(mount) * reach * 0.35
             ax.quiver(point[0], point[1], point[2], *direction, color=color,
                       linewidth=2.0 if chosen else 1.2,
-                      arrow_length_ratio=0.25)
+                      arrow_length_ratio=0.25, zorder=6)
             ax.text(point[0], point[1], point[2] + reach * 0.06,
                     sensor.get("name", ""), color=Theme.FG if chosen
-                    else Theme.MUTED, fontsize=8 if chosen else 7)
+                    else Theme.MUTED, fontsize=8 if chosen else 7, zorder=7)
 
         extent = max(length / 2.0, width / 2.0, height)
         if self.model_bounds is not None:
@@ -3964,7 +4103,8 @@ class MountLayoutWindow:
         if placed is None:
             return False
         collection = Poly3DCollection(placed, facecolors="#3d4457",
-                                      edgecolors="#59627d", linewidths=0.15)
+                                      edgecolors="#59627d", linewidths=0.15,
+                                      zorder=1)
         collection.set_alpha(0.9)
         ax.add_collection3d(collection)
         return True

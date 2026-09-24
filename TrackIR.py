@@ -18,6 +18,8 @@ import ctypes
 from ctypes import wintypes
 import winreg
 import math
+import threading
+import time
 
 # --- GUI DESIGN STYLE ---
 BG_COLOR = "#121212"       
@@ -100,6 +102,43 @@ class LensEngine:
         self.cached_maps = (map_x.astype(np.float32), map_y.astype(np.float32))
         self.cached_key = key
         return self.cached_maps
+
+# ==========================================
+# MODULE 2B: BACKGROUND FRAME READER
+# ==========================================
+class FrameReader:
+    def __init__(self, source):
+        self.cap = cv2.VideoCapture(source)
+        self.opened = self.cap.isOpened()
+        self.frame = None; self.running = False; self.thread = None
+        if self.opened:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.is_file = self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0
+            fps = self.cap.get(cv2.CAP_PROP_FPS)
+            self.frame_time = 1.0 / fps if self.is_file and 0 < fps < 240 else 0
+            self.running = True
+            self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
+    def _run(self):
+        while self.running:
+            start = time.time()
+            try:
+                ret, frame = self.cap.read()
+                if not ret and self.is_file: self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0); ret, frame = self.cap.read()
+                if ret and frame is not None:
+                    if frame.shape[1] > 2500: scale = 2500 / frame.shape[1]; frame = cv2.resize(frame, (0,0), fx=scale, fy=scale)
+                    self.frame = frame
+                else: time.sleep(0.01)
+            except Exception: time.sleep(0.01)
+            if self.frame_time: time.sleep(max(0, self.frame_time - (time.time() - start)))
+        self.cap.release()
+    def isOpened(self): return self.opened
+    def read(self):
+        frame = self.frame
+        return frame is not None, frame
+    def release(self):
+        self.running = False
+        if self.thread: self.thread.join(timeout=1)
+        else: self.cap.release()
 
 # ==========================================
 # MODULE 3: MAIN APP (LITE)
@@ -205,9 +244,8 @@ class Video360App:
         self.lens.update_fov(self.current_fov)
         
         if self.pip_idx != -1:
-            self.pip_cap = cv2.VideoCapture(self.pip_idx)
+            self.pip_cap = FrameReader(self.pip_idx)
             if self.pip_cap.isOpened():
-                self.pip_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
                 self.pip_enabled = True
             else:
                 self.pip_idx = -1
@@ -228,9 +266,7 @@ class Video360App:
             
         if self.pip_enabled and self.pip_idx != -1:
             if self.pip_cap: self.pip_cap.release()
-            self.pip_cap = cv2.VideoCapture(self.pip_idx)
-            if self.pip_cap.isOpened():
-                self.pip_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.pip_cap = FrameReader(self.pip_idx)
             
         if not self.trackir.connected:
             self.trackir = TrackIRManager(self.root.winfo_id())
@@ -411,9 +447,8 @@ class Video360App:
 
     def _on_pip_selected(self, idx):
         if self.pip_cap: self.pip_cap.release()
-        self.pip_cap = cv2.VideoCapture(idx)
+        self.pip_cap = FrameReader(idx)
         if self.pip_cap.isOpened():
-            self.pip_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
             self.pip_enabled = True
             self.pip_idx = idx
             self.btn_pip.config(text="PiP: ON")
@@ -422,9 +457,8 @@ class Video360App:
     def toggle_pip(self):
         if not self.pip_enabled:
             if self.pip_idx != -1:
-                self.pip_cap = cv2.VideoCapture(self.pip_idx)
+                self.pip_cap = FrameReader(self.pip_idx)
                 if self.pip_cap.isOpened():
-                    self.pip_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     self.pip_enabled = True
                     self.btn_pip.config(text="PiP: ON")
                 else:
@@ -545,9 +579,8 @@ class Video360App:
 
     def load_source(self, source, silent_fail=False): 
         if self.cap: self.cap.release()
-        self.cap = cv2.VideoCapture(source)
+        self.cap = FrameReader(source)
         if self.cap.isOpened(): 
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
             self.is_playing = True
             self.last_main_source = source
             self.save_config()
@@ -567,7 +600,6 @@ class Video360App:
         self.offset_yaw += dx * self.sens_x.get() * 5
         new_fov = self.current_fov + (dy * self.sens_z.get() * 10)
         self.current_fov = max(20, min(130, new_fov))
-        self.lens.update_fov(self.current_fov)
 
     def pip_mouse_down(self, event):
         if not self.pip_enabled: return
@@ -610,7 +642,7 @@ class Video360App:
             ty, tp, tz = self.trackir.get_data()
             self.yaw, self.pitch = (ty*2)+self.offset_yaw, (tp*2)+self.offset_pitch
             self.current_fov = max(30, min(130, self.base_fov + tz*1.5)); self.lens.update_fov(self.current_fov)
-        else: self.yaw, self.pitch = self.offset_yaw, self.offset_pitch
+        else: self.yaw, self.pitch = self.offset_yaw, self.offset_pitch; self.lens.update_fov(self.current_fov)
         
         if self.view_mode == "180":
             limit = 90 - (self.current_fov / 2)
@@ -659,18 +691,17 @@ class Video360App:
                 self.canvas.itemconfig(self.canvas_image_id, image=self.tk_image)
 
     def update_loop(self):
+        start = time.time()
         try:
             if self.is_playing and self.cap:
                 ret, frame = self.cap.read()
-                if not ret:
-                    if self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0: self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0); ret, frame = self.cap.read()
-                    else: pass
                 if ret and frame is not None:
                     src_h, src_w = frame.shape[:2]
-                    if src_w > 2500: scale = 2500 / src_w; frame = cv2.resize(frame, (0,0), fx=scale, fy=scale); src_h, src_w = frame.shape[:2]
                     self.process_frame_and_display(frame, src_w, src_h)
         except Exception: pass
-        finally: self.root.after(self.update_delay, self.update_loop)
+        finally:
+            elapsed = int((time.time() - start) * 1000)
+            self.root.after(max(1, self.update_delay - elapsed), self.update_loop)
 
 if __name__ == "__main__":
     try: root = tk.Tk(); app = Video360App(root); root.protocol("WM_DELETE_WINDOW", app.quit_app); root.mainloop()

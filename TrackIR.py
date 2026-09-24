@@ -170,6 +170,7 @@ class Video360App:
         
         self.view_mode = "360"
         self.is_topmost = False
+        self.sens_x_val = 0.01; self.sens_z_val = 0.01
         self.is_fullscreen = False
 
         self.view_w, self.view_h = 1280, 720; self.update_delay = 15
@@ -273,7 +274,7 @@ class Video360App:
             self.trackir = TrackIRManager(self.root.winfo_id())
             if self.trackir.connected:
                 self.input_mode = "TRACKIR"
-                self.btn_mode.config(text=f"Tech: {self.input_mode}")
+                self.update_controls_visibility()
 
     def ask_camera_index(self, title_text, callback):
         cam_win = tk.Toplevel(self.root)
@@ -318,11 +319,11 @@ class Video360App:
 
     def open_config(self):
         cfg_win = tk.Toplevel(self.root)
-        cfg_win.geometry("300x440") 
+        cfg_win.geometry("300x580") 
         cfg_win.configure(bg=ACCENT_COLOR)
         cfg_win.overrideredirect(True)
         rx, ry = self.root.winfo_x(), self.root.winfo_y()
-        x = rx + (self.root.winfo_width() // 2) - 150; y = ry + (self.root.winfo_height() // 2) - 220
+        x = rx + (self.root.winfo_width() // 2) - 150; y = ry + (self.root.winfo_height() // 2) - 290
         cfg_win.geometry(f"+{x}+{y}")
         frame = tk.Frame(cfg_win, bg=BG_COLOR, bd=1)
         frame.pack(fill="both", expand=True, padx=1, pady=1)
@@ -350,18 +351,43 @@ class Video360App:
         tk.Label(frame, text="Target FPS:", fg=TEXT_COLOR, bg=BG_COLOR).pack(pady=(10,0))
         fps_scale = tk.Scale(frame, from_=15, to=60, orient=tk.HORIZONTAL, bg=BG_COLOR, fg=TEXT_COLOR, troughcolor=BTN_COLOR, highlightthickness=0)
         fps_scale.set(1000 // self.update_delay); fps_scale.pack(pady=2)
+
+        tk.Label(frame, text="Input Device:", fg=TEXT_COLOR, bg=BG_COLOR).pack(pady=(10,0))
+        tech_var = tk.StringVar(value=self.input_mode)
+        tk.OptionMenu(frame, tech_var, "MOUSE", "TRACKIR").pack()
+
+        tk.Label(frame, text="Mouse Sensitivity:", fg=TEXT_COLOR, bg=BG_COLOR).pack(pady=(10,0))
+        sens_frame = tk.Frame(frame, bg=BG_COLOR); sens_frame.pack(pady=2)
+        tk.Label(sens_frame, text="X:", fg=TEXT_COLOR, bg=BG_COLOR).pack(side="left")
+        sens_x_scale = tk.Scale(sens_frame, from_=0.001, to=0.05, resolution=0.001, orient=tk.HORIZONTAL, length=90, bg=BG_COLOR, fg=TEXT_COLOR, troughcolor=BTN_COLOR, highlightthickness=0, showvalue=0)
+        sens_x_scale.set(self.sens_x_val); sens_x_scale.pack(side="left", padx=5)
+        tk.Label(sens_frame, text="Z:", fg=TEXT_COLOR, bg=BG_COLOR).pack(side="left")
+        sens_z_scale = tk.Scale(sens_frame, from_=0.001, to=0.05, resolution=0.001, orient=tk.HORIZONTAL, length=90, bg=BG_COLOR, fg=TEXT_COLOR, troughcolor=BTN_COLOR, highlightthickness=0, showvalue=0)
+        sens_z_scale.set(self.sens_z_val); sens_z_scale.pack(side="left", padx=5)
+
+        top_var = tk.BooleanVar(value=self.is_topmost)
+        tk.Checkbutton(frame, text="Always on Top", variable=top_var, fg=TEXT_COLOR, bg=BG_COLOR, selectcolor=BTN_COLOR, activebackground=BG_COLOR, activeforeground=TEXT_COLOR, highlightthickness=0, bd=0).pack(pady=(10,0))
         
         def apply():
             w, h = map(int, res_var.get().split('x'))
             self.view_w, self.view_h = w, h
             self.lens_mode = lens_var.get()
-            self.btn_lens.config(text=f"Lens: {self.lens_mode}")
             
             self.base_fov = fov_scale.get()
             self.current_fov = self.base_fov
             self.lens = LensEngine(w, h, fov=self.current_fov, mode=self.lens_mode)
             
             self.update_delay = 1000 // fps_scale.get()
+
+            tech = tech_var.get()
+            if tech == "TRACKIR" and not self.trackir.connected:
+                messagebox.showerror("Error", "TrackIR not connected.")
+                tech = "MOUSE"
+            self.input_mode = tech
+            self.update_controls_visibility()
+            self.sens_x_val, self.sens_z_val = sens_x_scale.get(), sens_z_scale.get()
+            self.is_topmost = top_var.get()
+            self.root.attributes("-topmost", self.is_topmost)
             self.save_config()
             cfg_win.destroy()
             
@@ -433,11 +459,6 @@ class Video360App:
         
         tk.Button(frame, text="CANCEL", bg=QUIT_COLOR, fg=TEXT_COLOR, bd=0, width=15, command=stream_win.destroy).pack(pady=5)
 
-    def toggle_lens_type(self):
-        self.lens_mode = "Fisheye" if self.lens_mode == "Standard" else "Standard"
-        self.btn_lens.config(text=f"Lens: {self.lens_mode}")
-        self.lens = LensEngine(self.view_w, self.view_h, fov=self.current_fov, mode=self.lens_mode)
-
     def toggle_view_mode(self):
         if self.view_mode == "360": self.view_mode = "180"
         elif self.view_mode == "180": self.view_mode = "120"
@@ -474,11 +495,6 @@ class Video360App:
                 self.pip_cap = None
             self.save_config()
 
-    def toggle_topmost(self):
-        self.is_topmost = not getattr(self, 'is_topmost', False)
-        self.root.attributes("-topmost", self.is_topmost)
-        self.btn_topmost.config(text="Top: ON" if self.is_topmost else "Top: OFF", fg=ON_COLOR if self.is_topmost else TEXT_COLOR)
-
     def setup_ui(self):
         self.top_bar = tk.Frame(self.main_frame, bg=BG_COLOR, height=35); self.top_bar.pack(side="top", fill="x"); self.top_bar.pack_propagate(False)
         self.top_bar.bind("<Button-1>", self.start_move); self.top_bar.bind("<B1-Motion>", self.do_move)
@@ -487,9 +503,6 @@ class Video360App:
         
         btn_quit = tk.Button(self.top_bar, text="X", bg=QUIT_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=4, font=FONT_BOLD, command=self.quit_app)
         btn_quit.pack(side="right", fill="y", padx=2, pady=2)
-        
-        self.btn_topmost = tk.Button(self.top_bar, text="Top: ON" if self.is_topmost else "Top: OFF", bg=BTN_COLOR, fg=ON_COLOR if self.is_topmost else TEXT_COLOR, bd=0, relief="flat", width=8, command=self.toggle_topmost)
-        self.btn_topmost.pack(side="right", fill="y", padx=2, pady=2)
         
         btn_full = tk.Button(self.top_bar, text="Full", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=6, command=self.toggle_fullscreen)
         btn_full.pack(side="right", fill="y", padx=2, pady=2)
@@ -500,19 +513,9 @@ class Video360App:
         self.btn_pip = tk.Button(self.top_bar, text="PiP: ON" if self.pip_enabled else "PiP: OFF", bg=BTN_COLOR, fg=ON_COLOR if self.pip_enabled else TEXT_COLOR, bd=0, relief="flat", width=8, command=self.toggle_pip)
         self.btn_pip.pack(side="right", fill="y", padx=2, pady=2)
 
-        self.mouse_controls_frame = tk.Frame(self.top_bar, bg=BG_COLOR)
-        self.sens_z = tk.Scale(self.mouse_controls_frame, from_=0.001, to=0.05, resolution=0.001, orient=tk.HORIZONTAL, length=60, bg=BG_COLOR, fg=TEXT_COLOR, troughcolor=BTN_COLOR, highlightthickness=0, showvalue=0); self.sens_z.set(0.01); self.sens_z.pack(side="right", padx=5)
-        tk.Label(self.mouse_controls_frame, text="Z:", bg=BG_COLOR, fg=ACCENT_COLOR, font=("Segoe UI", 7)).pack(side="right")
-        self.sens_x = tk.Scale(self.mouse_controls_frame, from_=0.001, to=0.05, resolution=0.001, orient=tk.HORIZONTAL, length=60, bg=BG_COLOR, fg=TEXT_COLOR, troughcolor=BTN_COLOR, highlightthickness=0, showvalue=0); self.sens_x.set(0.01); self.sens_x.pack(side="right", padx=5)
-        tk.Label(self.mouse_controls_frame, text="X:", bg=BG_COLOR, fg=ACCENT_COLOR, font=("Segoe UI", 7)).pack(side="right")
-
-        self.btn_mode = tk.Button(self.top_bar, text=f"Tech: {self.input_mode}", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=12, command=self.toggle_mode); self.btn_mode.pack(side="right", fill="y", padx=2, pady=2)
-        
         self.btn_view_mode = tk.Button(self.top_bar, text=f"Mode: {self.view_mode}", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=10, command=self.toggle_view_mode)
         self.btn_view_mode.pack(side="right", fill="y", padx=2, pady=2)
         
-        self.btn_lens = tk.Button(self.top_bar, text=f"Lens: {self.lens_mode}", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=12, command=self.toggle_lens_type); self.btn_lens.pack(side="right", fill="y", padx=2, pady=2)
-
         btn_reset = tk.Button(self.top_bar, text="Reset", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=6, command=self.reset_to_home)
         btn_reset.pack(side="right", fill="y", padx=2, pady=2)
         btn_sethome = tk.Button(self.top_bar, text="Set Home", bg=BTN_COLOR, fg=TEXT_COLOR, bd=0, relief="flat", width=8, command=self.set_home_point)
@@ -544,15 +547,8 @@ class Video360App:
         self.canvas.bind("<Leave>", self.reset_mouse_tracking)
 
     def update_controls_visibility(self):
-        if self.input_mode == "MOUSE": self.mouse_controls_frame.pack(side="right", fill="y", padx=5); self.pitch_controls_frame.place(relx=0.9, rely=0.5, anchor="e")
-        else: self.mouse_controls_frame.pack_forget(); self.pitch_controls_frame.place_forget()
-
-    def toggle_mode(self):
-        if self.input_mode == "MOUSE":
-            if self.trackir.connected: self.input_mode = "TRACKIR"; self.btn_mode.config(text="Tech: TrackIR")
-            else: messagebox.showerror("Error", "TrackIR not connected.")
-        else: self.input_mode = "MOUSE"; self.btn_mode.config(text="Tech: Mouse")
-        self.update_controls_visibility()
+        if self.input_mode == "MOUSE": self.pitch_controls_frame.place(relx=0.9, rely=0.5, anchor="e")
+        else: self.pitch_controls_frame.place_forget()
 
     def start_move(self, event): 
         if not self.is_fullscreen:
@@ -598,8 +594,8 @@ class Video360App:
         if self.last_mouse_x is None: self.last_mouse_x, self.last_mouse_y = event.x, event.y; return
         dx, dy = event.x - self.last_mouse_x, event.y - self.last_mouse_y
         self.last_mouse_x, self.last_mouse_y = event.x, event.y
-        self.offset_yaw += dx * self.sens_x.get() * 5
-        new_fov = self.current_fov + (dy * self.sens_z.get() * 10)
+        self.offset_yaw += dx * self.sens_x_val * 5
+        new_fov = self.current_fov + (dy * self.sens_z_val * 10)
         self.current_fov = max(20, min(130, new_fov))
 
     def pip_mouse_down(self, event):

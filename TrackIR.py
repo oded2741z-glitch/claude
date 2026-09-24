@@ -66,19 +66,22 @@ class TrackIRManager:
 class LensEngine:
     def __init__(self, width, height, fov=70, mode="Standard"):
         self.width = width; self.height = height; self.fov = fov; self.mode = mode
-        self.cached_xyz = None; self._precompute_grid()
-    def update_fov(self, new_fov): 
+        self.cached_xyz = None; self.cached_maps = None; self.cached_key = None; self._precompute_grid()
+    def update_fov(self, new_fov):
         if abs(self.fov - new_fov) > 0.1: self.fov = new_fov; self._precompute_grid()
     def _precompute_grid(self):
         f = 0.5 * self.width / math.tan(0.5 * self.fov * np.pi / 180); cx, cy = self.width / 2, self.height / 2
-        x, y = np.meshgrid(np.arange(self.width), np.arange(self.height)); X, Y = (x - cx), (y - cy); Z = np.full_like(x, f)
+        x, y = np.meshgrid(np.arange(self.width, dtype=np.float32), np.arange(self.height, dtype=np.float32)); X, Y = (x - cx), (y - cy); Z = np.full_like(x, f)
         norm = np.sqrt(X**2 + Y**2 + Z**2)
-        self.cached_xyz = np.stack([X/norm, Y/norm, Z/norm], axis=-1)
+        self.cached_xyz = np.stack([X/norm, Y/norm, Z/norm], axis=-1).reshape(-1, 3).astype(np.float32)
+        self.cached_key = None
     def get_maps(self, yaw_deg, pitch_deg, src_w, src_h, view_mode="360"):
+        key = (round(yaw_deg, 2), round(pitch_deg, 2), src_w, src_h, view_mode, self.mode)
+        if key == self.cached_key: return self.cached_maps
         y, p = np.radians(yaw_deg), np.radians(-pitch_deg)
         Ry = np.array([[np.cos(y), 0, -np.sin(y)], [0, 1, 0], [np.sin(y), 0, np.cos(y)]])
         Rx = np.array([[1, 0, 0], [0, np.cos(p), -np.sin(p)], [0, np.sin(p), np.cos(p)]])
-        rotated = np.einsum('ij,klj->kli', Ry @ Rx, self.cached_xyz)
+        rotated = (self.cached_xyz @ (Ry @ Rx).T.astype(np.float32)).reshape(self.height, self.width, 3)
         X, Y, Z = rotated[..., 0], rotated[..., 1], rotated[..., 2]
         if self.mode == "Fisheye":
             r_3d = np.sqrt(X**2 + Y**2); theta = np.arctan2(r_3d, Z)
@@ -93,8 +96,10 @@ class LensEngine:
                 map_x = ((np.arctan2(X, Z) / ((2/3) * np.pi)) + 0.5) * src_w
             else: # 360
                 map_x = ((np.arctan2(X, Z) / (2 * np.pi)) + 0.5) * src_w
-            map_y = ((np.arcsin(Y) / np.pi) + 0.5) * src_h
-        return map_x.astype(np.float32), map_y.astype(np.float32)
+            map_y = ((np.arcsin(np.clip(Y, -1, 1)) / np.pi) + 0.5) * src_h
+        self.cached_maps = (map_x.astype(np.float32), map_y.astype(np.float32))
+        self.cached_key = key
+        return self.cached_maps
 
 # ==========================================
 # MODULE 3: MAIN APP (LITE)
@@ -648,19 +653,24 @@ class Video360App:
             
             img_pil = Image.fromarray(cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB))
             self.tk_image = ImageTk.PhotoImage(image=img_pil)
-            self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
+            if getattr(self, 'canvas_image_id', None) is None:
+                self.canvas_image_id = self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
+            else:
+                self.canvas.itemconfig(self.canvas_image_id, image=self.tk_image)
 
     def update_loop(self):
-        if self.is_playing and self.cap:
-            ret, frame = self.cap.read()
-            if not ret: 
-                if self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0: self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0); ret, frame = self.cap.read()
-                else: pass 
-            if ret:
-                src_h, src_w = frame.shape[:2]
-                if src_w > 2500: scale = 2500 / src_w; frame = cv2.resize(frame, (0,0), fx=scale, fy=scale); src_h, src_w = frame.shape[:2]
-                self.process_frame_and_display(frame, src_w, src_h)
-        self.root.after(self.update_delay, self.update_loop)
+        try:
+            if self.is_playing and self.cap:
+                ret, frame = self.cap.read()
+                if not ret:
+                    if self.cap.get(cv2.CAP_PROP_FRAME_COUNT) > 0: self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0); ret, frame = self.cap.read()
+                    else: pass
+                if ret and frame is not None:
+                    src_h, src_w = frame.shape[:2]
+                    if src_w > 2500: scale = 2500 / src_w; frame = cv2.resize(frame, (0,0), fx=scale, fy=scale); src_h, src_w = frame.shape[:2]
+                    self.process_frame_and_display(frame, src_w, src_h)
+        except Exception: pass
+        finally: self.root.after(self.update_delay, self.update_loop)
 
 if __name__ == "__main__":
     try: root = tk.Tk(); app = Video360App(root); root.protocol("WM_DELETE_WINDOW", app.quit_app); root.mainloop()

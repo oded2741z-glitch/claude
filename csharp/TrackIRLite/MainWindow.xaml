@@ -1,6 +1,7 @@
 <Window x:Class="TrackIRLite.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:TrackIRLite"
         Title="TrackIR Lite"
         Icon="pack://application:,,,/app.ico"
         Width="1100" Height="700"
@@ -12,8 +13,12 @@
 
     <Grid>
         <Border x:Name="VideoArea" Background="Black" Margin="5"
-                MouseMove="VideoArea_MouseMove" MouseLeave="VideoArea_MouseLeave">
-            <Image x:Name="VideoImage" Stretch="Fill" RenderOptions.BitmapScalingMode="Linear" />
+                MouseMove="VideoArea_MouseMove" MouseLeave="VideoArea_MouseLeave"
+                MouseLeftButtonDown="VideoArea_MouseLeftButtonDown">
+            <Grid>
+                <Image x:Name="VideoImage" Stretch="Fill" RenderOptions.BitmapScalingMode="Linear" />
+                <local:HudOverlay x:Name="Hud" IsHitTestVisible="False" />
+            </Grid>
         </Border>
 
         <Grid x:Name="TopBar" Height="35" VerticalAlignment="Top"

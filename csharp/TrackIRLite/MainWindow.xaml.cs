@@ -1,7 +1,11 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
-using System.Windows.Media;
 using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
+using OpenCvSharp;
 using Point = System.Windows.Point;
 using Rect = System.Windows.Rect;
 using Window = System.Windows.Window;
@@ -20,6 +24,17 @@ public partial class MainWindow : Window
     private FrameReader? cap;
     private long lastFrameId;
     private Point? lastMouse;
+    private readonly Mat stripMat = new();
+    private WriteableBitmap? strip;
+    private readonly DispatcherTimer barsTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+    private bool barsVisible = true;
+    private DateTime lastBarActivity = DateTime.Now;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint { public int X, Y; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out NativePoint point);
 
     public MainWindow()
     {
@@ -34,6 +49,8 @@ public partial class MainWindow : Window
         view.TirDeadzone = settings.TirDeadzone;
         view.TirCurve = settings.TirCurve;
         view.TirGain = settings.TirGain;
+        Hud.View = view;
+        barsTimer.Tick += BarsTick;
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -54,11 +71,14 @@ public partial class MainWindow : Window
 
         if (settings.LastMainSource != null) LoadSource(settings.LastMainSource, silentFail: true);
         CompositionTarget.Rendering += OnRendering;
+        ShowBars();
+        barsTimer.Start();
     }
 
     private void Window_Closed(object? sender, EventArgs e)
     {
         CompositionTarget.Rendering -= OnRendering;
+        barsTimer.Stop();
         cap?.Dispose();
         trackir?.Dispose();
         renderer?.Dispose();
@@ -78,6 +98,7 @@ public partial class MainWindow : Window
     {
         if (e.Key == Key.F5) ResetToHome();
         else if (e.Key == Key.F6) SetHome();
+        else if (e.Key == Key.H) Hud.ShowHud = !Hud.ShowHud;
     }
 
     private void SetHome()
@@ -99,7 +120,7 @@ public partial class MainWindow : Window
     private void OnRendering(object? sender, EventArgs e)
     {
         if (renderer == null || cap == null) return;
-        cap.TryRead(ref lastFrameId, renderer.UploadFrame);
+        cap.TryRead(ref lastFrameId, OnFrame);
         if (!renderer.HasSource) return;
 
         view.Update(view.InputMode == "TRACKIR" ? ReadTrackIR() : (0, 0, 0));
@@ -107,6 +128,74 @@ public partial class MainWindow : Window
         int width = (int)Math.Round(VideoArea.ActualWidth * dpi.DpiScaleX);
         int height = (int)Math.Round(VideoArea.ActualHeight * dpi.DpiScaleY);
         renderer.Render(width, height, view.GetParams(width));
+
+        Hud.ShowPanorama = barsVisible;
+        Hud.Strip = strip;
+        Hud.InvalidateVisual();
+    }
+
+    private void OnFrame(Mat frame)
+    {
+        renderer!.UploadFrame(frame);
+        if (barsVisible && view.LensMode != "Fisheye") UpdateStrip(frame);
+    }
+
+    private void UpdateStrip(Mat frame)
+    {
+        if (Hud.GetStripSize() is not (int sw, int sh)) return;
+        DpiScale dpi = VisualTreeHelper.GetDpi(this);
+        int pw = (int)Math.Round(sw * dpi.DpiScaleX);
+        int ph = (int)Math.Round(sh * dpi.DpiScaleY);
+
+        int band = Math.Min(frame.Height, Math.Max(1, frame.Width * sh / sw));
+        int top = (frame.Height - band) / 2;
+        using (var roi = new Mat(frame, new OpenCvSharp.Rect(0, top, frame.Width, band)))
+            Cv2.Resize(roi, stripMat, new OpenCvSharp.Size(pw, ph), 0, 0, InterpolationFlags.Area);
+
+        if (strip == null || strip.PixelWidth != pw || strip.PixelHeight != ph)
+            strip = new WriteableBitmap(pw, ph, 96 * dpi.DpiScaleX, 96 * dpi.DpiScaleY, PixelFormats.Bgra32, null);
+        int stride = (int)stripMat.Step();
+        strip.WritePixels(new Int32Rect(0, 0, pw, ph), stripMat.Data, stride * ph, stride);
+    }
+
+    private void ShowBars()
+    {
+        lastBarActivity = DateTime.Now;
+        if (barsVisible) return;
+        TopBar.Visibility = Visibility.Visible;
+        BottomBar.Visibility = Visibility.Visible;
+        barsVisible = true;
+    }
+
+    private void HideBars()
+    {
+        if (!barsVisible) return;
+        TopBar.Visibility = Visibility.Collapsed;
+        BottomBar.Visibility = Visibility.Collapsed;
+        barsVisible = false;
+    }
+
+    private void BarsTick(object? sender, EventArgs e)
+    {
+        try
+        {
+            GetCursorPos(out NativePoint cursor);
+            Point p = PointFromScreen(new Point(cursor.X, cursor.Y));
+            double w = ActualWidth, h = ActualHeight;
+            if (p.X >= 0 && p.X <= w && ((p.Y >= 0 && p.Y < 50) || (p.Y > h - 60 && p.Y <= h))) ShowBars();
+            else if ((DateTime.Now - lastBarActivity).TotalSeconds > 2) HideBars();
+        }
+        catch { }
+    }
+
+    private void VideoArea_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        Point p = e.GetPosition(Hud);
+        if (Hud.PanoRect is Rect pano && pano.Contains(p))
+        {
+            double target = (0.5 - (p.X - pano.X) / pano.Width) * Hud.PanoRange;
+            view.StartAnimation(view.WrapDelta(target - view.Yaw), 0);
+        }
     }
 
     private void VideoArea_MouseMove(object sender, MouseEventArgs e)

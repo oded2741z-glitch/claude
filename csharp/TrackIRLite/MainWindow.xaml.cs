@@ -1,8 +1,8 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using OpenCvSharp;
+using System.Windows.Interop;
+using Point = System.Windows.Point;
 using Rect = System.Windows.Rect;
 using Window = System.Windows.Window;
 
@@ -14,18 +14,34 @@ public partial class MainWindow : Window
     private bool isFullscreen;
     private Rect savedBounds;
 
+    private readonly ViewController view = new();
+    private D3DRenderer? renderer;
     private FrameReader? cap;
     private long lastFrameId;
-    private WriteableBitmap? videoBitmap;
+    private Point? lastMouse;
 
     public MainWindow()
     {
         InitializeComponent();
         settings = Settings.Load();
+        view.BaseFov = settings.BaseFov;
+        view.CurrentFov = settings.BaseFov;
+        view.OffsetYaw = settings.HomeYaw;
+        view.OffsetPitch = settings.HomePitch;
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        try
+        {
+            renderer = new D3DRenderer(new WindowInteropHelper(this).Handle);
+            VideoImage.Source = renderer.Image;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "GPU Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
         if (settings.LastMainSource != null) LoadSource(settings.LastMainSource, silentFail: true);
         CompositionTarget.Rendering += OnRendering;
     }
@@ -34,23 +50,46 @@ public partial class MainWindow : Window
     {
         CompositionTarget.Rendering -= OnRendering;
         cap?.Dispose();
+        renderer?.Dispose();
     }
 
     private void OnRendering(object? sender, EventArgs e)
     {
-        cap?.TryRead(ref lastFrameId, ShowFrame);
+        if (renderer == null || cap == null) return;
+        cap.TryRead(ref lastFrameId, renderer.UploadFrame);
+        if (!renderer.HasSource) return;
+
+        view.Update();
+        DpiScale dpi = VisualTreeHelper.GetDpi(this);
+        int width = (int)Math.Round(VideoArea.ActualWidth * dpi.DpiScaleX);
+        int height = (int)Math.Round(VideoArea.ActualHeight * dpi.DpiScaleY);
+        renderer.Render(width, height, view.GetParams(width));
     }
 
-    private void ShowFrame(Mat frame)
+    private void VideoArea_MouseMove(object sender, MouseEventArgs e)
     {
-        if (videoBitmap == null || videoBitmap.PixelWidth != frame.Width || videoBitmap.PixelHeight != frame.Height)
+        Point p = e.GetPosition(VideoArea);
+        if (lastMouse is Point last)
         {
-            videoBitmap = new WriteableBitmap(frame.Width, frame.Height, 96, 96, PixelFormats.Bgra32, null);
-            VideoImage.Source = videoBitmap;
+            DpiScale dpi = VisualTreeHelper.GetDpi(this);
+            view.MouseMove((p.X - last.X) * dpi.DpiScaleX, (p.Y - last.Y) * dpi.DpiScaleY);
         }
-        int stride = (int)frame.Step();
-        videoBitmap.WritePixels(new Int32Rect(0, 0, frame.Width, frame.Height), frame.Data, stride * frame.Height, stride);
+        lastMouse = p;
     }
+
+    private void VideoArea_MouseLeave(object sender, MouseEventArgs e)
+    {
+        lastMouse = null;
+    }
+
+    private void BtnMode_Click(object sender, RoutedEventArgs e)
+    {
+        view.ToggleViewMode();
+        BtnMode.Content = $"Mode: {view.ViewMode}";
+    }
+
+    private void BtnPitchDown_Click(object sender, RoutedEventArgs e) => view.ChangePitch(-5);
+    private void BtnPitchUp_Click(object sender, RoutedEventArgs e) => view.ChangePitch(5);
 
     private void LoadSource(string source, bool silentFail)
     {

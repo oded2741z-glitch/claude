@@ -11,8 +11,9 @@
         Loaded="Window_Loaded" Closed="Window_Closed">
 
     <Grid>
-        <Border x:Name="VideoArea" Background="Black" Margin="5">
-            <Image x:Name="VideoImage" Stretch="Fill" />
+        <Border x:Name="VideoArea" Background="Black" Margin="5"
+                MouseMove="VideoArea_MouseMove" MouseLeave="VideoArea_MouseLeave">
+            <Image x:Name="VideoImage" Stretch="Fill" RenderOptions.BitmapScalingMode="Linear" />
         </Border>
 
         <Grid x:Name="TopBar" Height="35" VerticalAlignment="Top"
@@ -24,7 +25,7 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button x:Name="BtnSetHome" Content="Set Home" Width="70" Style="{StaticResource BarButton}" />
                 <Button x:Name="BtnReset" Content="Reset" Width="55" Style="{StaticResource BarButton}" />
-                <Button x:Name="BtnMode" Content="Mode: 360" Width="85" Style="{StaticResource BarButton}" />
+                <Button x:Name="BtnMode" Content="Mode: 360" Width="85" Style="{StaticResource BarButton}" Click="BtnMode_Click" />
                 <Button x:Name="BtnPip" Content="PiP: OFF" Width="70" Style="{StaticResource BarButton}" />
                 <Button x:Name="BtnConfig" Content="Config" Width="55" Style="{StaticResource BarButton}" />
                 <Button x:Name="BtnFull" Content="Full" Width="55" Style="{StaticResource BarButton}" Click="BtnFull_Click" />
@@ -45,8 +46,8 @@
             </StackPanel>
             <StackPanel x:Name="PitchControls" Grid.Column="0" Orientation="Horizontal"
                         HorizontalAlignment="Right" VerticalAlignment="Center">
-                <Button x:Name="BtnPitchDown" Content="-" Width="36" Padding="0,5" Margin="5,0" FontWeight="Bold" Style="{StaticResource FlatButton}" />
-                <Button x:Name="BtnPitchUp" Content="+" Width="36" Padding="0,5" Margin="5,0" FontWeight="Bold" Style="{StaticResource FlatButton}" />
+                <Button x:Name="BtnPitchDown" Content="-" Width="36" Padding="0,5" Margin="5,0" FontWeight="Bold" Style="{StaticResource FlatButton}" Click="BtnPitchDown_Click" />
+                <Button x:Name="BtnPitchUp" Content="+" Width="36" Padding="0,5" Margin="5,0" FontWeight="Bold" Style="{StaticResource FlatButton}" Click="BtnPitchUp_Click" />
             </StackPanel>
         </Grid>
     </Grid>

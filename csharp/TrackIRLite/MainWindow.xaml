@@ -14,9 +14,17 @@
     <Grid>
         <Border x:Name="VideoArea" Background="Black" Margin="5"
                 MouseMove="VideoArea_MouseMove" MouseLeave="VideoArea_MouseLeave"
-                MouseLeftButtonDown="VideoArea_MouseLeftButtonDown">
+                MouseLeftButtonDown="VideoArea_MouseLeftButtonDown" MouseLeftButtonUp="VideoArea_MouseLeftButtonUp">
             <Grid>
                 <Image x:Name="VideoImage" Stretch="Fill" RenderOptions.BitmapScalingMode="Linear" />
+                <Canvas IsHitTestVisible="False">
+                    <Grid x:Name="PipBox" Visibility="Collapsed">
+                        <Image x:Name="PipImage" Stretch="Fill" RenderOptions.BitmapScalingMode="Linear" />
+                        <Border BorderBrush="{StaticResource TextBrush}" BorderThickness="2" />
+                        <Border Width="12" Height="12" Background="{StaticResource TextBrush}"
+                                HorizontalAlignment="Right" VerticalAlignment="Bottom" />
+                    </Grid>
+                </Canvas>
                 <local:HudOverlay x:Name="Hud" IsHitTestVisible="False" />
             </Grid>
         </Border>
@@ -31,8 +39,8 @@
                 <Button x:Name="BtnSetHome" Content="Set Home" Width="70" Style="{StaticResource BarButton}" Click="BtnSetHome_Click" />
                 <Button x:Name="BtnReset" Content="Reset" Width="55" Style="{StaticResource BarButton}" Click="BtnReset_Click" />
                 <Button x:Name="BtnMode" Content="Mode: 360" Width="85" Style="{StaticResource BarButton}" Click="BtnMode_Click" />
-                <Button x:Name="BtnPip" Content="PiP: OFF" Width="70" Style="{StaticResource BarButton}" />
-                <Button x:Name="BtnConfig" Content="Config" Width="55" Style="{StaticResource BarButton}" />
+                <Button x:Name="BtnPip" Content="PiP: OFF" Width="70" Style="{StaticResource BarButton}" Click="BtnPip_Click" />
+                <Button x:Name="BtnConfig" Content="Config" Width="55" Style="{StaticResource BarButton}" Click="BtnConfig_Click" />
                 <Button x:Name="BtnFull" Content="Full" Width="55" Style="{StaticResource BarButton}" Click="BtnFull_Click" />
                 <Button x:Name="BtnQuit" Content="X" Width="38" Style="{StaticResource QuitButton}" Click="BtnQuit_Click" />
             </StackPanel>

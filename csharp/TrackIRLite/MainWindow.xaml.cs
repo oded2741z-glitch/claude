@@ -29,6 +29,17 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer barsTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     private bool barsVisible = true;
     private DateTime lastBarActivity = DateTime.Now;
+    private int updateDelay = 15;
+    private readonly System.Diagnostics.Stopwatch renderClock = System.Diagnostics.Stopwatch.StartNew();
+    private double lastRenderMs = double.MinValue;
+
+    private FrameReader? pipCap;
+    private bool pipEnabled;
+    private long lastPipId;
+    private WriteableBitmap? pipBitmap;
+    private string? pipInteraction;
+    private Point pipDragStart;
+    private (int W, int X, int Y) pipOrig;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativePoint { public int X, Y; }
@@ -59,6 +70,14 @@ public partial class MainWindow : Window
         view.InputMode = trackir.Connected ? "TRACKIR" : "MOUSE";
         UpdateControlsVisibility();
 
+        if (settings.PipIndex != -1)
+        {
+            pipCap = new FrameReader(settings.PipIndex.ToString());
+            if (pipCap.IsOpened) pipEnabled = true;
+            else settings.PipIndex = -1;
+        }
+        UpdatePipButton();
+
         try
         {
             renderer = new D3DRenderer(new WindowInteropHelper(this).Handle);
@@ -80,6 +99,7 @@ public partial class MainWindow : Window
         CompositionTarget.Rendering -= OnRendering;
         barsTimer.Stop();
         cap?.Dispose();
+        pipCap?.Dispose();
         trackir?.Dispose();
         renderer?.Dispose();
     }
@@ -120,6 +140,10 @@ public partial class MainWindow : Window
     private void OnRendering(object? sender, EventArgs e)
     {
         if (renderer == null || cap == null) return;
+        double now = renderClock.Elapsed.TotalMilliseconds;
+        if (now - lastRenderMs < updateDelay - 1) return;
+        lastRenderMs = now;
+
         cap.TryRead(ref lastFrameId, OnFrame);
         if (!renderer.HasSource) return;
 
@@ -128,6 +152,7 @@ public partial class MainWindow : Window
         int width = (int)Math.Round(VideoArea.ActualWidth * dpi.DpiScaleX);
         int height = (int)Math.Round(VideoArea.ActualHeight * dpi.DpiScaleY);
         renderer.Render(width, height, view.GetParams(width));
+        UpdatePip();
 
         Hud.ShowPanorama = barsVisible;
         Hud.Strip = strip;
@@ -138,6 +163,122 @@ public partial class MainWindow : Window
     {
         renderer!.UploadFrame(frame);
         if (barsVisible && view.LensMode != "Fisheye") UpdateStrip(frame);
+    }
+
+    private void UpdatePip()
+    {
+        if (!pipEnabled || pipCap == null)
+        {
+            PipBox.Visibility = Visibility.Collapsed;
+            return;
+        }
+        pipCap.TryRead(ref lastPipId, frame =>
+        {
+            if (pipBitmap == null || pipBitmap.PixelWidth != frame.Width || pipBitmap.PixelHeight != frame.Height)
+            {
+                pipBitmap = new WriteableBitmap(frame.Width, frame.Height, 96, 96, PixelFormats.Bgra32, null);
+                PipImage.Source = pipBitmap;
+            }
+            int stride = (int)frame.Step();
+            pipBitmap.WritePixels(new Int32Rect(0, 0, frame.Width, frame.Height), frame.Data, stride * frame.Height, stride);
+        });
+        if (pipBitmap == null) return;
+
+        int winW = (int)VideoArea.ActualWidth, winH = (int)VideoArea.ActualHeight;
+        int pw = settings.PipWidth, ph = (int)(pw * 9 / 16.0);
+        if (settings.PipX == -1) settings.PipX = (winW - pw) / 2;
+        settings.PipX = Math.Max(0, Math.Min(settings.PipX, winW - pw));
+        settings.PipY = Math.Max(0, Math.Min(settings.PipY, winH - ph));
+
+        bool fits = settings.PipX + pw <= winW && settings.PipY + ph <= winH;
+        PipBox.Visibility = fits ? Visibility.Visible : Visibility.Collapsed;
+        PipBox.Width = pw;
+        PipBox.Height = ph;
+        System.Windows.Controls.Canvas.SetLeft(PipBox, settings.PipX);
+        System.Windows.Controls.Canvas.SetTop(PipBox, settings.PipY);
+    }
+
+    private void UpdatePipButton()
+    {
+        BtnPip.Content = pipEnabled ? "PiP: ON" : "PiP: OFF";
+        BtnPip.Foreground = (Brush)FindResource(pipEnabled ? "AccentBrush" : "TextBrush");
+    }
+
+    private void OnPipSelected(int index)
+    {
+        pipCap?.Dispose();
+        pipCap = new FrameReader(index.ToString());
+        lastPipId = 0;
+        if (pipCap.IsOpened)
+        {
+            pipEnabled = true;
+            settings.PipIndex = index;
+            UpdatePipButton();
+            settings.Save();
+        }
+    }
+
+    private void BtnPip_Click(object sender, RoutedEventArgs e)
+    {
+        if (!pipEnabled)
+        {
+            if (settings.PipIndex != -1)
+            {
+                pipCap?.Dispose();
+                pipCap = new FrameReader(settings.PipIndex.ToString());
+                lastPipId = 0;
+                if (pipCap.IsOpened)
+                {
+                    pipEnabled = true;
+                    UpdatePipButton();
+                    return;
+                }
+            }
+            int? index = AskCameraIndex("PIP USB CAMERA");
+            if (index != null) OnPipSelected(index.Value);
+        }
+        else
+        {
+            pipEnabled = false;
+            UpdatePipButton();
+            pipCap?.Dispose();
+            pipCap = null;
+            settings.Save();
+        }
+    }
+
+    private void BtnConfig_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new ConfigDialog(view.LensMode, view.BaseFov, Math.Clamp(1000 / updateDelay, 15, 60), view.InputMode,
+            view.SensX, view.SensZ, view.TirDeadzone, view.TirCurve, view.TirGain, Topmost) { Owner = this };
+        dialog.ShowDialog();
+        if (!dialog.Applied) return;
+
+        view.LensMode = dialog.LensMode;
+        view.BaseFov = dialog.BaseFov;
+        view.CurrentFov = view.BaseFov;
+        updateDelay = 1000 / dialog.TargetFps;
+
+        string input = dialog.InputMode;
+        if (input == "TRACKIR" && (trackir == null || !trackir.Connected))
+        {
+            MessageBox.Show(this, "TrackIR not connected.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            input = "MOUSE";
+        }
+        view.InputMode = input;
+        UpdateControlsVisibility();
+        view.SensX = dialog.SensX;
+        view.SensZ = dialog.SensZ;
+        view.TirDeadzone = dialog.Deadzone;
+        view.TirCurve = dialog.Curve;
+        view.TirGain = dialog.Gain;
+        Topmost = dialog.AlwaysOnTop;
+
+        settings.BaseFov = view.BaseFov;
+        settings.TirDeadzone = view.TirDeadzone;
+        settings.TirCurve = view.TirCurve;
+        settings.TirGain = view.TirGain;
+        settings.Save();
     }
 
     private void UpdateStrip(Mat frame)
@@ -195,12 +336,59 @@ public partial class MainWindow : Window
         {
             double target = (0.5 - (p.X - pano.X) / pano.Width) * Hud.PanoRange;
             view.StartAnimation(view.WrapDelta(target - view.Yaw), 0);
+            return;
         }
+        PipMouseDown(e.GetPosition(VideoArea));
+    }
+
+    private void PipMouseDown(Point p)
+    {
+        if (!pipEnabled) return;
+        int pw = settings.PipWidth, px = settings.PipX, py = settings.PipY, ph = (int)(pw * 9 / 16.0);
+        if (p.X < px || p.X > px + pw || p.Y < py || p.Y > py + ph) return;
+
+        bool corner = p.X >= px + pw - 20 && p.Y >= py + ph - 20;
+        pipInteraction = corner ? "resize" : "move";
+        pipDragStart = p;
+        pipOrig = (pw, px, py);
+        VideoArea.CaptureMouse();
+    }
+
+    private void PipMouseDrag(Point p)
+    {
+        if (!pipEnabled || pipInteraction == null) return;
+        int dx = (int)(p.X - pipDragStart.X), dy = (int)(p.Y - pipDragStart.Y);
+        if (pipInteraction == "move")
+        {
+            settings.PipX = pipOrig.X + dx;
+            settings.PipY = pipOrig.Y + dy;
+        }
+        else
+        {
+            int winW = (int)VideoArea.ActualWidth, winH = (int)VideoArea.ActualHeight;
+            int newW = Math.Max(150, Math.Min(winW, pipOrig.W + dx));
+            if ((int)(newW * 9 / 16.0) > winH) newW = (int)(winH * 16 / 9.0);
+            settings.PipWidth = newW;
+        }
+    }
+
+    private void VideoArea_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (pipInteraction == null) return;
+        pipInteraction = null;
+        VideoArea.ReleaseMouseCapture();
+        settings.Save();
     }
 
     private void VideoArea_MouseMove(object sender, MouseEventArgs e)
     {
         Point p = e.GetPosition(VideoArea);
+        if (e.LeftButton == MouseButtonState.Pressed)
+        {
+            PipMouseDrag(p);
+            lastMouse = p;
+            return;
+        }
         if (lastMouse is Point last)
         {
             DpiScale dpi = VisualTreeHelper.GetDpi(this);
@@ -271,6 +459,11 @@ public partial class MainWindow : Window
                 int? index = AskCameraIndex("MAIN USB CAMERA");
                 if (index != null) LoadSource(index.Value.ToString(), silentFail: false);
                 break;
+
+            case StreamChoice.PipCam:
+                int? pipIndex = AskCameraIndex("PIP USB CAMERA");
+                if (pipIndex != null) OnPipSelected(pipIndex.Value);
+                break;
         }
     }
 
@@ -279,6 +472,13 @@ public partial class MainWindow : Window
         cap?.Dispose();
         cap = null;
         if (settings.LastMainSource != null) LoadSource(settings.LastMainSource, silentFail: false);
+
+        if (pipEnabled && settings.PipIndex != -1)
+        {
+            pipCap?.Dispose();
+            pipCap = new FrameReader(settings.PipIndex.ToString());
+            lastPipId = 0;
+        }
 
         if (trackir == null || !trackir.Connected)
         {

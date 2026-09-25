@@ -48,7 +48,6 @@
         <Setter Property="WindowStyle" Value="None" />
         <Setter Property="ResizeMode" Value="NoResize" />
         <Setter Property="ShowInTaskbar" Value="False" />
-        <Setter Property="WindowStartupLocation" Value="CenterOwner" />
         <Setter Property="Background" Value="{StaticResource BarBrush}" />
         <Setter Property="BorderBrush" Value="{StaticResource ButtonBrush}" />
         <Setter Property="BorderThickness" Value="1" />

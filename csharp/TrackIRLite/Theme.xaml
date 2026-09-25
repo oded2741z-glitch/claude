@@ -1,0 +1,47 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <SolidColorBrush x:Key="BarBrush" Color="#121212" />
+    <SolidColorBrush x:Key="PanelBrush" Color="#1E1E1E" />
+    <SolidColorBrush x:Key="ButtonBrush" Color="#333333" />
+    <SolidColorBrush x:Key="TextBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="MutedBrush" Color="#888888" />
+    <SolidColorBrush x:Key="AccentBrush" Color="#FF6600" />
+    <SolidColorBrush x:Key="QuitBrush" Color="#FF0000" />
+
+    <Style x:Key="FlatButton" TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource ButtonBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="{StaticResource PanelBrush}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="BarButton" TargetType="Button" BasedOn="{StaticResource FlatButton}">
+        <Setter Property="Margin" Value="2" />
+    </Style>
+
+    <Style x:Key="QuitButton" TargetType="Button" BasedOn="{StaticResource BarButton}">
+        <Setter Property="Background" Value="{StaticResource QuitBrush}" />
+        <Setter Property="FontWeight" Value="Bold" />
+    </Style>
+
+</ResourceDictionary>

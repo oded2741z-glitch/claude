@@ -16,6 +16,7 @@ public partial class MainWindow : Window
 
     private readonly ViewController view = new();
     private D3DRenderer? renderer;
+    private TrackIRDevice? trackir;
     private FrameReader? cap;
     private long lastFrameId;
     private Point? lastMouse;
@@ -26,12 +27,21 @@ public partial class MainWindow : Window
         settings = Settings.Load();
         view.BaseFov = settings.BaseFov;
         view.CurrentFov = settings.BaseFov;
+        view.HomeYaw = settings.HomeYaw;
+        view.HomePitch = settings.HomePitch;
         view.OffsetYaw = settings.HomeYaw;
         view.OffsetPitch = settings.HomePitch;
+        view.TirDeadzone = settings.TirDeadzone;
+        view.TirCurve = settings.TirCurve;
+        view.TirGain = settings.TirGain;
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
+        trackir = new TrackIRDevice(new WindowInteropHelper(this).Handle);
+        view.InputMode = trackir.Connected ? "TRACKIR" : "MOUSE";
+        UpdateControlsVisibility();
+
         try
         {
             renderer = new D3DRenderer(new WindowInteropHelper(this).Handle);
@@ -50,8 +60,41 @@ public partial class MainWindow : Window
     {
         CompositionTarget.Rendering -= OnRendering;
         cap?.Dispose();
+        trackir?.Dispose();
         renderer?.Dispose();
     }
+
+    private (double Yaw, double Pitch, double Z) ReadTrackIR()
+    {
+        return trackir?.GetData() ?? (0, 0, 0);
+    }
+
+    private void UpdateControlsVisibility()
+    {
+        PitchControls.Visibility = view.InputMode == "MOUSE" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void Window_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.F5) ResetToHome();
+        else if (e.Key == Key.F6) SetHome();
+    }
+
+    private void SetHome()
+    {
+        view.SetHome();
+        settings.HomeYaw = view.HomeYaw;
+        settings.HomePitch = view.HomePitch;
+        settings.Save();
+    }
+
+    private void ResetToHome()
+    {
+        view.ResetToHome(ReadTrackIR());
+    }
+
+    private void BtnSetHome_Click(object sender, RoutedEventArgs e) => SetHome();
+    private void BtnReset_Click(object sender, RoutedEventArgs e) => ResetToHome();
 
     private void OnRendering(object? sender, EventArgs e)
     {
@@ -59,7 +102,7 @@ public partial class MainWindow : Window
         cap.TryRead(ref lastFrameId, renderer.UploadFrame);
         if (!renderer.HasSource) return;
 
-        view.Update();
+        view.Update(view.InputMode == "TRACKIR" ? ReadTrackIR() : (0, 0, 0));
         DpiScale dpi = VisualTreeHelper.GetDpi(this);
         int width = (int)Math.Round(VideoArea.ActualWidth * dpi.DpiScaleX);
         int height = (int)Math.Round(VideoArea.ActualHeight * dpi.DpiScaleY);
@@ -100,6 +143,7 @@ public partial class MainWindow : Window
             lastFrameId = 0;
             settings.LastMainSource = source;
             settings.Save();
+            ResetToHome();
         }
         else
         {
@@ -146,6 +190,17 @@ public partial class MainWindow : Window
         cap?.Dispose();
         cap = null;
         if (settings.LastMainSource != null) LoadSource(settings.LastMainSource, silentFail: false);
+
+        if (trackir == null || !trackir.Connected)
+        {
+            trackir?.Dispose();
+            trackir = new TrackIRDevice(new WindowInteropHelper(this).Handle);
+            if (trackir.Connected)
+            {
+                view.InputMode = "TRACKIR";
+                UpdateControlsVisibility();
+            }
+        }
     }
 
     private void TopBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

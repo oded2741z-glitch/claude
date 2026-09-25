@@ -8,7 +8,7 @@
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BarBrush}"
         BorderBrush="{StaticResource BarBrush}" BorderThickness="1"
-        Loaded="Window_Loaded" Closed="Window_Closed">
+        Loaded="Window_Loaded" Closed="Window_Closed" KeyDown="Window_KeyDown">
 
     <Grid>
         <Border x:Name="VideoArea" Background="Black" Margin="5"
@@ -23,8 +23,8 @@
                        Foreground="{StaticResource AccentBrush}"
                        FontFamily="Segoe UI" FontSize="12" FontWeight="Bold" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="BtnSetHome" Content="Set Home" Width="70" Style="{StaticResource BarButton}" />
-                <Button x:Name="BtnReset" Content="Reset" Width="55" Style="{StaticResource BarButton}" />
+                <Button x:Name="BtnSetHome" Content="Set Home" Width="70" Style="{StaticResource BarButton}" Click="BtnSetHome_Click" />
+                <Button x:Name="BtnReset" Content="Reset" Width="55" Style="{StaticResource BarButton}" Click="BtnReset_Click" />
                 <Button x:Name="BtnMode" Content="Mode: 360" Width="85" Style="{StaticResource BarButton}" Click="BtnMode_Click" />
                 <Button x:Name="BtnPip" Content="PiP: OFF" Width="70" Style="{StaticResource BarButton}" />
                 <Button x:Name="BtnConfig" Content="Config" Width="55" Style="{StaticResource BarButton}" />

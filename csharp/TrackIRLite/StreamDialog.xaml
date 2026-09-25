@@ -1,0 +1,27 @@
+<Window x:Class="TrackIRLite.StreamDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Load Stream" Width="450" Height="290"
+        Style="{StaticResource DialogWindow}"
+        MouseLeftButtonDown="Window_MouseLeftButtonDown">
+    <StackPanel>
+        <TextBlock Text="ENTER RTSP / HTTP URL" Style="{StaticResource DialogTitle}" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,5">
+            <TextBox x:Name="UrlBox" Width="260" Style="{StaticResource FlatTextBox}" />
+            <Button Content="PASTE" Padding="8,3" Margin="5,0,0,0" FontWeight="Bold"
+                    Style="{StaticResource FlatButton}" Click="Paste_Click" />
+        </StackPanel>
+
+        <StackPanel x:Name="HistoryPanel" HorizontalAlignment="Center" Margin="0,2" />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10">
+            <Button Content="URL" Width="75" Padding="0,4" Margin="5,0" Style="{StaticResource FlatButton}" Click="Url_Click" />
+            <Button Content="MAIN CAM" Width="75" Padding="0,4" Margin="5,0" Style="{StaticResource FlatButton}" Click="MainCam_Click" />
+            <Button Content="PIP CAM" Width="75" Padding="0,4" Margin="5,0" Style="{StaticResource FlatButton}" Click="PipCam_Click" />
+        </StackPanel>
+
+        <Button Content="CANCEL" Width="110" Padding="0,4" Margin="0,5"
+                Style="{StaticResource QuitButton}" Click="Cancel_Click" />
+    </StackPanel>
+</Window>

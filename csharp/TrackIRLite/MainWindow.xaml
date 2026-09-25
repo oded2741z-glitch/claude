@@ -7,10 +7,13 @@
         WindowStyle="None" ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BarBrush}"
-        BorderBrush="{StaticResource BarBrush}" BorderThickness="1">
+        BorderBrush="{StaticResource BarBrush}" BorderThickness="1"
+        Loaded="Window_Loaded" Closed="Window_Closed">
 
     <Grid>
-        <Border x:Name="VideoArea" Background="Black" Margin="5" />
+        <Border x:Name="VideoArea" Background="Black" Margin="5">
+            <Image x:Name="VideoImage" Stretch="Fill" />
+        </Border>
 
         <Grid x:Name="TopBar" Height="35" VerticalAlignment="Top"
               Background="{StaticResource BarBrush}"
@@ -37,8 +40,8 @@
             </Grid.ColumnDefinitions>
             <StackPanel Grid.ColumnSpan="2" Orientation="Horizontal"
                         HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Button x:Name="BtnLoadStream" Content="Load Stream" Padding="20,5" Margin="5,0" Style="{StaticResource FlatButton}" />
-                <Button x:Name="BtnReloadCams" Content="Reload Cams" Padding="20,5" Margin="5,0" Style="{StaticResource FlatButton}" />
+                <Button x:Name="BtnLoadStream" Content="Load Stream" Padding="20,5" Margin="5,0" Style="{StaticResource FlatButton}" Click="BtnLoadStream_Click" />
+                <Button x:Name="BtnReloadCams" Content="Reload Cams" Padding="20,5" Margin="5,0" Style="{StaticResource FlatButton}" Click="BtnReloadCams_Click" />
             </StackPanel>
             <StackPanel x:Name="PitchControls" Grid.Column="0" Orientation="Horizontal"
                         HorizontalAlignment="Right" VerticalAlignment="Center">

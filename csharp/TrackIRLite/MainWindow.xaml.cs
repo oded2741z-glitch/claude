@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private int updateDelay = 15;
     private readonly System.Diagnostics.Stopwatch renderClock = System.Diagnostics.Stopwatch.StartNew();
     private double lastRenderMs = double.MinValue;
+    private double lastStripMs = double.MinValue;
 
     private FrameReader? pipCap;
     private bool pipEnabled;
@@ -156,13 +157,18 @@ public partial class MainWindow : Window
 
         Hud.ShowPanorama = barsVisible;
         Hud.Strip = strip;
-        Hud.InvalidateVisual();
+        Hud.Refresh();
     }
 
     private void OnFrame(Mat frame)
     {
         renderer!.UploadFrame(frame);
-        if (barsVisible && view.LensMode != "Fisheye") UpdateStrip(frame);
+        double now = renderClock.Elapsed.TotalMilliseconds;
+        if (barsVisible && view.LensMode != "Fisheye" && now - lastStripMs >= 100)
+        {
+            lastStripMs = now;
+            UpdateStrip(frame);
+        }
     }
 
     private void UpdatePip()

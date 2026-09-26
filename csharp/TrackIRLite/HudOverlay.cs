@@ -20,6 +20,8 @@ public class HudOverlay : FrameworkElement
     public Rect? PanoRect { get; private set; }
     public double PanoRange { get; private set; }
 
+    private object? lastState;
+
     private static T Frozen<T>(T f) where T : Freezable
     {
         f.Freeze();
@@ -33,6 +35,16 @@ public class HudOverlay : FrameworkElement
         int sh = Math.Max(30, sw / 8);
         if (sw < 50 || h - 50 - sh < 0) return null;
         return (sw, sh);
+    }
+
+    public void Refresh()
+    {
+        if (View == null) return;
+        var state = (View.Yaw, View.Pitch, View.CurrentFov, View.HomeYaw, View.ViewMode, View.LensMode,
+            ShowHud, ShowPanorama, Strip, ActualWidth, ActualHeight);
+        if (state.Equals(lastState)) return;
+        lastState = state;
+        InvalidateVisual();
     }
 
     protected override void OnRender(DrawingContext dc)

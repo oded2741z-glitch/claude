@@ -38,7 +38,6 @@ public sealed class D3DRenderer : IDisposable
     private readonly ID3D11Buffer constants;
     private readonly ID3D11SamplerState wrapSampler;
     private readonly ID3D11SamplerState clampSampler;
-    private readonly ID3D11Query doneQuery;
     private readonly IDirect3D9Ex d3d9;
     private readonly IDirect3DDevice9Ex device9;
 
@@ -69,7 +68,6 @@ public sealed class D3DRenderer : IDisposable
         constants = device.CreateBuffer((uint)Marshal.SizeOf<ViewParams>(), BindFlags.ConstantBuffer, ResourceUsage.Default, CpuAccessFlags.None, ResourceOptionFlags.None, 0);
         wrapSampler = CreateSampler(TextureAddressMode.Wrap);
         clampSampler = CreateSampler(TextureAddressMode.Clamp);
-        doneQuery = device.CreateQuery(new QueryDescription(Vortice.Direct3D11.QueryType.Event));
 
         d3d9 = D3D9.Direct3DCreate9Ex();
         var present = new Vortice.Direct3D9.PresentParameters
@@ -213,9 +211,7 @@ public sealed class D3DRenderer : IDisposable
         context.PSSetShaderResource(0, sourceView);
         context.PSSetSampler(0, view.Fisheye < 0.5f && view.Range > 6.28f ? wrapSampler : clampSampler);
         context.Draw(3, 0);
-        context.End(doneQuery);
         context.Flush();
-        while (!context.IsDataAvailable(doneQuery)) Thread.Yield();
         Image.AddDirtyRect(new Int32Rect(0, 0, width, height));
         Image.Unlock();
     }
@@ -225,7 +221,6 @@ public sealed class D3DRenderer : IDisposable
         ReleaseTarget();
         sourceView?.Dispose();
         sourceTexture?.Dispose();
-        doneQuery.Dispose();
         clampSampler.Dispose();
         wrapSampler.Dispose();
         constants.Dispose();

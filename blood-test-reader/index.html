@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M16 6c-4 6-7 9.5-7 13a7 7 0 0 0 14 0c0-3.5-3-7-7-13z' fill='white'/%3E%3C/svg%3E">
+<link rel="shortcut icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Cpath d='M16 6c-4 6-7 9.5-7 13a7 7 0 0 0 14 0c0-3.5-3-7-7-13z' fill='white'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#f9fafb">
+<title>Blood Test Reader</title>
+<meta name="description" content="Read your blood test PDFs, track trends over time, spot patterns between values and prepare for your doctor visit. Your data stays in your browser.">
+<link rel="canonical" href="index.html">
+<meta property="og:title" content="Blood Test Reader">
+<meta property="og:description" content="Track blood test trends over time, spot patterns between values and prepare for your doctor visit.">
+<meta property="og:type" content="website">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root {
+  --primary-accent: #2563eb;
+  --primary-hover:  #1d4ed8;
+  --bg-light:       #f9fafb;
+  --text-dark:      #111827;
+  --text-gray:      #64748b;
+  --border-color:   #e2e8f0;
+}
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden; }
+header { padding:1.5rem 6%; display:flex; align-items:center; justify-content:space-between; background:#ffffff; border-bottom:1px solid var(--border-color); }
+.logo-text { font-weight:800; font-size:1.5rem; letter-spacing:-0.5px; color:var(--text-dark); text-decoration:none; }
+.logo-accent { color:var(--primary-accent); }
+.work-wrap { max-width:860px; margin:3rem auto; padding:0 6%; width:100%; display:flex; flex-direction:column; gap:1.5rem; }
+.title-block h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); margin-bottom:0.5rem; }
+.title-block p { font-size:1.05rem; color:var(--text-gray); line-height:1.6; }
+.section-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); }
+.privacy { display:flex; align-items:center; gap:8px; font-size:0.95rem; font-weight:600; color:var(--text-gray); }
+.dot { width:6px; height:6px; background:#10b981; border-radius:50%; flex-shrink:0; }
+.panel { background:white; border:1px solid var(--border-color); border-radius:12px; padding:2rem; display:flex; flex-direction:column; gap:1.25rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }
+.panel h2 { font-size:1.25rem; font-weight:800; letter-spacing:-0.5px; }
+.panel-head { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.muted { color:var(--text-gray); font-size:0.95rem; line-height:1.6; }
+.row { display:flex; gap:1rem; align-items:flex-end; flex-wrap:wrap; }
+.field { display:flex; flex-direction:column; gap:0.4rem; }
+label { font-size:0.85rem; font-weight:700; color:var(--text-gray); text-transform:uppercase; letter-spacing:0.5px; }
+input, select { background:white; border:1px solid var(--border-color); color:var(--text-dark); border-radius:8px; padding:0.6rem 0.8rem; font-size:0.95rem; }
+input:focus, select:focus { outline:2px solid var(--primary-accent); outline-offset:-1px; }
+.dropzone { background:white; border:2px dashed var(--border-color); border-radius:12px; padding:3rem; text-align:center; cursor:pointer; color:var(--text-gray); transition:border-color 0.2s, background 0.2s; }
+.dropzone:hover, .dropzone.drag { border-color:var(--primary-accent); background:#eff6ff; }
+.dropzone strong { display:block; color:var(--text-dark); font-size:1.1rem; margin-bottom:0.4rem; }
+.btn-primary { background:var(--primary-accent); color:#fff; border:none; border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:0.95rem; cursor:pointer; transition:background 0.2s; }
+.btn-primary:hover { background:var(--primary-hover); }
+.btn-primary:disabled { opacity:0.5; cursor:not-allowed; }
+.btn-secondary { background:white; color:var(--text-dark); border:1px solid var(--border-color); border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:0.95rem; cursor:pointer; transition:border-color 0.2s; }
+.btn-secondary:hover { border-color:var(--primary-accent); }
+.btn-small { padding:0.4rem 0.8rem; font-size:0.85rem; }
+.btn-danger { color:#991b1b; }
+.btn-danger:hover { border-color:#991b1b; }
+.status-msg { font-size:0.95rem; color:var(--text-gray); min-height:1.2em; }
+.status-msg.error { color:#991b1b; font-weight:600; }
+.table-wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:0.95rem; }
+th { text-align:left; font-size:0.75rem; font-weight:700; letter-spacing:1px; text-transform:uppercase; color:var(--text-gray); padding:0.6rem 0.5rem; border-bottom:1px solid var(--border-color); }
+td { padding:0.5rem; border-bottom:1px solid #f1f5f9; color:#475569; vertical-align:middle; }
+td.name { color:var(--text-dark); font-weight:600; }
+tr.group td { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); padding-top:1.25rem; border-bottom:1px solid var(--border-color); }
+td input { width:110px; padding:0.4rem 0.6rem; }
+td input.found { border-color:#bfdbfe; background:#eff6ff; }
+.badge { display:inline-block; font-size:0.7rem; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:0.2rem 0.6rem; border-radius:4px; }
+.badge.low, .badge.high { background:#fee2e2; color:#991b1b; }
+.badge.normal { background:#d1fae5; color:#065f46; }
+.badge.trend { background:#fef3c7; color:#92400e; }
+.test-list { display:flex; flex-direction:column; gap:0.5rem; }
+.test-item { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:0.75rem 1rem; border:1px solid var(--border-color); border-radius:8px; }
+.test-item .t-date { font-weight:700; }
+.test-item .t-info { color:var(--text-gray); font-size:0.9rem; }
+.chart-box { position:relative; }
+.chart-box svg { width:100%; height:auto; display:block; }
+.tooltip { position:absolute; pointer-events:none; background:white; border:1px solid var(--border-color); border-radius:8px; padding:0.5rem 0.75rem; font-size:0.85rem; box-shadow:0 10px 25px rgba(0,0,0,0.08); display:none; white-space:nowrap; color:var(--text-dark); }
+.tooltip .tt-date { color:var(--text-gray); font-size:0.8rem; }
+.tooltip .tt-val { font-weight:700; }
+.findings { display:flex; flex-direction:column; gap:1rem; }
+.finding { border:1px solid var(--border-color); border-left:4px solid #64748b; border-radius:8px; padding:1rem 1.25rem; background:#f8fafc; }
+.finding.alert { border-left-color:#991b1b; }
+.finding.watch { border-left-color:#92400e; }
+.finding h3 { font-size:1rem; font-weight:800; color:#1e293b; margin-bottom:0.35rem; display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap; }
+.finding p { color:#475569; font-size:0.95rem; line-height:1.6; }
+.disclaimer { background:#f8fafc; border-left:4px solid #64748b; padding:1.25rem 1.5rem; font-weight:600; text-transform:uppercase; font-size:0.85rem; color:#1e293b; line-height:1.6; }
+.hidden { display:none !important; }
+.site-footer { padding:3rem 6%; border-top:1px solid var(--border-color); background:white; margin-top:auto; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; color:var(--text-gray); font-size:0.9rem; font-weight:600; }
+#report { display:none; }
+.acc-btn { position:fixed; bottom:30px; left:30px; width:50px; height:50px; border-radius:50%; background:var(--primary-accent); display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:1000; }
+.acc-menu { position:fixed; bottom:90px; left:30px; width:260px; display:none; flex-direction:column; gap:0.8rem; padding:1.5rem; background:white; border:1px solid var(--border-color); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:1000; }
+.acc-toggle { width:100%; padding:0.6rem; border:1px solid var(--border-color); border-radius:6px; background:white; font-weight:700; text-align:left; cursor:pointer; }
+.acc-toggle:hover { border-color:var(--primary-accent); }
+body.acc-high-contrast { background:#000; color:#fff; }
+body.acc-high-contrast * { background:#000 !important; color:#fff !important; border-color:#fff !important; }
+body.acc-large-text * { font-size:120% !important; }
+body.acc-highlight-links a { background:yellow !important; color:black !important; padding:2px !important; }
+@media (max-width:768px){ .title-block h1{font-size:1.8rem;} .panel{padding:1.5rem;} .dropzone{padding:2rem 1rem;} }
+@media (max-width:600px){ .site-footer{flex-direction:column;text-align:center;} }
+@media print {
+  body { background:white; display:block; }
+  body > *:not(#report) { display:none !important; }
+  #report { display:block; padding:0; color:#111827; }
+  #report h1 { font-size:1.6rem; letter-spacing:-0.5px; margin-bottom:0.25rem; }
+  #report h2 { font-size:1.1rem; margin:1.5rem 0 0.5rem; padding-bottom:0.3rem; border-bottom:1px solid #e2e8f0; }
+  #report .meta { color:#64748b; font-size:0.9rem; margin-bottom:1rem; }
+  #report table { font-size:0.85rem; page-break-inside:auto; }
+  #report tr { page-break-inside:avoid; }
+  #report td, #report th { padding:0.3rem 0.4rem; }
+  #report ul, #report ol { padding-left:1.4rem; font-size:0.9rem; line-height:1.6; color:#475569; }
+  #report li { margin-bottom:0.3rem; }
+  #report .note { margin-top:1.5rem; font-size:0.8rem; color:#64748b; border-top:1px solid #e2e8f0; padding-top:0.5rem; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <a href="index.html" class="logo-text">BloodTest<span class="logo-accent">Reader</span></a>
+</header>
+
+<div class="work-wrap">
+  <div class="title-block">
+    <h1>Blood Test Reader</h1>
+    <p>Upload your lab report PDFs, follow each value over time, see patterns between values and get a summary ready for your doctor.</p>
+  </div>
+
+  <div class="privacy"><span class="dot"></span>Your data stays in this browser. Nothing is uploaded to any server.</div>
+
+  <div class="panel">
+    <div class="row">
+      <div class="field">
+        <label for="sex">Sex (for reference ranges)</label>
+        <select id="sex">
+          <option value="m">Male</option>
+          <option value="f">Female</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="dropzone" id="dropzone">
+    <strong>Drop a lab report PDF here</strong>
+    or click to choose a file
+  </div>
+  <input type="file" id="file-input" accept="application/pdf" class="hidden">
+  <div class="row" style="justify-content:space-between;align-items:center;">
+    <div class="status-msg" id="status-msg"></div>
+    <button class="btn-secondary btn-small" id="manual-btn">Enter values manually</button>
+  </div>
+
+  <div class="panel hidden" id="review-panel">
+    <div class="panel-head">
+      <h2>Review results</h2>
+      <div class="field">
+        <label for="test-date">Test date</label>
+        <input type="date" id="test-date">
+      </div>
+    </div>
+    <p class="muted" id="review-note"></p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Test</th><th>Value</th><th>Unit</th><th>Normal range</th><th>Status</th></tr></thead>
+        <tbody id="review-body"></tbody>
+      </table>
+    </div>
+    <div class="row">
+      <button class="btn-primary" id="save-btn">Save test</button>
+      <button class="btn-secondary" id="cancel-btn">Cancel</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Saved tests</h2>
+      <button class="btn-primary" id="report-btn">Print doctor report</button>
+    </div>
+    <div class="test-list" id="test-list"></div>
+  </div>
+
+  <div class="panel" id="trend-panel">
+    <div class="panel-head">
+      <h2>Trends over time</h2>
+      <div class="field">
+        <label for="trend-select">Value</label>
+        <select id="trend-select"></select>
+      </div>
+    </div>
+    <div class="chart-box" id="chart-box">
+      <div id="chart"></div>
+      <div class="tooltip" id="tooltip"></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Date</th><th>Value</th><th>Status</th></tr></thead>
+        <tbody id="history-body"></tbody>
+      </table>
+    </div>
+    <div class="section-label">Trend alerts</div>
+    <div class="findings" id="trend-alerts"></div>
+  </div>
+
+  <div class="panel" id="pattern-panel">
+    <h2>Patterns between values</h2>
+    <p class="muted" id="pattern-note"></p>
+    <div class="findings" id="patterns"></div>
+  </div>
+
+  <div class="disclaimer">For information only. This tool does not provide a medical diagnosis. Reference ranges vary between labs. Always discuss your results with your doctor.</div>
+</div>
+
+<footer class="site-footer">
+  <div>&copy; 2026 Blood Test Reader</div>
+  <div>Your data never leaves your device</div>
+</footer>
+
+<div id="report"></div>
+
+<button class="acc-btn" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')">
+  <svg viewBox="0 0 24 24" fill="white" width="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
+</button>
+<div class="acc-menu" id="acc-menu">
+  <h4 style="margin-bottom:0.5rem;">Accessibility Options</h4>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-high-contrast')">High Contrast Mode</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-large-text')">Increase Font Size</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-highlight-links')">Highlight Links</button>
+  <button class="acc-toggle" onclick="location.reload()" style="color:red;border-color:red;margin-top:10px;">Reset All</button>
+</div>
+
+<script>
+const ANALYTES = [
+  { key:'WBC', name:'White blood cells (WBC)', group:'Complete blood count', unit:'10³/µL', r:[4.0,10.5], p:[0.5,100],
+    re:/\b(WBC|leukocytes?|white blood cells?)\b|לויקוציטים|כדוריות לבנות/i, ex:/HPF|urine|שתן/i },
+  { key:'RBC', name:'Red blood cells (RBC)', group:'Complete blood count', unit:'10⁶/µL', r:{m:[4.5,5.9],f:[4.0,5.2]}, p:[1,9],
+    re:/\b(RBC|erythrocytes?|red blood cells?)\b|אריתרוציטים|כדוריות אדומות/i, ex:/RDW|distribution|HPF|urine|שתן/i },
+  { key:'HGB', name:'Hemoglobin (HGB)', group:'Complete blood count', unit:'g/dL', r:{m:[13.5,17.5],f:[12.0,16.0]}, p:[3,25],
+    re:/\b(HGB|HB|hemoglobin|haemoglobin)\b|המוגלובין/i, ex:/A1c|glyc|MCH|מסוכרר/i },
+  { key:'HCT', name:'Hematocrit (HCT)', group:'Complete blood count', unit:'%', r:{m:[41,53],f:[36,46]}, p:[10,75],
+    re:/\b(HCT|hematocrit|haematocrit)\b|המטוקריט/i },
+  { key:'MCV', name:'Mean cell volume (MCV)', group:'Complete blood count', unit:'fL', r:[80,100], p:[50,150],
+    re:/\bMCV\b/i },
+  { key:'MCH', name:'Mean cell hemoglobin (MCH)', group:'Complete blood count', unit:'pg', r:[27,33], p:[15,50],
+    re:/\bMCH\b/i },
+  { key:'MCHC', name:'MCH concentration (MCHC)', group:'Complete blood count', unit:'g/dL', r:[32,36], p:[25,45],
+    re:/\bMCHC\b/i },
+  { key:'RDW', name:'Red cell distribution width (RDW)', group:'Complete blood count', unit:'%', r:[11.5,14.5], p:[8,35],
+    re:/\bRDW\b/i, ex:/SD/ },
+  { key:'PLT', name:'Platelets (PLT)', group:'Complete blood count', unit:'10³/µL', r:[150,450], p:[5,2000],
+    re:/\b(PLT|platelets?|thrombocytes?)\b|טסיות/i, ex:/MPV|PDW|PCT|volume|distribution|large/i },
+  { key:'NEUT', name:'Neutrophils %', group:'Complete blood count', unit:'%', r:[40,75], p:[0,100],
+    re:/\b(NEUT|NEU|neutrophils?)\b/i, need:/%/, ex:/#|abs/i },
+  { key:'LYMPH', name:'Lymphocytes %', group:'Complete blood count', unit:'%', r:[20,45], p:[0,100],
+    re:/\b(LYMPH|LYM|lymphocytes?)\b/i, need:/%/, ex:/#|abs/i },
+  { key:'GLU', name:'Glucose (fasting)', group:'Chemistry', unit:'mg/dL', r:[70,99], p:[20,1000],
+    re:/\b(glucose|GLU)\b|גלוקוז/i, ex:/urine|שתן|A1c|tolerance|GTT/i },
+  { key:'A1C', name:'HbA1c', group:'Chemistry', unit:'%', r:[4.0,5.6], p:[3,20],
+    re:/hemoglobin\s*A1c|haemoglobin\s*A1c|\bHbA1c\b|\bA1c\b|glycated|glycosylated|מסוכרר/i },
+  { key:'UREA', name:'Urea', group:'Chemistry', unit:'mg/dL', r:[15,45], p:[2,300],
+    re:/\burea\b|אוריאה/i, ex:/urine|שתן|ratio/i },
+  { key:'CREA', name:'Creatinine', group:'Chemistry', unit:'mg/dL', r:{m:[0.7,1.3],f:[0.5,1.1]}, p:[0.1,15],
+    re:/\b(creatinine|CREA|CREAT)\b|קריאטינין/i, ex:/urine|שתן|clearance|ratio|kinase/i },
+  { key:'NA', name:'Sodium (Na)', group:'Chemistry', unit:'mmol/L', r:[135,145], p:[100,180],
+    re:/\b(sodium|Na)\b|נתרן/i },
+  { key:'K', name:'Potassium (K)', group:'Chemistry', unit:'mmol/L', r:[3.5,5.1], p:[1.5,9],
+    re:/\b(potassium|K)\b|אשלגן/i },
+  { key:'ALT', name:'ALT (GPT)', group:'Chemistry', unit:'U/L', r:[null,40], p:[1,5000],
+    re:/\b(ALT|GPT|SGPT|ALAT)\b/i },
+  { key:'AST', name:'AST (GOT)', group:'Chemistry', unit:'U/L', r:[null,40], p:[1,5000],
+    re:/\b(AST|GOT|SGOT|ASAT)\b/i },
+  { key:'CHOL', name:'Total cholesterol', group:'Lipids', unit:'mg/dL', r:[null,200], p:[50,600],
+    re:/\b(cholesterol|CHOL)\b|כולסטרול/i, ex:/HDL|LDL|VLDL|non/i },
+  { key:'LDL', name:'LDL cholesterol', group:'Lipids', unit:'mg/dL', r:[null,130], p:[10,400],
+    re:/\bLDL\b/i, ex:/VLDL|ratio|LDL\s*\/\s*HDL|HDL\s*\/\s*LDL/i },
+  { key:'HDL', name:'HDL cholesterol', group:'Lipids', unit:'mg/dL', r:{m:[40,null],f:[50,null]}, p:[5,150],
+    re:/\bHDL\b/i, ex:/ratio|non|\/\s*HDL|HDL\s*\//i },
+  { key:'TG', name:'Triglycerides', group:'Lipids', unit:'mg/dL', r:[null,150], p:[10,3000],
+    re:/\b(triglycerides?|TG|TRIG)\b|טריגליצרידים/i },
+  { key:'FERR', name:'Ferritin', group:'Iron and thyroid', unit:'ng/mL', r:{m:[30,400],f:[15,150]}, p:[1,5000],
+    re:/\b(ferritin|FERR)\b|פריטין/i },
+  { key:'TSH', name:'TSH', group:'Iron and thyroid', unit:'mIU/L', r:[0.4,4.0], p:[0.001,100],
+    re:/\bTSH\b/i }
+];
+const BY_KEY = Object.fromEntries(ANALYTES.map(a => [a.key, a]));
+const STORE_KEY = 'btr_data';
+
+let state = { sex:'m', tests:[] };
+let pending = null;
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && Array.isArray(d.tests)) state = { sex: d.sex === 'f' ? 'f' : 'm', tests: d.tests };
+    }
+  } catch (e) {}
+}
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function range(a) {
+  return Array.isArray(a.r) ? a.r : a.r[state.sex];
+}
+function rangeText(a) {
+  const [lo, hi] = range(a);
+  if (lo != null && hi != null) return lo + ' – ' + hi;
+  if (hi != null) return '< ' + hi;
+  return '> ' + lo;
+}
+function status(a, v) {
+  if (v == null || isNaN(v)) return null;
+  const [lo, hi] = range(a);
+  if (lo != null && v < lo) return 'low';
+  if (hi != null && v > hi) return 'high';
+  return 'normal';
+}
+function badge(st) {
+  if (!st) return '';
+  const label = st === 'low' ? 'Low' : st === 'high' ? 'High' : 'Normal';
+  return '<span class="badge ' + st + '">' + label + '</span>';
+}
+function fmtDate(iso) {
+  const [y, m, d] = iso.split('-');
+  return d + '/' + m + '/' + y;
+}
+function fmtNum(v) {
+  return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+}
+function sortedTests() {
+  return state.tests.slice().sort((a, b) => a.date.localeCompare(b.date));
+}
+function latestTest() {
+  const t = sortedTests();
+  return t.length ? t[t.length - 1] : null;
+}
+function setStatus(msg, isError) {
+  const el = document.getElementById('status-msg');
+  el.textContent = msg;
+  el.classList.toggle('error', !!isError);
+}
+
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+async function pdfLines(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const lines = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    const rows = [];
+    tc.items.forEach(it => {
+      if (!it.str || !it.str.trim()) return;
+      const x = it.transform[4], y = it.transform[5];
+      let row = rows.find(r => Math.abs(r.y - y) < 3);
+      if (!row) { row = { y, items: [] }; rows.push(row); }
+      row.items.push({ x, s: it.str });
+    });
+    rows.sort((a, b) => b.y - a.y).forEach(r => {
+      r.items.sort((a, b) => a.x - b.x);
+      lines.push(r.items.map(i => i.s).join(' ').replace(/\s+/g, ' ').trim());
+    });
+  }
+  return lines;
+}
+
+function cleanUnits(s) {
+  return s.replace(/[x×*]?\s*10\s*(\^|\*|E)\s*\d+/gi, ' ')
+          .replace(/10\s*[³⁶⁹]/g, ' ')
+          .replace(/mm\s*[3³]/gi, ' ');
+}
+function numbersIn(s, a) {
+  const out = [];
+  const re = /\d+(?:[.,]\d+)?/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const prev = s.slice(0, m.index), next = s.slice(m.index + m[0].length);
+    if (/[A-Za-z֐-׿]$/.test(prev)) continue;
+    if (/[<>≤≥]\s*$/.test(prev)) continue;
+    if (/[-–]\s*$/.test(prev) && /\d\s*[-–]\s*$/.test(prev)) continue;
+    if (/^\s*[-–]\s*\d/.test(next)) continue;
+    if (/[\/:]\s*$/.test(prev) || /^\s*[\/:]\s*\d/.test(next)) continue;
+    const n = parseFloat(m[0].replace(',', '.'));
+    if (n >= a.p[0] && n <= a.p[1]) out.push(n);
+  }
+  return out;
+}
+function extractValues(lines) {
+  const found = {};
+  ANALYTES.forEach(a => {
+    for (const line of lines) {
+      const m = line.match(a.re);
+      if (!m) continue;
+      if (a.ex && a.ex.test(line)) continue;
+      if (a.need && !a.need.test(line)) continue;
+      const after = numbersIn(cleanUnits(line.slice(m.index + m[0].length)), a);
+      if (after.length) { found[a.key] = after[0]; break; }
+      const before = numbersIn(cleanUnits(line.slice(0, m.index)), a);
+      if (before.length) { found[a.key] = before[before.length - 1]; break; }
+    }
+  });
+  return found;
+}
+function extractDate(lines) {
+  const re = /\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b|\b(\d{4})-(\d{2})-(\d{2})\b/;
+  const today = new Date().toISOString().slice(0, 10);
+  const candidates = [];
+  lines.forEach(line => {
+    if (/birth|DOB|לידה/i.test(line)) return;
+    const m = line.match(re);
+    if (!m) return;
+    let y, mo, d;
+    if (m[4]) { y = +m[4]; mo = +m[5]; d = +m[6]; }
+    else { d = +m[1]; mo = +m[2]; y = +m[3]; if (y < 100) y += 2000; }
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || y < 1990) return;
+    const iso = y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    if (iso > today) return;
+    candidates.push({ iso, pref: /collect|sample|drawn|date|תאריך|נלקח|דגימה/i.test(line) });
+  });
+  const best = candidates.find(c => c.pref) || candidates[0];
+  return best ? best.iso : today;
+}
+
+async function handleFile(file) {
+  if (!file) return;
+  if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+    setStatus('Please choose a PDF file.', true);
+    return;
+  }
+  if (!window.pdfjsLib) {
+    setStatus('The PDF reader could not load. Check your internet connection and reload the page.', true);
+    return;
+  }
+  setStatus('Reading ' + file.name + '...');
+  try {
+    const lines = await pdfLines(file);
+    if (!lines.length) {
+      setStatus('No text found in this PDF. It may be a scanned image. Please enter the values manually.', true);
+      openReview({}, new Date().toISOString().slice(0, 10), 'No values were read from the file. Enter them manually.');
+      return;
+    }
+    const values = extractValues(lines);
+    const count = Object.keys(values).length;
+    setStatus(count + ' of ' + ANALYTES.length + ' values found in ' + file.name + '.');
+    openReview(values, extractDate(lines), count
+      ? 'Values read from the PDF are highlighted. Check each one against your report, fix anything wrong and fill in missing values.'
+      : 'No values were recognized in this file. Enter them manually.');
+  } catch (e) {
+    setStatus('Could not read this PDF. It may be protected or damaged.', true);
+  }
+}
+
+function openReview(values, date, note) {
+  pending = values;
+  document.getElementById('test-date').value = date;
+  document.getElementById('review-note').textContent = note;
+  const body = document.getElementById('review-body');
+  let html = '', group = '';
+  ANALYTES.forEach(a => {
+    if (a.group !== group) { group = a.group; html += '<tr class="group"><td colspan="5">' + esc(group) + '</td></tr>'; }
+    const v = values[a.key];
+    html += '<tr><td class="name">' + esc(a.name) + '</td>' +
+      '<td><input type="number" step="any" data-key="' + a.key + '" value="' + (v != null ? v : '') + '"' + (v != null ? ' class="found"' : '') + '></td>' +
+      '<td>' + esc(a.unit) + '</td><td>' + esc(rangeText(a)) + '</td>' +
+      '<td data-status="' + a.key + '">' + badge(status(a, v)) + '</td></tr>';
+  });
+  body.innerHTML = html;
+  body.querySelectorAll('input').forEach(inp => {
+    inp.addEventListener('input', () => {
+      const a = BY_KEY[inp.dataset.key];
+      const v = inp.value === '' ? null : parseFloat(inp.value);
+      body.querySelector('[data-status="' + a.key + '"]').innerHTML = badge(status(a, v));
+    });
+  });
+  const panel = document.getElementById('review-panel');
+  panel.classList.remove('hidden');
+  panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function saveReview() {
+  const date = document.getElementById('test-date').value;
+  if (!date) { alert('Please set the test date.'); return; }
+  const values = {};
+  document.querySelectorAll('#review-body input').forEach(inp => {
+    if (inp.value !== '' && !isNaN(parseFloat(inp.value))) values[inp.dataset.key] = parseFloat(inp.value);
+  });
+  if (!Object.keys(values).length) { alert('Please enter at least one value.'); return; }
+  const existing = state.tests.find(t => t.date === date);
+  if (existing) {
+    if (!confirm('A test from ' + fmtDate(date) + ' is already saved. Replace it?')) return;
+    state.tests = state.tests.filter(t => t.date !== date);
+  }
+  state.tests.push({ id: Date.now().toString(36), date, values });
+  save();
+  closeReview();
+  setStatus('Test from ' + fmtDate(date) + ' saved.');
+  renderAll();
+}
+function closeReview() {
+  pending = null;
+  document.getElementById('review-panel').classList.add('hidden');
+  document.getElementById('review-body').innerHTML = '';
+}
+
+function renderTests() {
+  const list = document.getElementById('test-list');
+  const tests = sortedTests().reverse();
+  document.getElementById('report-btn').disabled = !tests.length;
+  if (!tests.length) {
+    list.innerHTML = '<p class="muted">No tests saved yet. Upload your first lab report above.</p>';
+    return;
+  }
+  list.innerHTML = tests.map(t => {
+    const keys = Object.keys(t.values);
+    const abnormal = keys.filter(k => BY_KEY[k] && status(BY_KEY[k], t.values[k]) !== 'normal').length;
+    return '<div class="test-item"><div><div class="t-date">' + fmtDate(t.date) + '</div>' +
+      '<div class="t-info">' + keys.length + ' values · ' + (abnormal ? abnormal + ' out of range' : 'all in range') + '</div></div>' +
+      '<div class="row"><button class="btn-secondary btn-small" data-edit="' + t.id + '">Edit</button>' +
+      '<button class="btn-secondary btn-small btn-danger" data-del="' + t.id + '">Delete</button></div></div>';
+  }).join('');
+  list.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
+    const t = state.tests.find(x => x.id === b.dataset.del);
+    if (!t || !confirm('Delete the test from ' + fmtDate(t.date) + '?')) return;
+    state.tests = state.tests.filter(x => x.id !== t.id);
+    save();
+    renderAll();
+  }));
+  list.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
+    const t = state.tests.find(x => x.id === b.dataset.edit);
+    if (!t) return;
+    state.tests = state.tests.filter(x => x.id !== t.id);
+    save();
+    renderAll();
+    openReview(t.values, t.date, 'Editing the test from ' + fmtDate(t.date) + '. Save to keep your changes.');
+  }));
+}
+
+function seriesFor(key) {
+  return sortedTests().filter(t => t.values[key] != null).map(t => ({ date: t.date, v: t.values[key] }));
+}
+
+function renderTrendSelect() {
+  const sel = document.getElementById('trend-select');
+  const prev = sel.value;
+  const keys = ANALYTES.filter(a => seriesFor(a.key).length);
+  sel.innerHTML = keys.map(a => '<option value="' + a.key + '">' + esc(a.name) + '</option>').join('');
+  if (keys.some(a => a.key === prev)) sel.value = prev;
+}
+
+function niceTicks(min, max, count) {
+  const span = max - min || 1;
+  const step0 = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const norm = step0 / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const ticks = [];
+  for (let t = Math.ceil(min / step) * step; t <= max + step * 1e-9; t += step) ticks.push(Math.round(t * 1e6) / 1e6);
+  return ticks;
+}
+
+function renderChart() {
+  const key = document.getElementById('trend-select').value;
+  const chart = document.getElementById('chart');
+  const hist = document.getElementById('history-body');
+  const tip = document.getElementById('tooltip');
+  tip.style.display = 'none';
+  if (!key) {
+    chart.innerHTML = '<p class="muted">Save a test to see trends.</p>';
+    hist.innerHTML = '';
+    return;
+  }
+  const a = BY_KEY[key];
+  const data = seriesFor(key);
+  const [lo, hi] = range(a);
+  const W = 700, H = 280, L = 52, R = 24, T = 20, B = 36;
+  const vals = data.map(d => d.v).concat([lo, hi].filter(x => x != null));
+  let yMin = Math.min(...vals), yMax = Math.max(...vals);
+  const pad = (yMax - yMin || Math.abs(yMax) || 1) * 0.15;
+  yMin = Math.max(0, yMin - pad); yMax = yMax + pad;
+  const ticks = niceTicks(yMin, yMax, 4);
+  yMin = Math.min(yMin, ticks[0]); yMax = Math.max(yMax, ticks[ticks.length - 1]);
+  const times = data.map(d => new Date(d.date).getTime());
+  const tMin = Math.min(...times), tMax = Math.max(...times);
+  const x = t => data.length === 1 ? (L + W - R) / 2 : L + (t - tMin) / (tMax - tMin) * (W - L - R);
+  const y = v => T + (1 - (v - yMin) / (yMax - yMin)) * (H - T - B);
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(a.name) + ' over time">';
+  const bandTop = y(hi != null ? Math.min(hi, yMax) : yMax), bandBot = y(lo != null ? Math.max(lo, yMin) : yMin);
+  svg += '<rect x="' + L + '" y="' + bandTop + '" width="' + (W - L - R) + '" height="' + Math.max(0, bandBot - bandTop) + '" fill="#eff6ff"/>';
+  ticks.forEach(t => {
+    svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="#e2e8f0" stroke-width="1"/>';
+    svg += '<text x="' + (L - 8) + '" y="' + (y(t) + 4) + '" text-anchor="end" font-size="12" fill="#64748b">' + fmtNum(t) + '</text>';
+  });
+  [lo, hi].forEach(lim => {
+    if (lim == null) return;
+    svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(lim) + '" y2="' + y(lim) + '" stroke="#bfdbfe" stroke-width="1.5" stroke-dasharray="4 4"/>';
+  });
+  svg += '<text x="' + (W - R - 4) + '" y="' + (bandTop + 14) + '" text-anchor="end" font-size="11" fill="#64748b">Normal range</text>';
+  const labelIdx = data.length <= 6 ? data.map((_, i) => i) : [0, Math.floor((data.length - 1) / 2), data.length - 1];
+  labelIdx.forEach(i => {
+    const anchor = data.length === 1 ? 'middle' : i === 0 ? 'start' : i === data.length - 1 ? 'end' : 'middle';
+    svg += '<text x="' + x(times[i]) + '" y="' + (H - 12) + '" text-anchor="' + anchor + '" font-size="12" fill="#64748b">' + fmtDate(data[i].date) + '</text>';
+  });
+  if (data.length > 1) {
+    svg += '<polyline fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="' +
+      data.map((d, i) => x(times[i]) + ',' + y(d.v)).join(' ') + '"/>';
+  }
+  svg += '<line id="crosshair" x1="0" x2="0" y1="' + T + '" y2="' + (H - B) + '" stroke="#cbd5e1" stroke-width="1" visibility="hidden"/>';
+  data.forEach((d, i) => {
+    const st = status(a, d.v);
+    svg += '<circle cx="' + x(times[i]) + '" cy="' + y(d.v) + '" r="5" fill="' + (st === 'normal' ? '#2563eb' : '#991b1b') + '" stroke="#ffffff" stroke-width="2"/>';
+  });
+  const last = data[data.length - 1];
+  svg += '<text x="' + x(times[data.length - 1]) + '" y="' + (y(last.v) - 12) + '" text-anchor="middle" font-size="12" font-weight="700" fill="#111827">' + fmtNum(last.v) + '</text>';
+  svg += '<rect id="hit" x="' + L + '" y="' + T + '" width="' + (W - L - R) + '" height="' + (H - T - B) + '" fill="transparent"/>';
+  svg += '</svg>';
+  chart.innerHTML = svg;
+
+  const svgEl = chart.querySelector('svg');
+  const cross = svgEl.querySelector('#crosshair');
+  const box = document.getElementById('chart-box');
+  svgEl.addEventListener('pointermove', ev => {
+    const rect = svgEl.getBoundingClientRect();
+    const sx = (ev.clientX - rect.left) * W / rect.width;
+    let best = 0;
+    data.forEach((d, i) => { if (Math.abs(x(times[i]) - sx) < Math.abs(x(times[best]) - sx)) best = i; });
+    const d = data[best];
+    const px = x(times[best]);
+    cross.setAttribute('x1', px); cross.setAttribute('x2', px); cross.setAttribute('visibility', 'visible');
+    tip.innerHTML = '<div class="tt-date">' + fmtDate(d.date) + '</div><div class="tt-val">' + fmtNum(d.v) + ' ' + esc(a.unit) + '</div>' + badge(status(a, d.v));
+    tip.style.display = 'block';
+    const bx = px * rect.width / W, by = y(d.v) * rect.height / H;
+    const tw = tip.offsetWidth;
+    let left = bx + 14;
+    if (left + tw > box.clientWidth) left = bx - tw - 14;
+    tip.style.left = Math.max(0, left) + 'px';
+    tip.style.top = Math.max(0, by - 30) + 'px';
+  });
+  svgEl.addEventListener('pointerleave', () => { tip.style.display = 'none'; cross.setAttribute('visibility', 'hidden'); });
+
+  hist.innerHTML = data.slice().reverse().map(d =>
+    '<tr><td>' + fmtDate(d.date) + '</td><td class="name">' + fmtNum(d.v) + ' ' + esc(a.unit) + '</td><td>' + badge(status(a, d.v)) + '</td></tr>'
+  ).join('');
+}
+
+function computeTrends() {
+  const out = [];
+  ANALYTES.forEach(a => {
+    const data = seriesFor(a.key);
+    if (data.length < 3) return;
+    const last3 = data.slice(-3).map(d => d.v);
+    const rising = last3[0] < last3[1] && last3[1] < last3[2];
+    const falling = last3[0] > last3[1] && last3[1] > last3[2];
+    if (!rising && !falling) return;
+    const [lo, hi] = range(a);
+    const width = lo != null && hi != null ? hi - lo : Math.abs(hi != null ? hi : lo) * 0.5;
+    const change = Math.abs(last3[2] - last3[0]);
+    if (change < width * 0.15) return;
+    const cur = last3[2];
+    const st = status(a, cur);
+    let tail = '';
+    if (st !== 'normal') tail = ' and is now ' + (st === 'low' ? 'below' : 'above') + ' the normal range';
+    else if (rising && hi != null && hi - cur <= width * 0.15) tail = ', still within range but close to the upper limit';
+    else if (falling && lo != null && cur - lo <= width * 0.15) tail = ', still within range but close to the lower limit';
+    const toward = (rising && hi != null) || (falling && lo != null);
+    out.push({
+      key: a.key,
+      level: st !== 'normal' ? 'alert' : tail ? 'watch' : toward ? 'watch' : '',
+      title: a.name + (rising ? ' is rising' : ' is falling'),
+      text: a.name + ' has ' + (rising ? 'increased' : 'decreased') + ' in each of the last 3 tests (' +
+        last3.map(fmtNum).join(' → ') + ' ' + a.unit + ')' + tail + '.',
+      question: 'My ' + a.name + ' has been ' + (rising ? 'rising' : 'falling') + ' over my last 3 tests. Is this change significant, and should we follow it up?'
+    });
+  });
+  return out;
+}
+
+function computePatterns(test) {
+  const v = test.values;
+  const s = k => BY_KEY[k] && v[k] != null ? status(BY_KEY[k], v[k]) : null;
+  const out = [];
+  const add = (level, title, text, question) => out.push({ level, title, text, question });
+
+  if (s('MCV') === 'low') {
+    const mentzer = v.RBC ? v.MCV / v.RBC : null;
+    let text = 'Your red blood cells are smaller than usual (low MCV)' + (s('HGB') === 'low' ? ' and hemoglobin is low' : '') + '. ';
+    if (s('FERR') === 'low') text += 'Ferritin is also low, a combination typical of iron deficiency.';
+    else if (mentzer != null && mentzer < 13) text += 'The Mentzer index (MCV ÷ RBC) is ' + fmtNum(mentzer) + ', below 13, which can point to thalassemia trait rather than iron deficiency.';
+    else if (s('FERR') === 'normal' || s('FERR') === 'high') text += 'Ferritin is not low, so causes other than iron deficiency, such as thalassemia trait or chronic inflammation, may be worth considering.';
+    else text += 'This is most often caused by iron deficiency. Ferritin would help confirm it.';
+    add(s('HGB') === 'low' ? 'alert' : 'watch', s('HGB') === 'low' ? 'Anemia with small red cells' : 'Small red blood cells', text,
+      s('FERR') == null ? 'Should I test ferritin and iron to check for iron deficiency?' : 'What is the cause of my small red blood cells, and do I need further tests?');
+  }
+  if (s('FERR') === 'low' && s('MCV') !== 'low') {
+    add('watch', 'Low iron stores', 'Ferritin is low' + (s('HGB') === 'low' ? ' and hemoglobin is low' : ' while hemoglobin is still in range') + '. Low ferritin reflects depleted iron stores, which often appears before anemia develops.',
+      'My ferritin is low. Should I take iron supplements, and what could be causing it?');
+  }
+  if (s('MCV') === 'high') {
+    add(s('HGB') === 'low' ? 'alert' : 'watch', s('HGB') === 'low' ? 'Anemia with large red cells' : 'Large red blood cells',
+      'Your red blood cells are larger than usual (high MCV). This can be linked to vitamin B12 or folate deficiency, alcohol use, thyroid or liver conditions, and some medications.',
+      'Should I test vitamin B12 and folate because of my high MCV?');
+  }
+  if (s('HGB') === 'low' && s('MCV') === 'normal') {
+    add('alert', 'Anemia with normal-sized red cells', 'Hemoglobin is low while red cell size is normal. This can occur with chronic disease, kidney disease, early iron deficiency or blood loss.',
+      'What could explain my low hemoglobin with normal MCV, and what should be checked next?');
+  }
+  if (s('RDW') === 'high' && s('MCV') !== 'high') {
+    add('watch', 'Variable red cell size', 'RDW is high, meaning your red cells vary more in size than usual. Together with low or borderline MCV this often suggests developing iron deficiency.',
+      'My RDW is high. Could this be early iron deficiency?');
+  }
+  if (s('WBC') === 'high' && s('NEUT') === 'high') {
+    add('alert', 'High white cells with high neutrophils', 'White blood cells and the neutrophil share are both high. This pattern is typical of a bacterial infection, inflammation or physical stress.',
+      'Do my high white cells and neutrophils suggest an infection or inflammation?');
+  } else if (s('WBC') === 'high' && s('LYMPH') === 'high') {
+    add('alert', 'High white cells with high lymphocytes', 'White blood cells and the lymphocyte share are both high. This pattern is often seen with viral infections.',
+      'Do my high white cells and lymphocytes suggest a viral infection?');
+  } else if (s('WBC') === 'high') {
+    add('watch', 'High white blood cells', 'White blood cells are above the normal range. Common causes include infection, inflammation, smoking and stress.',
+      'What could be the cause of my high white blood cell count?');
+  }
+  if (s('WBC') === 'low') {
+    add('watch', 'Low white blood cells', 'White blood cells are below the normal range. Mild low values can be normal for some people, but can also follow viral infections or some medications.',
+      'Is my low white cell count a concern, and should it be repeated?');
+  }
+  if (s('PLT') === 'low') add('alert', 'Low platelets', 'Platelets are below the normal range, which may affect blood clotting.', 'What could cause my low platelet count, and should it be rechecked?');
+  if (s('PLT') === 'high') add('watch', 'High platelets', 'Platelets are above the normal range. This is often reactive to inflammation or iron deficiency.', 'What could cause my high platelet count?');
+
+  const gluDiab = v.GLU != null && v.GLU >= 126, a1cDiab = v.A1C != null && v.A1C >= 6.5;
+  const gluPre = v.GLU != null && v.GLU >= 100 && v.GLU < 126, a1cPre = v.A1C != null && v.A1C >= 5.7 && v.A1C < 6.5;
+  if (gluDiab || a1cDiab) {
+    add('alert', 'Blood sugar in the diabetes range', [gluDiab ? 'Fasting glucose is ' + fmtNum(v.GLU) + ' mg/dL (126 or above)' : '', a1cDiab ? 'HbA1c is ' + fmtNum(v.A1C) + '% (6.5 or above)' : ''].filter(Boolean).join(' and ') + '. These values are in the range used to diagnose diabetes, which is usually confirmed with a repeat test.',
+      'My blood sugar is in the diabetes range. Should we repeat the test, and what are the next steps?');
+  } else if (gluPre || a1cPre) {
+    add('watch', 'Blood sugar in the prediabetes range', [gluPre ? 'Fasting glucose is ' + fmtNum(v.GLU) + ' mg/dL (100–125)' : '', a1cPre ? 'HbA1c is ' + fmtNum(v.A1C) + '% (5.7–6.4)' : ''].filter(Boolean).join(' and ') + '. This range is known as prediabetes and can often be improved with lifestyle changes.',
+      'My blood sugar is in the prediabetes range. What can I do to lower it, and how often should I retest?');
+  }
+  if (s('TG') === 'high' && s('HDL') === 'low') {
+    const sugar = gluPre || gluDiab || a1cPre || a1cDiab;
+    add('watch', 'High triglycerides with low HDL', 'Triglycerides are high and HDL is low. This combination is linked to insulin resistance' + (sugar ? ', and together with your elevated blood sugar it matches features of metabolic syndrome.' : '.'),
+      'Do my triglyceride and HDL results suggest insulin resistance or metabolic syndrome?');
+  }
+  if (s('LDL') === 'high') {
+    add('watch', 'LDL above target', 'LDL cholesterol is above ' + range(BY_KEY.LDL)[1] + ' mg/dL. The right target depends on your overall heart risk.',
+      'What should my LDL target be, given my overall heart risk?');
+  }
+  if (s('TSH') === 'high') {
+    add('watch', 'Pattern of an underactive thyroid', 'TSH is high, which usually means the thyroid is producing too little hormone' + (s('CHOL') === 'high' || s('LDL') === 'high' ? '. An underactive thyroid can also raise cholesterol, which may explain your lipid results.' : '.'),
+      'Should we check free T4 and thyroid antibodies because of my high TSH?');
+  }
+  if (s('TSH') === 'low') {
+    add('watch', 'Pattern of an overactive thyroid', 'TSH is low, which usually means the thyroid is producing too much hormone.',
+      'Should we check free T4 and T3 because of my low TSH?');
+  }
+  if (s('CREA') === 'high') {
+    add('alert', 'Raised creatinine', 'Creatinine is above the normal range' + (s('UREA') === 'high' ? ' and urea is also high' : '') + '. This may indicate reduced kidney filtration, but dehydration, high muscle mass and some medications can also raise it.',
+      'Should my kidney function (eGFR) be evaluated because of my creatinine?');
+  } else if (s('UREA') === 'high') {
+    add('watch', 'Raised urea with normal creatinine', 'Urea is high while creatinine is normal. This often reflects dehydration or high protein intake rather than a kidney problem.',
+      'Could my high urea be from dehydration or diet?');
+  }
+  if (s('ALT') === 'high' || s('AST') === 'high') {
+    let text = 'Liver enzymes are raised (' + [s('ALT') === 'high' ? 'ALT ' + fmtNum(v.ALT) : '', s('AST') === 'high' ? 'AST ' + fmtNum(v.AST) : ''].filter(Boolean).join(', ') + ' U/L). ';
+    if (v.ALT != null && v.AST != null && v.AST / v.ALT >= 2) text += 'AST is at least twice ALT, a ratio that is associated with alcohol-related liver injury.';
+    else if (v.ALT != null && v.AST != null && v.ALT > v.AST) text += 'ALT is higher than AST, a pattern commonly seen in fatty liver and other liver cell injury.';
+    else text += 'Possible causes include fatty liver, medications, alcohol and viral hepatitis.';
+    add('watch', 'Raised liver enzymes', text, 'What could explain my raised liver enzymes, and do I need a liver ultrasound or further tests?');
+  }
+  if (s('NA') === 'low') add('watch', 'Low sodium', 'Sodium is below the normal range. It can be affected by medications such as diuretics, fluid intake and hormonal conditions.', 'What could be causing my low sodium, and should my medications be reviewed?');
+  if (s('NA') === 'high') add('watch', 'High sodium', 'Sodium is above the normal range, most often related to dehydration.', 'Could my high sodium be from dehydration?');
+  if (s('K') === 'high') add('watch', 'High potassium', 'Potassium is above the normal range. A high result can be falsely raised by the blood sample itself (hemolysis), so it is often repeated.', 'Should my potassium test be repeated?');
+  if (s('K') === 'low') add('watch', 'Low potassium', 'Potassium is below the normal range. It can be caused by diuretics, vomiting or diarrhea.', 'What could be causing my low potassium?');
+  return out;
+}
+
+function findingHtml(f, tagText) {
+  return '<div class="finding ' + f.level + '"><h3>' + esc(f.title) + (tagText ? ' <span class="badge trend">' + esc(tagText) + '</span>' : '') + '</h3><p>' + esc(f.text) + '</p></div>';
+}
+
+function renderAnalysis() {
+  const trends = computeTrends();
+  const ta = document.getElementById('trend-alerts');
+  const n = state.tests.length;
+  ta.innerHTML = trends.length ? trends.map(t => findingHtml(t, '3 tests')).join('')
+    : '<p class="muted">' + (n < 3 ? 'Trend alerts appear once you have at least 3 saved tests.' : 'No consistent rising or falling trends in your last 3 tests.') + '</p>';
+
+  const latest = latestTest();
+  const note = document.getElementById('pattern-note');
+  const pat = document.getElementById('patterns');
+  if (!latest) {
+    note.textContent = 'Save a test to see patterns between values.';
+    pat.innerHTML = '';
+    return;
+  }
+  note.textContent = 'Based on your latest test from ' + fmtDate(latest.date) + '.';
+  const pats = computePatterns(latest);
+  pat.innerHTML = pats.length ? pats.map(p => findingHtml(p)).join('')
+    : '<p class="muted">No notable patterns found between the values in your latest test.</p>';
+}
+
+function buildReport() {
+  const latest = latestTest();
+  if (!latest) return;
+  const trends = computeTrends();
+  const pats = computePatterns(latest);
+  const questions = pats.map(p => p.question);
+  const patText = pats.map(p => p.title + ' ' + p.text).join(' ').toLowerCase();
+  const redCellPattern = pats.some(p => /red cell|anemia|iron/i.test(p.title));
+  const redCellKeys = ['RBC','HGB','HCT','MCV','MCH','MCHC','RDW'];
+  const mentioned = a => {
+    if (redCellPattern && redCellKeys.includes(a.key)) return true;
+    const base = a.name.split(' (')[0].toLowerCase();
+    const abbr = (a.name.match(/\(([^)]+)\)/) || a.name.match(/^([A-Z][A-Za-z0-9]*[A-Z0-9])\b/) || [])[1];
+    return patText.includes(base) || (abbr && patText.includes(abbr.toLowerCase()));
+  };
+  trends.forEach(t => {
+    const a = BY_KEY[t.key];
+    if (status(a, latest.values[t.key]) === 'normal') questions.push(t.question);
+  });
+  ANALYTES.forEach(a => {
+    const st = latest.values[a.key] != null ? status(a, latest.values[a.key]) : null;
+    if (st && st !== 'normal' && !mentioned(a)) questions.push('What could explain my ' + a.name + ' being ' + st + '?');
+  });
+  const uniqueQ = [...new Set(questions)];
+  const prev = sortedTests().slice(0, -1).reverse();
+  const prevVal = k => { const t = prev.find(x => x.values[k] != null); return t ? t.values[k] : null; };
+
+  let rows = '';
+  ANALYTES.forEach(a => {
+    const v = latest.values[a.key];
+    if (v == null) return;
+    const pv = prevVal(a.key);
+    rows += '<tr><td class="name">' + esc(a.name) + '</td><td>' + fmtNum(v) + ' ' + esc(a.unit) + '</td><td>' + (pv != null ? fmtNum(pv) : '—') + '</td><td>' + esc(rangeText(a)) + '</td><td>' + badge(status(a, v)) + '</td></tr>';
+  });
+  const abnormal = ANALYTES.filter(a => latest.values[a.key] != null && status(a, latest.values[a.key]) !== 'normal');
+
+  let html = '<h1>Blood test summary for my doctor</h1>';
+  html += '<div class="meta">Latest test: ' + fmtDate(latest.date) + ' · Tests on record: ' + state.tests.length + ' · Sex: ' + (state.sex === 'f' ? 'Female' : 'Male') + ' · Printed: ' + fmtDate(new Date().toISOString().slice(0, 10)) + '</div>';
+  html += '<h2>Out of range in latest test</h2>';
+  html += abnormal.length ? '<ul>' + abnormal.map(a => '<li><strong>' + esc(a.name) + '</strong>: ' + fmtNum(latest.values[a.key]) + ' ' + esc(a.unit) + ' (' + status(a, latest.values[a.key]) + ', normal ' + esc(rangeText(a)) + ')</li>').join('') + '</ul>' : '<p class="muted">All values are within the normal range.</p>';
+  html += '<h2>Trends over time</h2>';
+  html += trends.length ? '<ul>' + trends.map(t => '<li>' + esc(t.text) + '</li>').join('') + '</ul>' : '<p class="muted">No consistent trends' + (state.tests.length < 3 ? ' (fewer than 3 tests on record)' : '') + '.</p>';
+  html += '<h2>Patterns between values</h2>';
+  html += pats.length ? '<ul>' + pats.map(p => '<li><strong>' + esc(p.title) + '.</strong> ' + esc(p.text) + '</li>').join('') + '</ul>' : '<p class="muted">No notable patterns found.</p>';
+  html += '<h2>Questions for my doctor</h2>';
+  html += uniqueQ.length ? '<ol>' + uniqueQ.map(q => '<li>' + esc(q) + '</li>').join('') + '</ol>' : '<p class="muted">No specific questions. Ask whether any follow-up tests are needed.</p>';
+  html += '<h2>Full results</h2><table><thead><tr><th>Test</th><th>Latest</th><th>Previous</th><th>Normal range</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  html += '<div class="note">Prepared with Blood Test Reader for information only. This is not a medical diagnosis. Reference ranges are general and may differ from the lab\'s ranges.</div>';
+  document.getElementById('report').innerHTML = html;
+}
+
+function renderAll() {
+  document.getElementById('sex').value = state.sex;
+  renderTests();
+  renderTrendSelect();
+  renderChart();
+  renderAnalysis();
+}
+
+const dz = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+dz.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { handleFile(fileInput.files[0]); fileInput.value = ''; });
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); handleFile(e.dataTransfer.files[0]); });
+document.getElementById('manual-btn').addEventListener('click', () => openReview({}, new Date().toISOString().slice(0, 10), 'Enter the values from your lab report. Leave missing values empty.'));
+document.getElementById('save-btn').addEventListener('click', saveReview);
+document.getElementById('cancel-btn').addEventListener('click', closeReview);
+document.getElementById('trend-select').addEventListener('change', renderChart);
+document.getElementById('sex').addEventListener('change', e => {
+  state.sex = e.target.value;
+  save();
+  renderAll();
+  if (pending) {
+    const current = {};
+    document.querySelectorAll('#review-body input').forEach(inp => { if (inp.value !== '') current[inp.dataset.key] = parseFloat(inp.value); });
+    openReview(current, document.getElementById('test-date').value, document.getElementById('review-note').textContent);
+  }
+});
+document.getElementById('report-btn').addEventListener('click', () => { buildReport(); window.print(); });
+window.addEventListener('resize', () => { document.getElementById('tooltip').style.display = 'none'; });
+
+load();
+renderAll();
+</script>
+</body>
+</html>

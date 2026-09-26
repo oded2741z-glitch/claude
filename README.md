@@ -24,6 +24,11 @@ Everything is stored locally in `~/.ouster_projects.json`, so the tree and
 all per-sensor settings survive restarts and can be copied between
 machines.
 
+This is the **lean edition**: it reads, configures, views and replays
+sensors but does not record them. The edition with recording (PCAP for
+Ouster, MP4 / AVI for cameras, CSV for inertial units, and MCAP export) is
+kept in [`backup/V4-record`](backup/V4-record/VERSION.md).
+
 ## Install
 
 ```bash
@@ -34,8 +39,6 @@ pip install opencv-python
 pip install pyserial
 # for network-camera settings (IP, MTU, bitrate, GOP):
 pip install onvif-zeep
-# optional, only for "Export to MCAP":
-pip install mcap mcap-protobuf-support foxglove-schemas-protobuf protobuf
 ```
 
 Arbe radar sensors need a ROS 2 environment on `PATH` (`rclpy`,
@@ -387,16 +390,12 @@ busy serial port: stop the stream first.
   the sensor's address, so you have to reconnect afterwards.
 * **Reinitialize** - restarts the sensor's data path.
 
-**Recording and playback**
+**Playback**
 
-* **Start Recording** - `ouster-cli source <host> save <file>.pcap`, with a
-  file name pre-filled from the sensor's name and the current time.
-* **Play Recording (PCAP / OSF)** - replays a recording through the same
-  2D viewer, so the app is fully usable without a physical sensor.
-  Tick **Loop playback** to repeat.
-* **Export to MCAP (Foxglove)** - converts a PCAP/OSF recording to an MCAP
-  file containing `foxglove.PointCloud` messages on `/ouster/points`, plus
-  IMU samples on `/ouster/imu` when the source is a PCAP.
+* **Play Recording (PCAP / OSF)** - replays a recording made elsewhere
+  (for example with `ouster-cli source <host> save <file>.pcap`) through
+  the same 2D viewer, so the app is fully usable without a physical
+  sensor. Tick **Loop playback** to repeat.
 
 ### Camera dashboard
 
@@ -415,7 +414,7 @@ wrong one.
   and the project. Properties the backend does not expose report `-1` in
   OpenCV and are skipped rather than saved.
 * **Start Preview** - live image in the right-hand panel. The frame number
-  and size are shown above it, plus `● REC` while recording.
+  and size are shown above it.
 * **Snapshot** - writes the current frame to PNG/JPEG. It comes from the
   running preview when there is one, otherwise the camera is opened just
   for the grab.
@@ -468,21 +467,14 @@ Set the camera source to the device's address or RTSP URL for this panel
 to work - a USB index like `0` has no ONVIF endpoint, and the app says so
 rather than trying.
 
-**Recording**
-
-* **Start Recording** - writes the live frames to MP4 (`mp4v`) or AVI
-  (`MJPG`), chosen from the file extension. Recording happens inside the
-  capture thread that already owns the device, so it does not open the
-  camera a second time; if no preview is running, one is started first.
-
 **One camera on several screens**
 
 **Open on another screen** mirrors the live image into its own window.
 Drag it to a second monitor and press **F11** (or double-click) for full
 screen, **Esc** to leave it. Open it as many times as you have screens -
 every window draws from the same capture thread, so the camera is never
-opened twice, and each shows the frame number, size and a `● REC` marker
-while recording. The windows close when you leave the dashboard.
+opened twice, and each shows the frame number and size. The windows
+close when you leave the dashboard.
 
 ### Arbe radar dashboard
 
@@ -563,8 +555,6 @@ rate in Hz and the latest value of every field.
   against the device's manual before trusting the plots.
 * **List serial ports** - enumerates the ports pyserial can see, with
   their descriptions.
-* **Start Recording** - appends samples to a CSV as they arrive, with a
-  header naming the columns the device sends.
 
 **Writing**
 

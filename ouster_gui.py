@@ -37,9 +37,8 @@ From an Ouster sensor's dashboard you can:
     (lidar mode, timestamp mode, operating mode, signal multiplier,
     azimuth window, UDP profile, UDP ports) and push the stored network
     settings (static IP / gateway, or revert to DHCP).
-  * Record the stream to a PCAP file, replay PCAP/OSF recordings offline
-    (so the app is fully usable without a physical sensor) and export a
-    recording to MCAP for Foxglove.
+  * Replay PCAP/OSF recordings offline, so the app is fully usable
+    without a physical sensor.
 
 From a camera's dashboard you can:
 
@@ -48,7 +47,6 @@ From a camera's dashboard you can:
     exposure), watch a live preview, take snapshots and replay video files.
   * WRITE TO THE CAMERA    - push the stored settings, on the running
     capture when a preview is open, and read back what the camera kept.
-  * Record the live image to MP4 / AVI.
 
 A sensor's settings are frozen as a baseline when it is created, so it can
 always be taken back to them; replacing that baseline is possible but asks
@@ -58,8 +56,8 @@ same / differs / not set / not reported, and can adopt just the rows that
 differ.
 
 From a radar's or an inertial sensor's dashboard you can read its live
-data (point cloud / acceleration, rate and orientation traces), record it,
-replay recordings, and write settings back - ROS 2 parameters for the
+data (point cloud / acceleration, rate and orientation traces), replay
+recordings, and write settings back - ROS 2 parameters for the
 radar, ROS parameters or serial commands for the inertial unit.
 
 Tested with ouster-sdk 1.0.0 (also compatible with the older
@@ -86,7 +84,10 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.15.0"
+__version__ = "2.16.0"
+# this edition reads, configures, views and replays sensors, but does not
+# record them - the recording edition is kept in backup/V4-record
+EDITION = "lean"
 
 import numpy as np
 
@@ -95,10 +96,6 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="ouster")
 # --- ouster-sdk imports (support SDK >= 1.0 and older releases) --------------
 try:
     from ouster.sdk import open_source
-    try:
-        from ouster.sdk import open_packet_source
-    except Exception:
-        open_packet_source = None
     try:  # ouster-sdk >= 1.0
         from ouster.sdk import core as ouster_core
         from ouster.sdk.sensor import get_config, set_config
@@ -128,20 +125,8 @@ except Exception as _e:  # SDK missing entirely
     OUSTER_IMPORT_ERROR = _e
     ouster_core = None
     open_source = None
-    open_packet_source = None
     get_config = set_config = None
     SensorHttp = None
-
-# --- MCAP export (optional: only needed for "Export to MCAP") ----------------
-try:
-    from mcap.writer import Writer as McapWriter
-    from mcap_protobuf.schema import build_file_descriptor_set
-    from foxglove_schemas_protobuf.PointCloud_pb2 import PointCloud
-    from foxglove_schemas_protobuf.PackedElementField_pb2 import (
-        PackedElementField)
-    HAVE_MCAP = True
-except Exception:
-    HAVE_MCAP = False
 
 # --- pyserial (optional: only needed for serial IMU / INS sensors) -----------
 try:
@@ -1687,8 +1672,8 @@ class CameraReader(threading.Thread):
     RTSP / HTTP URL) or a video file and pushes RGB images into a queue.
 
     The same thread owns the capture for its whole life, so settings
-    changes, snapshots and recording are handled here through small
-    requests instead of a second process touching the device.
+    changes and snapshots are handled here through small requests instead
+    of a second process touching the device.
     """
 
     def __init__(self, source, out_queue: queue.Queue, log_fn,
@@ -1707,8 +1692,6 @@ class CameraReader(threading.Thread):
         self._lock = threading.Lock()
         self._pending_props = None
         self._snapshot_path = None
-        self._record_request = None     # a path to start, False to stop
-        self._recording = False
 
     # -- requests from the UI thread ----------------------------------------
     def stop(self):
@@ -1721,18 +1704,6 @@ class CameraReader(threading.Thread):
     def snapshot(self, path: str):
         with self._lock:
             self._snapshot_path = path
-
-    def start_recording(self, path: str):
-        with self._lock:
-            self._record_request = path
-
-    def stop_recording(self):
-        with self._lock:
-            self._record_request = False
-
-    @property
-    def recording(self) -> bool:
-        return self._recording
 
     # -- capture helpers -----------------------------------------------------
     _BACKEND_APIS = {"v4l2": "CAP_V4L2", "ffmpeg": "CAP_FFMPEG",
@@ -1817,7 +1788,6 @@ class CameraReader(threading.Thread):
 
     def _play_once(self, announce=True):
         cap = None
-        writer = None
         try:
             if announce:
                 self.log(f"Opening camera: {self.source} ...")
@@ -1840,28 +1810,21 @@ class CameraReader(threading.Thread):
                 if not ok:
                     break
                 n += 1
-                writer = self._service_requests(cap, frame, writer)
+                self._service_requests(cap, frame)
                 self._publish(frame, n)
                 if delay:
                     time.sleep(delay)
         finally:
-            if writer is not None:
-                try:
-                    writer.release()
-                except Exception:
-                    pass
-                self._recording = False
             if cap is not None:
                 try:
                     cap.release()
                 except Exception:
                     pass
 
-    def _service_requests(self, cap, frame, writer):
+    def _service_requests(self, cap, frame):
         with self._lock:
             props, self._pending_props = self._pending_props, None
             snap, self._snapshot_path = self._snapshot_path, None
-            record, self._record_request = self._record_request, None
 
         if props is not None:
             kept = self.set_props(cap, props)
@@ -1876,39 +1839,6 @@ class CameraReader(threading.Thread):
             except Exception as e:
                 self.log(f"ERROR saving snapshot: {e}")
 
-        if record is False and writer is not None:
-            writer.release()
-            writer = None
-            self._recording = False
-            self.log("Recording stopped.")
-        elif isinstance(record, str) and writer is None:
-            try:
-                height, width = frame.shape[:2]
-                fps = self.info.get("fps") or 0.0
-                if fps <= 0:
-                    fps = 25.0
-                code = "mp4v" if record.lower().endswith(".mp4") else "MJPG"
-                writer = cv2.VideoWriter(record,
-                                         cv2.VideoWriter_fourcc(*code),
-                                         fps, (width, height))
-                if not writer.isOpened():
-                    raise RuntimeError("the video writer could not be opened "
-                                       "(try a .avi file name)")
-                self._recording = True
-                self.log(f"Recording started -> {record} "
-                         f"({width}x{height} @ {fps:g} fps, {code})")
-            except Exception as e:
-                writer = None
-                self._recording = False
-                self.log(f"ERROR starting recording: {e}")
-
-        if writer is not None:
-            try:
-                writer.write(frame)
-            except Exception as e:
-                self.log(f"ERROR writing video frame: {e}")
-        return writer
-
     def _publish(self, frame, index):
         rgb = np.ascontiguousarray(frame[:, :, ::-1])   # BGR -> RGB
         # keep only the freshest frame, but never drop info/error events
@@ -1922,7 +1852,7 @@ class CameraReader(threading.Thread):
             pass
         for ev in pending:
             self.out_queue.put(ev)
-        self.out_queue.put(("camera", rgb, index, self._recording))
+        self.out_queue.put(("camera", rgb, index))
 
 
 def parse_pointcloud2(msg) -> dict:
@@ -2330,27 +2260,12 @@ class ImuReader(threading.Thread):
         self.log = log_fn
         self.loop = loop
         self._stop_event = threading.Event()
-        self._lock = threading.Lock()
-        self._record_request = None     # a path to start, False to stop
-        self._recording = False
         self._batch = []
         self._last_flush = 0.0
         self.count = 0
 
     def stop(self):
         self._stop_event.set()
-
-    def start_recording(self, path: str):
-        with self._lock:
-            self._record_request = path
-
-    def stop_recording(self):
-        with self._lock:
-            self._record_request = False
-
-    @property
-    def recording(self) -> bool:
-        return self._recording
 
     # -- publishing ----------------------------------------------------------
     def _emit(self, sample: dict, force=False):
@@ -2378,55 +2293,21 @@ class ImuReader(threading.Thread):
             self.out_queue.put(ev)
         self.out_queue.put(("imu", batch, self.count))
 
-    def _service_recording(self, sample, writer):
-        with self._lock:
-            request, self._record_request = self._record_request, None
-        if request is False and writer is not None:
-            writer[0].close()
-            self._recording = False
-            self.log("IMU recording stopped.")
-            writer = None
-        elif isinstance(request, str) and writer is None:
-            try:
-                columns = [c for c in IMU_COLUMNS if c in sample]
-                handle = open(request, "w", encoding="utf-8")
-                handle.write(",".join(columns) + "\n")
-                writer = (handle, columns)
-                self._recording = True
-                self.log(f"IMU recording started -> {request} "
-                         f"({', '.join(columns)})")
-            except Exception as e:
-                writer = None
-                self._recording = False
-                self.log(f"ERROR starting IMU recording: {e}")
-        if writer is not None:
-            handle, columns = writer
-            handle.write(",".join(f"{sample.get(c, float('nan')):.6g}"
-                                  for c in columns) + "\n")
-        return writer
-
     # -- thread body ---------------------------------------------------------
     def run(self):
-        writer = None
         try:
             source = self.config.get("source_type", IMU_SOURCES[0])
             if source == "Serial port":
-                writer = self._play_serial()
+                self._play_serial()
             elif source == "ROS 2 topic":
-                writer = self._play_ros2()
+                self._play_ros2()
             else:
-                writer = self._play_file()
+                self._play_file()
             self.log("IMU stream ended.")
         except Exception as e:
             self.out_queue.put(("error", str(e)))
         finally:
             self._emit({}, force=True)
-            if isinstance(writer, tuple):
-                try:
-                    writer[0].close()
-                except Exception:
-                    pass
-            self._recording = False
             self.out_queue.put(("stopped", None))
 
     def _play_serial(self):
@@ -2437,7 +2318,6 @@ class ImuReader(threading.Thread):
         baud = int(self.config.get("baud") or 115200)
         layout = self.config.get("layout", "")
         self.log(f"Opening {port} at {baud} baud ...")
-        writer = None
         skipped = 0
         with pyserial.Serial(port, baud, timeout=0.2) as link:
             self.out_queue.put(("imu_info", {"source": port, "baud": baud,
@@ -2458,16 +2338,13 @@ class ImuReader(threading.Thread):
                     if skipped in (1, 50, 500):
                         self.log(f"Skipping non-data line: {raw.strip()[:80]}")
                     continue
-                writer = self._service_recording(sample, writer)
                 self._emit(sample)
-        return writer
 
     def _play_file(self):
         path = self.config.get("port", "")
         self.log(f"Loading IMU recording: {path} ...")
         samples = load_imu_recording(path)
         self.log(f"Loaded {len(samples)} sample(s).")
-        writer = None
         # replay at the log's own rate when it carries timestamps
         stamps = [s["t"] for s in samples if "t" in s]
         step = 0.01
@@ -2479,13 +2356,11 @@ class ImuReader(threading.Thread):
             for sample in samples:
                 if self._stop_event.is_set():
                     break
-                writer = self._service_recording(sample, writer)
                 self._emit(sample)
                 time.sleep(step)
             if not self.loop:
                 break
             self.log("Looping recording...")
-        return writer
 
     def _play_ros2(self):
         domain = str(self.config.get("domain_id", "")).strip()
@@ -2511,15 +2386,11 @@ class ImuReader(threading.Thread):
             reliability=(QoSReliabilityPolicy.BEST_EFFORT
                          if self.config.get("qos") == "best_effort"
                          else QoSReliabilityPolicy.RELIABLE))
-        state = {"writer": None}
 
         def on_msg(msg):
             sample = imu_sample_from_ros(msg)
-            if not sample:
-                return
-            state["writer"] = self._service_recording(sample,
-                                                      state["writer"])
-            self._emit(sample)
+            if sample:
+                self._emit(sample)
 
         node.create_subscription(Imu, topic, on_msg, profile)
         try:
@@ -2531,7 +2402,6 @@ class ImuReader(threading.Thread):
                 rclpy.shutdown()
             except Exception:
                 pass
-        return state["writer"]
 
 
 def same_measurement(a, b) -> bool:
@@ -4244,7 +4114,7 @@ def enable_dark_title_bar(root: tk.Tk):
 class OusterGuiApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title(f"Sensor Fleet Manager  v{__version__}  ·  "
+        root.title(f"Sensor Fleet Manager  v{__version__} {EDITION}  ·  "
                    "Powered by Python")
         root.geometry("1320x880")
         root.minsize(1000, 640)
@@ -4261,7 +4131,6 @@ class OusterGuiApp:
         # streaming / child processes
         self.reader = None
         self.frame_queue = queue.Queue(maxsize=4)
-        self.record_proc = None
         self.viz_proc = None
         self.last_frame_status = {}
 
@@ -4301,7 +4170,7 @@ class OusterGuiApp:
         self._build_shell()
         self._poll_queue()
 
-        self.log(f"Sensor Fleet Manager v{__version__} ready.")
+        self.log(f"Sensor Fleet Manager v{__version__} ({EDITION}) ready.")
         self.log(f"Project database: {self.store.path}")
         if not HAVE_OUSTER:
             self.log("NOTE: ouster-sdk is not installed "
@@ -4946,7 +4815,7 @@ class OusterGuiApp:
             self._build_config_panel(left)
             self._build_legacy_panel(left)
             self._build_stream_panel(left)
-            self._build_record_panel(left)
+            self._build_playback_panel(left)
             self._build_log_panel(left)
             self._build_viz_panel(right)
 
@@ -5079,20 +4948,15 @@ class OusterGuiApp:
         ttk.Button(stream, text="Open 3D Viewer (point cloud)",
                    command=self.on_open_3d).pack(fill=tk.X, pady=3)
 
-    def _build_record_panel(self, parent):
-        rec = ttk.LabelFrame(parent, text="  RECORD / PLAYBACK  ", padding=10)
-        rec.pack(fill=tk.X, pady=4)
-        self.record_btn = ttk.Button(rec, text="●  Start Recording",
-                                     command=self.on_toggle_record)
-        self.record_btn.pack(fill=tk.X, pady=3)
-        ttk.Button(rec, text="▶  Play Recording (PCAP / OSF)...",
+    def _build_playback_panel(self, parent):
+        play = ttk.LabelFrame(parent, text="  PLAYBACK  ", padding=10)
+        play.pack(fill=tk.X, pady=4)
+        ttk.Button(play, text="▶  Play Recording (PCAP / OSF)...",
                    command=self.on_open_file).pack(fill=tk.X, pady=3)
         self.loop_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(rec, text="Loop playback (repeat)",
+        ttk.Checkbutton(play, text="Loop playback (repeat)",
                         variable=self.loop_var,
                         style="TCheckbutton").pack(anchor=tk.W, pady=(2, 0))
-        ttk.Button(rec, text="Export to MCAP (Foxglove)...",
-                   command=self.on_export_mcap).pack(fill=tk.X, pady=(6, 0))
 
     def _build_log_panel(self, parent):
         logf = ttk.LabelFrame(parent, text="  LOG  ", padding=6)
@@ -5289,8 +5153,7 @@ class OusterGuiApp:
                                                                pady=3)
 
     def _build_camera_stream_panel(self, parent):
-        live = ttk.LabelFrame(parent, text="  LIVE VIEW / RECORDING  ",
-                              padding=10)
+        live = ttk.LabelFrame(parent, text="  LIVE VIEW  ", padding=10)
         live.pack(fill=tk.X, pady=4)
         self.start_btn = ttk.Button(live, text="▶  Start Preview",
                                     style="Accent.TButton",
@@ -5302,9 +5165,6 @@ class OusterGuiApp:
         self.stop_btn.pack(fill=tk.X, pady=3)
         ttk.Button(live, text="📷  Snapshot...",
                    command=self.on_snapshot).pack(fill=tk.X, pady=3)
-        self.record_btn = ttk.Button(live, text="●  Start Recording",
-                                     command=self.on_toggle_camera_record)
-        self.record_btn.pack(fill=tk.X, pady=3)
         ttk.Button(live, text="▶  Play video file...",
                    command=self.on_open_video).pack(fill=tk.X, pady=3)
         ttk.Button(live, text="🗗  Open on another screen",
@@ -5484,9 +5344,6 @@ class OusterGuiApp:
                                    command=self.on_stop_stream,
                                    state=tk.DISABLED)
         self.stop_btn.pack(fill=tk.X, pady=3)
-        self.record_btn = ttk.Button(live, text="●  Start Recording",
-                                     command=self.on_toggle_imu_record)
-        self.record_btn.pack(fill=tk.X, pady=3)
         row = ttk.Frame(live, style="Panel.TFrame")
         row.pack(fill=tk.X, pady=3)
         ttk.Label(row, text="Samples shown:",
@@ -5640,28 +5497,6 @@ class OusterGuiApp:
         self.reader.start()
         self.start_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
-
-    def on_toggle_imu_record(self):
-        reader = self.reader if isinstance(self.reader, ImuReader) else None
-        if reader is not None and reader.recording:
-            reader.stop_recording()
-            self.record_btn.configure(text="●  Start Recording")
-            return
-        if reader is None:
-            messagebox.showinfo("Recording",
-                                "Start the stream first - samples are "
-                                "written as they arrive.")
-            return
-        name = "".join(c if c.isalnum() or c in "-_" else "_"
-                       for c in (self.sensor or {}).get("name", "imu"))
-        path = filedialog.asksaveasfilename(
-            title="Save IMU log as", defaultextension=".csv",
-            initialfile=f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-            filetypes=[("CSV", "*.csv")])
-        if not path:
-            return
-        reader.start_recording(path)
-        self.record_btn.configure(text="■  Stop Recording")
 
     def on_pull_imu(self):
         """Serial: sample raw lines and suggest a layout.
@@ -5907,9 +5742,6 @@ class OusterGuiApp:
             lines.append(f"{title:<13}: "
                          + "  ".join(f"{c}={latest[c]:+8.3f}"
                                      for c in present))
-        if self.reader is not None and getattr(self.reader, "recording",
-                                               False):
-            lines.append("● recording")
         self.info_var.set("\n".join(lines))
 
     # ----------------------------------------------------- arbe dashboard --
@@ -6720,33 +6552,6 @@ class OusterGuiApp:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def on_toggle_camera_record(self):
-        if not self._require_cv2():
-            return
-        reader = self.reader if isinstance(self.reader, CameraReader) else None
-        if reader is not None and reader.recording:
-            reader.stop_recording()
-            self.record_btn.configure(text="●  Start Recording")
-            return
-        name = "".join(c if c.isalnum() or c in "-_" else "_"
-                       for c in (self.sensor or {}).get("name", "camera"))
-        path = filedialog.asksaveasfilename(
-            title="Save recording as", defaultextension=".mp4",
-            initialfile=f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.mp4",
-            filetypes=[("MP4 video", "*.mp4"), ("AVI video", "*.avi")])
-        if not path:
-            return
-        if reader is None:
-            # recording needs the capture thread; start the preview first
-            self.log("Starting the preview so the camera can be recorded ...")
-            self.on_start_preview()
-            reader = self.reader if isinstance(self.reader,
-                                               CameraReader) else None
-            if reader is None:
-                return
-        reader.start_recording(path)
-        self.record_btn.configure(text="■  Stop Recording")
-
     def on_open_second_view(self):
         """Mirror the live image into its own window (second monitor)."""
         name = (self.sensor or {}).get("name", "camera")
@@ -6764,10 +6569,8 @@ class OusterGuiApp:
             window.close()
         self.view_windows = []
 
-    def _draw_camera(self, rgb, index, recording=False):
+    def _draw_camera(self, rgb, index):
         title = f"Frame {index}  ·  {rgb.shape[1]}x{rgb.shape[0]}"
-        if recording:
-            title += "   ● REC"
         self.last_camera_frame = (rgb, title)
         for window in list(self.view_windows):
             window.show(rgb, title)
@@ -7901,14 +7704,6 @@ class OusterGuiApp:
         if self.reader is not None:
             self.reader.stop()
             self.reader = None
-            # a camera recording lives inside the capture thread
-            button = getattr(self, "record_btn", None)
-            if button is not None and self.sensor_kind() in (KIND_CAMERA,
-                                                             KIND_IMU):
-                try:
-                    button.configure(text="●  Start Recording")
-                except tk.TclError:
-                    pass
         for name in ("start_btn", "stop_btn"):
             widget = getattr(self, name, None)
             if widget is None:
@@ -7929,172 +7724,6 @@ class OusterGuiApp:
         if path:
             self.on_stop_stream()
             self.on_start_stream(source_url=path, is_file=True)
-
-    def on_export_mcap(self):
-        """Convert a PCAP/OSF recording to an MCAP file with foxglove
-        PointCloud messages, viewable directly in Foxglove."""
-        if not self._require_sdk():
-            return
-        if not HAVE_MCAP:
-            messagebox.showerror(
-                "Export to MCAP",
-                "MCAP export needs extra packages. Install them with:\n\n"
-                "    pip install mcap mcap-protobuf-support "
-                "foxglove-schemas-protobuf protobuf")
-            return
-        in_path = filedialog.askopenfilename(
-            title="Recording to convert (PCAP / OSF)",
-            filetypes=[("Lidar recordings", "*.pcap *.osf"),
-                       ("All files", "*")])
-        if not in_path:
-            return
-        out_path = filedialog.asksaveasfilename(
-            title="Save MCAP as",
-            defaultextension=".mcap",
-            initialfile=os.path.splitext(os.path.basename(in_path))[0]
-            + ".mcap",
-            filetypes=[("MCAP files", "*.mcap")])
-        if not out_path:
-            return
-        threading.Thread(target=self._export_mcap_worker,
-                         args=(in_path, out_path), daemon=True).start()
-
-    _IMU_JSON_SCHEMA = json.dumps({
-        "type": "object",
-        "properties": {
-            "timestamp": {"type": "number"},
-            "linear_acceleration": {"type": "object", "properties": {
-                "x": {"type": "number"}, "y": {"type": "number"},
-                "z": {"type": "number"}}},
-            "angular_velocity": {"type": "object", "properties": {
-                "x": {"type": "number"}, "y": {"type": "number"},
-                "z": {"type": "number"}}}}}).encode()
-
-    def _export_mcap_worker(self, in_path, out_path):
-        try:
-            self.log(f"Exporting {os.path.basename(in_path)} to MCAP ...")
-            src = open_source(in_path, sensor_idx=0)
-            info = source_metadata(src)
-            xyzlut = ouster_core.XYZLut(info, use_extrinsics=False)
-            F32 = PackedElementField.FLOAT32
-            fields = [PackedElementField(name="x", offset=0, type=F32),
-                      PackedElementField(name="y", offset=4, type=F32),
-                      PackedElementField(name="z", offset=8, type=F32),
-                      PackedElementField(name="intensity", offset=12,
-                                         type=F32)]
-            n = 0
-            with open(out_path, "wb") as fh:
-                writer = McapWriter(fh)
-                writer.start()
-                # point-cloud channel (protobuf foxglove.PointCloud)
-                fds = build_file_descriptor_set(
-                    PointCloud).SerializeToString()
-                pc_schema = writer.register_schema(
-                    name="foxglove.PointCloud", encoding="protobuf",
-                    data=fds)
-                pc_chan = writer.register_channel(
-                    topic="/ouster/points", message_encoding="protobuf",
-                    schema_id=pc_schema)
-
-                for item in src:
-                    for frame in frames_from_item(item):
-                        rng = frame.field(ouster_core.ChanField.RANGE)
-                        xyz = xyzlut(rng).astype(np.float32).reshape(-1, 3)
-                        try:
-                            inten = frame.field(
-                                ouster_core.ChanField.SIGNAL)
-                        except Exception:
-                            inten = rng
-                        inten = inten.astype(np.float32).reshape(-1, 1)
-                        mask = (rng.reshape(-1) > 0) & \
-                            np.isfinite(xyz).all(1)
-                        pts = np.hstack([xyz, inten])[mask]
-                        ts = int(n * 1e8)  # ~10 Hz fallback timeline
-                        msg = PointCloud(frame_id="ouster", point_stride=16,
-                                         fields=fields, data=pts.tobytes())
-                        msg.timestamp.FromNanoseconds(ts)
-                        writer.add_message(
-                            channel_id=pc_chan, log_time=ts,
-                            data=msg.SerializeToString(),
-                            publish_time=ts, sequence=n)
-                        n += 1
-                        if n % 50 == 0:
-                            self.log(f"  ...{n} point-cloud frames written")
-                try:
-                    src.close()
-                except Exception:
-                    pass
-
-                n_imu = self._export_imu(writer, in_path)
-                writer.finish()
-
-            note = (f"{n} point-cloud frames"
-                    + (f" and {n_imu} IMU samples" if n_imu else ""))
-            self.log(f"MCAP export complete: {note} -> {out_path}")
-            self.root.after(0, lambda: messagebox.showinfo(
-                "Export to MCAP",
-                f"Done. Wrote {note} to:\n{out_path}\n\n"
-                "Open it in Foxglove: add a 3D panel for /ouster/points"
-                + (", and a Plot panel for /ouster/imu." if n_imu else ".")))
-        except Exception as e:
-            # bind the text now: `e` is out of scope by the time the
-            # scheduled callback runs on the Tk thread
-            err = str(e)
-            self.log(f"ERROR exporting MCAP: {err}")
-            self.root.after(0, lambda: messagebox.showerror(
-                "Export to MCAP", f"Export failed:\n{err}"))
-
-    def _export_imu(self, writer, in_path):
-        """Append the sensor's IMU samples (accel + gyro) as JSON messages.
-
-        IMU packets are only available from PCAP sources; for OSF we simply
-        skip IMU and keep the point-cloud export.
-        """
-        if open_packet_source is None:
-            return 0
-        try:
-            packets = open_packet_source(in_path)
-        except Exception:
-            self.log("No IMU packets in this source (skipping IMU).")
-            return 0
-        imu_schema = writer.register_schema(
-            name="ouster.Imu", encoding="jsonschema",
-            data=self._IMU_JSON_SCHEMA)
-        imu_chan = writer.register_channel(
-            topic="/ouster/imu", message_encoding="json",
-            schema_id=imu_schema)
-        n = 0
-        try:
-            for item in packets:
-                pkt = item[1] if isinstance(item, (list, tuple)) else item
-                if not isinstance(pkt, ouster_core.ImuPacket):
-                    continue
-                try:
-                    acc = [float(v) for v in pkt.accel]
-                    gyr = [float(v) for v in pkt.gyro]
-                    ts = int(getattr(pkt, "sys_ts", 0)
-                             or getattr(pkt, "timestamp", 0) or n * 10**7)
-                except Exception:
-                    continue
-                m = {"timestamp": ts / 1e9,
-                     "linear_acceleration": {"x": acc[0], "y": acc[1],
-                                             "z": acc[2]},
-                     "angular_velocity": {"x": gyr[0], "y": gyr[1],
-                                          "z": gyr[2]}}
-                writer.add_message(channel_id=imu_chan, log_time=ts,
-                                   data=json.dumps(m).encode(),
-                                   publish_time=ts, sequence=n)
-                n += 1
-        except Exception as e:
-            self.log(f"IMU export stopped early: {e}")
-        finally:
-            try:
-                packets.close()
-            except Exception:
-                pass
-        if n:
-            self.log(f"  ...{n} IMU samples written")
-        return n
 
     def on_help(self):
         """Open README.md in a scrollable window inside the app."""
@@ -8168,38 +7797,6 @@ class OusterGuiApp:
             messagebox.showerror("3D Viewer",
                                  f"Could not launch the 3D viewer:\n{e}")
 
-    def on_toggle_record(self):
-        if self.record_proc is None:
-            sensor_name = (self.sensor or {}).get("name", "recording")
-            safe = "".join(c if c.isalnum() or c in "-_" else "_"
-                           for c in sensor_name)
-            path = filedialog.asksaveasfilename(
-                title="Save recording as",
-                defaultextension=".pcap",
-                initialfile=f"{safe}_{time.strftime('%Y%m%d_%H%M%S')}.pcap",
-                filetypes=[("PCAP files", "*.pcap")])
-            if not path:
-                return
-            if self.reader is not None:
-                self.on_stop_stream()
-                self.log("Stopped 2D stream to free the sensor for "
-                         "recording.")
-            host = self._host()
-            cmd = self._ouster_cli_cmd("source", host, "save", path)
-            try:
-                self.record_proc = subprocess.Popen(cmd)
-                self.record_btn.configure(text="■  Stop Recording")
-                self.log(f"Recording started -> {path}")
-            except Exception as e:
-                self.log(f"ERROR starting recording: {e}")
-                messagebox.showerror("Recording",
-                                     f"Could not start recording:\n{e}")
-        else:
-            self.record_proc.terminate()
-            self.record_proc = None
-            self.record_btn.configure(text="●  Start Recording")
-            self.log("Recording stopped.")
-
     # ------------------------------------------------------------ rendering --
     def _style_axis(self, ax, title):
         ax.set_facecolor(Theme.BG)
@@ -8256,8 +7853,7 @@ class OusterGuiApp:
                     if len(item) > 3:
                         self.last_frame_status = item[3]
                 elif kind == "camera":
-                    self._draw_camera(item[1], item[2],
-                                      item[3] if len(item) > 3 else False)
+                    self._draw_camera(item[1], item[2])
                 elif kind == "camera_info":
                     self._show_camera_info(item[1])
                 elif kind == "camera_props":
@@ -8329,12 +7925,11 @@ class OusterGuiApp:
         self.on_stop_stream()
         self._close_view_windows()
         self._close_layout_windows()
-        for proc in (self.record_proc, self.viz_proc):
-            if proc is not None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+        if self.viz_proc is not None:
+            try:
+                self.viz_proc.terminate()
+            except Exception:
+                pass
         self.root.destroy()
 
 

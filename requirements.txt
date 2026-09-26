@@ -14,11 +14,5 @@ onvif-zeep              # network-camera settings: IP, MTU, bitrate, GOP
 # recordings (.npz / .npy / .csv / .pcd) replay without ROS. The same goes
 # for inertial sensors read from a ROS 2 sensor_msgs/Imu topic.
 
-# Optional - only needed for "Export to MCAP (Foxglove)"
-# mcap
-# mcap-protobuf-support
-# foxglove-schemas-protobuf
-# protobuf
-
 # Tkinter is not on PyPI; on Debian/Ubuntu install it with:
 #   sudo apt install python3-tk

@@ -19,9 +19,14 @@ public sealed class FrameReader : IDisposable
 
     public bool IsOpened { get; }
 
-    public FrameReader(string source)
+    public FrameReader(string source, bool hardware)
     {
-        cap = int.TryParse(source, out int index) ? new VideoCapture(index) : new VideoCapture(source);
+        cap = Open(source, hardware);
+        if (hardware && !cap.IsOpened())
+        {
+            cap.Dispose();
+            cap = Open(source, false);
+        }
         IsOpened = cap.IsOpened();
         if (!IsOpened) return;
 
@@ -33,6 +38,15 @@ public sealed class FrameReader : IDisposable
         running = true;
         thread = new Thread(Run) { IsBackground = true };
         thread.Start();
+    }
+
+    private static VideoCapture Open(string source, bool hardware)
+    {
+        bool isIndex = int.TryParse(source, out int index);
+        if (!hardware) return isIndex ? new VideoCapture(index) : new VideoCapture(source);
+
+        int[] prms = { (int)VideoCaptureProperties.HwAcceleration, (int)VideoAccelerationType.Any };
+        return isIndex ? new VideoCapture(index, VideoCaptureAPIs.ANY, prms) : new VideoCapture(source, VideoCaptureAPIs.ANY, prms);
     }
 
     private void Run()

@@ -24,6 +24,8 @@ public class Settings
     public double TirCurve { get; set; } = 1.5;
     public double TirGain { get; set; } = 2.0;
 
+    public string VideoDecoding { get; set; } = "GPU";
+
     public static Settings Load()
     {
         try

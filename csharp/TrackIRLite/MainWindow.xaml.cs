@@ -73,7 +73,7 @@ public partial class MainWindow : Window
 
         if (settings.PipIndex != -1)
         {
-            pipCap = new FrameReader(settings.PipIndex.ToString());
+            pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
             if (pipCap.IsOpened) pipEnabled = true;
             else settings.PipIndex = -1;
         }
@@ -213,7 +213,7 @@ public partial class MainWindow : Window
     private void OnPipSelected(int index)
     {
         pipCap?.Dispose();
-        pipCap = new FrameReader(index.ToString());
+        pipCap = new FrameReader(index.ToString(), HardwareDecoding);
         lastPipId = 0;
         if (pipCap.IsOpened)
         {
@@ -231,7 +231,7 @@ public partial class MainWindow : Window
             if (settings.PipIndex != -1)
             {
                 pipCap?.Dispose();
-                pipCap = new FrameReader(settings.PipIndex.ToString());
+                pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
                 lastPipId = 0;
                 if (pipCap.IsOpened)
                 {
@@ -256,7 +256,7 @@ public partial class MainWindow : Window
     private void BtnConfig_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new ConfigDialog(view.LensMode, view.BaseFov, Math.Clamp(1000 / updateDelay, 15, 60), view.InputMode,
-            view.SensX, view.SensZ, view.TirDeadzone, view.TirCurve, view.TirGain, Topmost) { Owner = this };
+            view.SensX, view.SensZ, view.TirDeadzone, view.TirCurve, view.TirGain, Topmost, settings.VideoDecoding) { Owner = this };
         dialog.ShowDialog();
         if (!dialog.Applied) return;
 
@@ -284,7 +284,10 @@ public partial class MainWindow : Window
         settings.TirDeadzone = view.TirDeadzone;
         settings.TirCurve = view.TirCurve;
         settings.TirGain = view.TirGain;
+        bool decodingChanged = dialog.Decoding != settings.VideoDecoding;
+        settings.VideoDecoding = dialog.Decoding;
         settings.Save();
+        if (decodingChanged) ReopenSources();
     }
 
     private void UpdateStrip(Mat frame)
@@ -417,10 +420,33 @@ public partial class MainWindow : Window
     private void BtnPitchDown_Click(object sender, RoutedEventArgs e) => view.ChangePitch(-5);
     private void BtnPitchUp_Click(object sender, RoutedEventArgs e) => view.ChangePitch(5);
 
+    private bool HardwareDecoding => settings.VideoDecoding == "GPU";
+
+    private void ReopenSources()
+    {
+        if (cap != null && settings.LastMainSource != null)
+        {
+            cap.Dispose();
+            cap = new FrameReader(settings.LastMainSource, HardwareDecoding);
+            lastFrameId = 0;
+            if (!cap.IsOpened)
+            {
+                cap.Dispose();
+                cap = null;
+            }
+        }
+        if (pipEnabled && settings.PipIndex != -1)
+        {
+            pipCap?.Dispose();
+            pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
+            lastPipId = 0;
+        }
+    }
+
     private void LoadSource(string source, bool silentFail)
     {
         cap?.Dispose();
-        cap = new FrameReader(source);
+        cap = new FrameReader(source, HardwareDecoding);
         if (cap.IsOpened)
         {
             lastFrameId = 0;
@@ -482,7 +508,7 @@ public partial class MainWindow : Window
         if (pipEnabled && settings.PipIndex != -1)
         {
             pipCap?.Dispose();
-            pipCap = new FrameReader(settings.PipIndex.ToString());
+            pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
             lastPipId = 0;
         }
 

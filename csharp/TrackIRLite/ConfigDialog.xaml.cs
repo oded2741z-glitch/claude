@@ -10,6 +10,7 @@ public partial class ConfigDialog : Window
     public bool Applied { get; private set; }
     public string LensMode { get; private set; }
     public string InputMode { get; private set; }
+    public string Decoding { get; private set; }
     public double BaseFov => FovSlider.Value;
     public int TargetFps => (int)FpsSlider.Value;
     public double SensX => Math.Round(SensXSlider.Value, 3);
@@ -20,10 +21,11 @@ public partial class ConfigDialog : Window
     public bool AlwaysOnTop => TopmostBox.IsChecked == true;
 
     public ConfigDialog(string lensMode, double baseFov, int fps, string inputMode, double sensX, double sensZ,
-        double deadzone, double curve, double gain, bool topmost)
+        double deadzone, double curve, double gain, bool topmost, string decoding)
     {
         InitializeComponent();
         LensMode = lensMode;
+        Decoding = decoding;
         InputMode = inputMode;
         FovSlider.Value = baseFov;
         FpsSlider.Value = fps;
@@ -43,6 +45,8 @@ public partial class ConfigDialog : Window
         Brush text = (Brush)FindResource("TextBrush");
         BtnStandard.Foreground = LensMode == "Standard" ? accent : text;
         BtnFisheye.Foreground = LensMode == "Fisheye" ? accent : text;
+        BtnCpu.Foreground = Decoding == "CPU" ? accent : text;
+        BtnGpu.Foreground = Decoding == "GPU" ? accent : text;
         BtnMouse.Foreground = InputMode == "MOUSE" ? accent : text;
         BtnTrackIR.Foreground = InputMode == "TRACKIR" ? accent : text;
     }
@@ -62,6 +66,12 @@ public partial class ConfigDialog : Window
     private void Lens_Click(object sender, RoutedEventArgs e)
     {
         LensMode = sender == BtnFisheye ? "Fisheye" : "Standard";
+        UpdateChoices();
+    }
+
+    private void Decoding_Click(object sender, RoutedEventArgs e)
+    {
+        Decoding = sender == BtnGpu ? "GPU" : "CPU";
         UpdateChoices();
     }
 

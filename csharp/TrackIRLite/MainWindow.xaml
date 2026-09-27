@@ -62,6 +62,9 @@
                 <Button x:Name="BtnPitchDown" Content="-" Width="36" Padding="0,5" Margin="5,0" FontWeight="Bold" Style="{StaticResource FlatButton}" Click="BtnPitchDown_Click" />
                 <Button x:Name="BtnPitchUp" Content="+" Width="36" Padding="0,5" Margin="5,0" FontWeight="Bold" Style="{StaticResource FlatButton}" Click="BtnPitchUp_Click" />
             </StackPanel>
+            <TextBlock Grid.ColumnSpan="2" Text="oT" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,20,0"
+                       Foreground="{StaticResource ButtonBrush}" FontFamily="Segoe UI" FontSize="13" FontWeight="Bold"
+                       IsHitTestVisible="False" />
         </Grid>
     </Grid>
 </Window>

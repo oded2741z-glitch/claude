@@ -61,6 +61,8 @@ public partial class MainWindow : Window
         view.TirDeadzone = settings.TirDeadzone;
         view.TirCurve = settings.TirCurve;
         view.TirGain = settings.TirGain;
+        view.LockPitch = settings.TirLockPitch;
+        view.UseCurve = settings.TirUseCurve;
         Hud.View = view;
         barsTimer.Tick += BarsTick;
     }
@@ -112,7 +114,8 @@ public partial class MainWindow : Window
 
     private void UpdateControlsVisibility()
     {
-        PitchControls.Visibility = view.InputMode == "MOUSE" ? Visibility.Visible : Visibility.Collapsed;
+        bool show = view.InputMode == "MOUSE" || view.LockPitch;
+        PitchControls.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void Window_KeyDown(object sender, KeyEventArgs e)
@@ -256,7 +259,8 @@ public partial class MainWindow : Window
     private void BtnConfig_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new ConfigDialog(view.LensMode, view.BaseFov, Math.Clamp(1000 / updateDelay, 15, 60), view.InputMode,
-            view.SensX, view.SensZ, view.TirDeadzone, view.TirCurve, view.TirGain, Topmost, settings.VideoDecoding) { Owner = this };
+            view.SensX, view.SensZ, view.TirDeadzone, view.TirCurve, view.TirGain, Topmost, settings.VideoDecoding,
+            view.LockPitch, view.UseCurve) { Owner = this };
         dialog.ShowDialog();
         if (!dialog.Applied) return;
 
@@ -272,6 +276,8 @@ public partial class MainWindow : Window
             input = "MOUSE";
         }
         view.InputMode = input;
+        view.LockPitch = dialog.LockPitch;
+        view.UseCurve = dialog.UseCurve;
         UpdateControlsVisibility();
         view.SensX = dialog.SensX;
         view.SensZ = dialog.SensZ;
@@ -284,6 +290,8 @@ public partial class MainWindow : Window
         settings.TirDeadzone = view.TirDeadzone;
         settings.TirCurve = view.TirCurve;
         settings.TirGain = view.TirGain;
+        settings.TirLockPitch = view.LockPitch;
+        settings.TirUseCurve = view.UseCurve;
         bool decodingChanged = dialog.Decoding != settings.VideoDecoding;
         settings.VideoDecoding = dialog.Decoding;
         settings.Save();

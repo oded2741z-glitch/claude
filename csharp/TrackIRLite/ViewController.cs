@@ -24,6 +24,8 @@ public class ViewController
     public double TirDeadzone { get; set; } = 1.0;
     public double TirCurve { get; set; } = 1.5;
     public double TirGain { get; set; } = 2.0;
+    public bool LockPitch { get; set; }
+    public bool UseCurve { get; set; } = true;
 
     public void Update((double Yaw, double Pitch, double Z) tir)
     {
@@ -32,7 +34,7 @@ public class ViewController
         if (InputMode == "TRACKIR")
         {
             Yaw = ApplyCurve(tir.Yaw) + OffsetYaw;
-            Pitch = ApplyCurve(tir.Pitch) + OffsetPitch;
+            Pitch = (LockPitch ? 0 : ApplyCurve(tir.Pitch)) + OffsetPitch;
             CurrentFov = Math.Clamp(BaseFov + tir.Z * 1.5, 30, 130);
         }
         else
@@ -52,6 +54,7 @@ public class ViewController
 
     public double ApplyCurve(double angle)
     {
+        if (!UseCurve) return angle;
         const double reference = 45.0;
         double m = Math.Max(0.0, Math.Abs(angle) - TirDeadzone);
         return Math.CopySign(reference * TirGain * Math.Pow(m / (reference - TirDeadzone), TirCurve), angle);
@@ -105,7 +108,7 @@ public class ViewController
         else
         {
             targetYaw = HomeYaw - ApplyCurve(tir.Yaw);
-            targetPitch = HomePitch - ApplyCurve(tir.Pitch);
+            targetPitch = HomePitch - (LockPitch ? 0 : ApplyCurve(tir.Pitch));
         }
         StartAnimation(WrapDelta(targetYaw - OffsetYaw), targetPitch - OffsetPitch);
     }

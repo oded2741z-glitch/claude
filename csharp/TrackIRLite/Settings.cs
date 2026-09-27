@@ -23,6 +23,8 @@ public class Settings
     public double TirDeadzone { get; set; } = 1.0;
     public double TirCurve { get; set; } = 1.5;
     public double TirGain { get; set; } = 2.0;
+    public bool TirLockPitch { get; set; } = false;
+    public bool TirUseCurve { get; set; } = true;
 
     public string VideoDecoding { get; set; } = "GPU";
 

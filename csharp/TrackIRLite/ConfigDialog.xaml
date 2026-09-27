@@ -37,6 +37,12 @@
             <Button x:Name="BtnTrackIR" Content="TRACKIR" Width="80" Padding="0,4" Margin="3,0" Style="{StaticResource FlatButton}" Click="Input_Click" />
         </StackPanel>
 
+        <TextBlock Text="TrackIR Y Axis:" HorizontalAlignment="Center" Margin="0,10,0,0" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+            <Button x:Name="BtnYFree" Content="Free" Width="80" Padding="0,4" Margin="3,0" Style="{StaticResource FlatButton}" Click="YAxis_Click" />
+            <Button x:Name="BtnYLocked" Content="Locked" Width="80" Padding="0,4" Margin="3,0" Style="{StaticResource FlatButton}" Click="YAxis_Click" />
+        </StackPanel>
+
         <TextBlock Text="Mouse Sensitivity:" HorizontalAlignment="Center" Margin="0,10,0,0" />
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,2">
             <TextBlock Text="X:" VerticalAlignment="Center" />
@@ -46,6 +52,10 @@
         </StackPanel>
 
         <TextBlock Text="TrackIR Response:" HorizontalAlignment="Center" Margin="0,10,0,0" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,3">
+            <Button x:Name="BtnCurveOn" Content="On" Width="80" Padding="0,4" Margin="3,0" Style="{StaticResource FlatButton}" Click="CurveMode_Click" />
+            <Button x:Name="BtnCurveOff" Content="Off" Width="80" Padding="0,4" Margin="3,0" Style="{StaticResource FlatButton}" Click="CurveMode_Click" />
+        </StackPanel>
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,1">
             <TextBlock x:Name="DeadzoneLabel" Width="100" VerticalAlignment="Center" />
             <Slider x:Name="DeadzoneSlider" Width="120" Margin="5,0" Minimum="0" Maximum="5" TickFrequency="0.5" Style="{StaticResource FlatSlider}" ValueChanged="Curve_ValueChanged" />

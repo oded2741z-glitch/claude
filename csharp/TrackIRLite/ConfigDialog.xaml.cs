@@ -11,6 +11,8 @@ public partial class ConfigDialog : Window
     public string LensMode { get; private set; }
     public string InputMode { get; private set; }
     public string Decoding { get; private set; }
+    public bool LockPitch { get; private set; }
+    public bool UseCurve { get; private set; }
     public double BaseFov => FovSlider.Value;
     public int TargetFps => (int)FpsSlider.Value;
     public double SensX => Math.Round(SensXSlider.Value, 3);
@@ -21,9 +23,11 @@ public partial class ConfigDialog : Window
     public bool AlwaysOnTop => TopmostBox.IsChecked == true;
 
     public ConfigDialog(string lensMode, double baseFov, int fps, string inputMode, double sensX, double sensZ,
-        double deadzone, double curve, double gain, bool topmost, string decoding)
+        double deadzone, double curve, double gain, bool topmost, string decoding, bool lockPitch, bool useCurve)
     {
         InitializeComponent();
+        LockPitch = lockPitch;
+        UseCurve = useCurve;
         LensMode = lensMode;
         Decoding = decoding;
         InputMode = inputMode;
@@ -47,6 +51,19 @@ public partial class ConfigDialog : Window
         BtnFisheye.Foreground = LensMode == "Fisheye" ? accent : text;
         BtnCpu.Foreground = Decoding == "CPU" ? accent : text;
         BtnGpu.Foreground = Decoding == "GPU" ? accent : text;
+        BtnYFree.Foreground = LockPitch ? text : accent;
+        BtnYLocked.Foreground = LockPitch ? accent : text;
+        BtnCurveOn.Foreground = UseCurve ? accent : text;
+        BtnCurveOff.Foreground = UseCurve ? text : accent;
+
+        Brush curveText = UseCurve ? text : (Brush)FindResource("MutedBrush");
+        foreach (var label in new[] { DeadzoneLabel, CurveLabel, GainLabel }) label.Foreground = curveText;
+        foreach (var slider in new[] { DeadzoneSlider, CurveSlider, GainSlider })
+        {
+            slider.IsEnabled = UseCurve;
+            slider.Opacity = UseCurve ? 1 : 0.4;
+        }
+
         BtnMouse.Foreground = InputMode == "MOUSE" ? accent : text;
         BtnTrackIR.Foreground = InputMode == "TRACKIR" ? accent : text;
     }
@@ -72,6 +89,18 @@ public partial class ConfigDialog : Window
     private void Decoding_Click(object sender, RoutedEventArgs e)
     {
         Decoding = sender == BtnGpu ? "GPU" : "CPU";
+        UpdateChoices();
+    }
+
+    private void YAxis_Click(object sender, RoutedEventArgs e)
+    {
+        LockPitch = sender == BtnYLocked;
+        UpdateChoices();
+    }
+
+    private void CurveMode_Click(object sender, RoutedEventArgs e)
+    {
+        UseCurve = sender == BtnCurveOn;
         UpdateChoices();
     }
 

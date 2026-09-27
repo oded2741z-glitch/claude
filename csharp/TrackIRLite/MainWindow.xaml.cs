@@ -148,19 +148,23 @@ public partial class MainWindow : Window
         if (now - lastRenderMs < updateDelay - 1) return;
         lastRenderMs = now;
 
-        cap.TryRead(ref lastFrameId, OnFrame);
-        if (!renderer.HasSource) return;
+        try
+        {
+            cap.TryRead(ref lastFrameId, OnFrame);
+            if (!renderer.HasSource) return;
 
-        view.Update(view.InputMode == "TRACKIR" ? ReadTrackIR() : (0, 0, 0));
-        DpiScale dpi = VisualTreeHelper.GetDpi(this);
-        int width = (int)Math.Round(VideoArea.ActualWidth * dpi.DpiScaleX);
-        int height = (int)Math.Round(VideoArea.ActualHeight * dpi.DpiScaleY);
-        renderer.Render(width, height, view.GetParams(width));
-        UpdatePip();
+            view.Update(view.InputMode == "TRACKIR" ? ReadTrackIR() : (0, 0, 0));
+            DpiScale dpi = VisualTreeHelper.GetDpi(this);
+            int width = (int)Math.Round(VideoArea.ActualWidth * dpi.DpiScaleX);
+            int height = (int)Math.Round(VideoArea.ActualHeight * dpi.DpiScaleY);
+            renderer.Render(width, height, view.GetParams(width));
+            UpdatePip();
 
-        Hud.ShowPanorama = barsVisible;
-        Hud.Strip = strip;
-        Hud.Refresh();
+            Hud.ShowPanorama = barsVisible;
+            Hud.Strip = strip;
+            Hud.Refresh();
+        }
+        catch { }
     }
 
     private void OnFrame(Mat frame)

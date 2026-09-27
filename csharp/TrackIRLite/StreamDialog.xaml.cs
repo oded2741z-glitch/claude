@@ -9,7 +9,7 @@ public enum StreamChoice { Cancel, Url, MainCam, PipCam }
 public partial class StreamDialog : Window
 {
     public StreamChoice Choice { get; private set; } = StreamChoice.Cancel;
-    public string Url => UrlBox.Text.Trim();
+    public string Url => UrlBox.Text.Trim().Trim('"').Trim();
 
     public StreamDialog(IReadOnlyList<string> history)
     {

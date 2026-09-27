@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using OpenCvSharp;
 
 namespace TrackIRLite;
@@ -19,10 +22,14 @@ public sealed class FrameReader : IDisposable
 
     public bool IsOpened { get; }
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint size);
+
     public FrameReader(string source, bool hardware)
     {
+        source = ToAsciiPath(source);
         cap = Open(source, hardware);
-        if (hardware && !cap.IsOpened())
+        if (hardware && !cap.IsOpened() && !source.Contains("://"))
         {
             cap.Dispose();
             cap = Open(source, false);
@@ -38,6 +45,13 @@ public sealed class FrameReader : IDisposable
         running = true;
         thread = new Thread(Run) { IsBackground = true };
         thread.Start();
+    }
+
+    private static string ToAsciiPath(string source)
+    {
+        if (source.All(c => c < 128) || !File.Exists(source)) return source;
+        var shortPath = new StringBuilder(1024);
+        return GetShortPathName(source, shortPath, (uint)shortPath.Capacity) > 0 ? shortPath.ToString() : source;
     }
 
     private static VideoCapture Open(string source, bool hardware)

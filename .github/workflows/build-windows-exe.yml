@@ -30,6 +30,25 @@ jobs:
       - name: Build OusterLidarGUI.exe
         run: python build_exe.py
 
+      # The runner has the Visual C++ runtime installed system-wide, so a
+      # passing self-test alone doesn't prove a fresh offline PC can run the
+      # EXE. Verify the runtime DLLs are packed inside the EXE itself.
+      - name: Check the C++ runtime is bundled
+        shell: pwsh
+        run: |
+          $files = pyi-archive_viewer --list --brief dist\OusterLidarGUI.exe
+          $dlls = $files | Where-Object { $_ -match '(?i)(msvcp140|vcruntime140)[^\\/]*\.dll\s*$' }
+          "Bundled C++ runtime DLLs:"; $dlls
+          $failed = $false
+          foreach ($name in 'msvcp140', 'vcruntime140') {
+            # plain name, or a wheel's renamed copy such as msvcp140-1a2b3c.dll
+            if (-not ($dlls | Where-Object { $_ -match "(?i)(^|[\s\\/])$name(-[0-9a-f]+)?\.dll\s*$" })) {
+              Write-Host "::error::$name.dll is not bundled in the EXE"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+
       - name: Self-test the EXE
         shell: pwsh
         run: |

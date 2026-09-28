@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.2.0
+
+- **Standalone Windows EXE** — `OusterLidarGUI.exe` bundles Python and all
+  libraries, so it runs on a PC with no Python and no internet. Built with
+  `build_exe.py` / `build_exe.bat`, and automatically on every push by the
+  "Build Windows EXE" GitHub Actions workflow.
+- `--self-test` flag checks every bundled dependency (SDK native code, OSF
+  playback, ouster-cli plugins, 3D viewer, Tk/matplotlib, MCAP, README).
+- Inside the EXE, the 3D viewer and recording re-launch the EXE itself in
+  ouster-cli mode, since there is no separate Python interpreter.
+- A windowed EXE's stray console output goes to `~/.ouster_lidar_gui.log`.
+- README: Windows firewall and no-network static-IP troubleshooting.
+
 ## v1.1.0
 
 - **Sensor profiles** — save named profiles (address + full configuration)

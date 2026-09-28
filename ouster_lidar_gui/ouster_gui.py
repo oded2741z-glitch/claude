@@ -34,7 +34,18 @@ import tkinter as tk
 import warnings
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
+
+# True when running as a packaged EXE (PyInstaller), where there is no
+# separate Python interpreter and bundled files live in sys._MEIPASS.
+FROZEN = getattr(sys, "frozen", False)
+
+
+def resource_path(name):
+    """Path of a file shipped with the app (script folder or EXE bundle)."""
+    base = getattr(sys, "_MEIPASS",
+                   os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
 
 import numpy as np
 
@@ -1376,8 +1387,7 @@ class OusterGuiApp:
 
     def on_help(self):
         """Open README.md in a scrollable window inside the app."""
-        readme = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "README.md")
+        readme = resource_path("README.md")
         try:
             with open(readme, encoding="utf-8") as f:
                 text = f.read()
@@ -1411,9 +1421,14 @@ class OusterGuiApp:
                    command=win.destroy).pack(pady=6)
 
     def _ouster_cli_cmd(self, *args):
-        """Build an ouster-cli command that always uses this venv's Python,
-        so it works even when 'ouster-cli' is not on PATH (e.g. on Windows
-        when the app is started by double-click)."""
+        """Build an ouster-cli command that always uses this app's own
+        runtime, so it works even when 'ouster-cli' is not on PATH.
+
+        From source we run this venv's Python; in the packaged EXE there is
+        no separate interpreter, so the EXE re-launches itself in CLI mode.
+        """
+        if FROZEN:
+            return [sys.executable, "--ouster-cli", *args]
         return [sys.executable, "-c",
                 "from ouster.cli.core import run; run()", *args]
 
@@ -1526,7 +1541,125 @@ class OusterGuiApp:
         self.root.destroy()
 
 
+def _attach_log_streams():
+    """A windowed EXE has no console, so sys.stdout/stderr are None and any
+    stray print would crash. Send them to a log file in the home folder."""
+    if sys.stdout is None or sys.stderr is None:
+        log = open(os.path.join(os.path.expanduser("~"),
+                                ".ouster_lidar_gui.log"),
+                   "a", encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = log
+        if sys.stderr is None:
+            sys.stderr = log
+
+
+def self_test(report_path=None):
+    """Smoke-test every bundled dependency. Used by the Windows EXE build to
+    prove the packaged app really runs; returns a process exit code."""
+    import tempfile
+    results = []
+
+    def check(name, fn):
+        try:
+            fn()
+            results.append(f"PASS  {name}")
+        except Exception as e:
+            results.append(f"FAIL  {name}: {e!r}")
+
+    def sdk_native():
+        info = ouster_core.SensorInfo.from_default(
+            ouster_core.LidarMode("1024x10"))
+        frame = ouster_core.LidarFrame(info)
+        rng = frame.field(ouster_core.ChanField.RANGE)
+        ouster_core.destagger(info, rng)
+        ouster_core.XYZLut(info, use_extrinsics=False)(rng)
+
+    def osf_roundtrip():
+        from ouster.sdk import osf
+        info = ouster_core.SensorInfo.from_default(
+            ouster_core.LidarMode("1024x10"))
+        frame = ouster_core.LidarFrame(info)
+        frame.frame_id = 1
+        frame.timestamp[:] = np.arange(frame.w) + 10**9
+        path = os.path.join(tempfile.mkdtemp(), "selftest.osf")
+        writer = osf.Writer(path, info)
+        writer.save(0, frame)
+        writer.close()
+        src = open_source(path, sensor_idx=0)
+        count = sum(len(frames_from_item(item)) for item in src)
+        src.close()
+        assert count == 1, f"expected 1 frame, got {count}"
+
+    def ouster_cli():
+        from ouster.cli.core import run
+        saved = sys.argv
+        sys.argv = ["ouster-cli", "source", "--help"]
+        try:
+            run()
+        except SystemExit as e:
+            assert e.code in (0, None), f"exit code {e.code}"
+        finally:
+            sys.argv = saved
+
+    def viz_module():
+        import ouster.sdk.viz  # noqa: F401  (3D viewer)
+
+    def gui_toolkit():
+        root = tk.Tk()
+        root.withdraw()
+        FigureCanvasTkAgg(Figure(), master=root)
+        root.destroy()
+
+    def mcap_libs():
+        assert HAVE_MCAP, "mcap / foxglove schema packages missing"
+        build_file_descriptor_set(PointCloud)
+
+    def readme():
+        assert os.path.exists(resource_path("README.md")), "not bundled"
+
+    def sdk_import():
+        if not HAVE_OUSTER:
+            raise RuntimeError(str(OUSTER_IMPORT_ERROR))
+
+    check("ouster-sdk import", sdk_import)
+    check("ouster-sdk native code", sdk_native)
+    check("OSF write + playback", osf_roundtrip)
+    check("ouster-cli + plugins", ouster_cli)
+    check("3D viewer module", viz_module)
+    check("Tk + matplotlib", gui_toolkit)
+    check("MCAP export libraries", mcap_libs)
+    check("bundled README", readme)
+
+    failed = sum(r.startswith("FAIL") for r in results)
+    report = "\n".join(
+        [f"Ouster Digital Lidar Control v{__version__} self-test "
+         f"(frozen={FROZEN})"] + results
+        + [f"RESULT: {'OK' if not failed else f'{failed} FAILED'}"]) + "\n"
+    if report_path:
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(report)
+    else:
+        sys.stdout.write(report)
+    return 1 if failed else 0
+
+
 def main():
+    import multiprocessing
+    multiprocessing.freeze_support()     # required in a Windows EXE
+    _attach_log_streams()
+
+    args = sys.argv[1:]
+    if args[:1] == ["--ouster-cli"]:
+        # the packaged EXE re-launches itself as ouster-cli (3D viewer,
+        # recording), since it has no separate Python interpreter
+        sys.argv = ["ouster-cli"] + args[1:]
+        from ouster.cli.core import run
+        run()
+        return
+    if args[:1] == ["--self-test"]:
+        sys.exit(self_test(args[1] if len(args) > 1 else None))
+
     root = tk.Tk()
     app = OusterGuiApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)

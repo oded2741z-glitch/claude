@@ -81,6 +81,33 @@ pip install -r requirements.txt
 python ouster_gui.py
 ```
 
+### Windows PC without Python or internet — standalone EXE
+
+`OusterLidarGUI.exe` is a single file with Python and every library built
+in. Copy it to the target PC (e.g. by USB stick) and double-click — nothing
+needs to be installed there.
+
+**Getting the EXE** (on any computer with internet):
+
+- **From GitHub** — every push builds it automatically on Windows. Open the
+  repository's **Actions** tab → **Build Windows EXE** → latest green run →
+  download the **OusterLidarGUI-windows** artifact (a zip with the EXE).
+- **Or build it yourself** on a Windows PC with Python: double-click
+  **`build_exe.bat`**. The result is `dist\OusterLidarGUI.exe`.
+
+Either way the build runs a self-test on the EXE (SDK native code, OSF
+playback, ouster-cli, 3D viewer, GUI toolkit, MCAP libraries). You can run
+it yourself on the target PC: `OusterLidarGUI.exe --self-test report.txt`.
+
+First launch notes:
+
+- Windows SmartScreen may warn about an unsigned app — click **More info →
+  Run anyway**.
+- When Windows Firewall asks about `OusterLidarGUI.exe`, allow it on
+  **both Private and Public** networks — a direct cable to the sensor is an
+  "unidentified" (Public) network, and blocked UDP means no data.
+- Startup takes a few seconds (the single file unpacks itself).
+
 ## Connecting the sensor
 
 1. Connect the sensor to its interface box, plug the network cable into the
@@ -147,6 +174,11 @@ ouster_lidar_gui/
 ├── ouster_gui.py      # main application (Tkinter + ouster-sdk + matplotlib)
 ├── requirements.txt   # Python dependencies
 ├── install.sh         # automated install for Ubuntu 24.04
+├── install.bat        # automated install for Windows (with Python)
+├── run.bat            # launch on Windows (with Python)
+├── build_exe.py       # PyInstaller recipe for the standalone EXE
+├── build_exe.bat      # one-click EXE build on Windows
+├── CHANGELOG.md
 └── README.md
 ```
 
@@ -158,3 +190,5 @@ ouster_lidar_gui/
 | No data while streaming | Make sure the configuration was applied with `udp_dest_auto` (done automatically by Apply) and that the firewall is not blocking ports 7502/7503 (`sudo ufw allow 7502/udp && sudo ufw allow 7503/udp`) |
 | `no module named tkinter` | `sudo apt-get install python3-tk` |
 | `.local` name does not resolve | `sudo apt-get install avahi-daemon` or use the IP address directly |
+| Windows: connects but no images | Allow UDP 7502/7503 in Windows Firewall (admin CMD: `netsh advfirewall firewall add rule name="Ouster 7502" dir=in action=allow protocol=UDP localport=7502 profile=any`, same for 7503), then press **Apply Configuration** so the sensor sends to *this* PC |
+| Windows PC with no network: sensor unreachable | The PC falls back to a `169.254.x.x` address. Give its Ethernet adapter a static IP in the sensor's subnet (e.g. sensor `192.168.1.50` → PC `192.168.1.100`, mask `255.255.255.0`) |

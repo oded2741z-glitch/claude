@@ -1,0 +1,9 @@
+ouster-sdk>=1.0.0
+numpy
+matplotlib
+
+# optional - only needed for "Export to MCAP (Foxglove)"
+mcap
+mcap-protobuf-support
+foxglove-schemas-protobuf
+protobuf

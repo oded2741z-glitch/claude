@@ -21,7 +21,7 @@ public partial class MainWindow : Window
     private readonly ViewController view = new();
     private D3DRenderer? renderer;
     private TrackIRDevice? trackir;
-    private FrameReader? cap;
+    private IFrameSource? cap;
     private long lastFrameId;
     private Point? lastMouse;
     private readonly Mat stripMat = new();
@@ -439,7 +439,7 @@ public partial class MainWindow : Window
         if (cap != null && settings.LastMainSource != null)
         {
             cap.Dispose();
-            cap = new FrameReader(settings.LastMainSource, HardwareDecoding);
+            cap = OpenSource(settings.LastMainSource);
             lastFrameId = 0;
             if (!cap.IsOpened)
             {
@@ -455,10 +455,17 @@ public partial class MainWindow : Window
         }
     }
 
+    private IFrameSource OpenSource(string source)
+    {
+        return NetworkReader.IsNetworkSource(source)
+            ? new NetworkReader(source, HardwareDecoding)
+            : new FrameReader(source, HardwareDecoding);
+    }
+
     private void LoadSource(string source, bool silentFail)
     {
         cap?.Dispose();
-        cap = new FrameReader(source, HardwareDecoding);
+        cap = OpenSource(source);
         if (cap.IsOpened)
         {
             lastFrameId = 0;
@@ -490,8 +497,10 @@ public partial class MainWindow : Window
         switch (dialog.Choice)
         {
             case StreamChoice.Url:
+            case StreamChoice.Network:
                 string url = dialog.Url;
                 if (url.Length == 0) break;
+                if (dialog.Choice == StreamChoice.Network) url = NetworkReader.ToSource(url);
                 settings.RtspHistory.Remove(url);
                 settings.RtspHistory.Add(url);
                 if (settings.RtspHistory.Count > 5) settings.RtspHistory.RemoveAt(0);

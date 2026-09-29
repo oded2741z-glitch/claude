@@ -4,7 +4,7 @@ using System.Windows.Input;
 
 namespace TrackIRLite;
 
-public enum StreamChoice { Cancel, Url, MainCam, PipCam }
+public enum StreamChoice { Cancel, Url, Network, MainCam, PipCam }
 
 public partial class StreamDialog : Window
 {
@@ -35,6 +35,7 @@ public partial class StreamDialog : Window
     }
 
     private void Url_Click(object sender, RoutedEventArgs e) => Finish(StreamChoice.Url);
+    private void Network_Click(object sender, RoutedEventArgs e) => Finish(StreamChoice.Network);
     private void MainCam_Click(object sender, RoutedEventArgs e) => Finish(StreamChoice.MainCam);
     private void PipCam_Click(object sender, RoutedEventArgs e) => Finish(StreamChoice.PipCam);
     private void Cancel_Click(object sender, RoutedEventArgs e) => Finish(StreamChoice.Cancel);

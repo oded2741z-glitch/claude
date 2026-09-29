@@ -6,13 +6,14 @@ using OpenCvSharp;
 
 namespace TrackIRLite;
 
-public sealed class FrameReader : IDisposable
+public sealed class FrameReader : IFrameSource
 {
     private const int MaxWidth = 2500;
 
     private readonly VideoCapture cap;
     private readonly Thread? thread;
     private readonly object frameLock = new();
+    private readonly AutoResetEvent frameReady = new(false);
     private readonly bool isFile;
     private readonly double frameTime;
     private volatile bool running;
@@ -21,6 +22,7 @@ public sealed class FrameReader : IDisposable
     private long frameId;
 
     public bool IsOpened { get; }
+    public double Fps { get; }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint size);
@@ -39,8 +41,8 @@ public sealed class FrameReader : IDisposable
 
         cap.Set(VideoCaptureProperties.BufferSize, 1);
         isFile = cap.Get(VideoCaptureProperties.FrameCount) > 0;
-        double fps = cap.Get(VideoCaptureProperties.Fps);
-        frameTime = isFile && fps > 0 && fps < 240 ? 1.0 / fps : 0;
+        Fps = cap.Get(VideoCaptureProperties.Fps);
+        frameTime = isFile && Fps > 0 && Fps < 240 ? 1.0 / Fps : 0;
 
         running = true;
         thread = new Thread(Run) { IsBackground = true };
@@ -96,6 +98,7 @@ public sealed class FrameReader : IDisposable
                         (front, back) = (back, front);
                         frameId++;
                     }
+                    frameReady.Set();
                 }
                 else
                 {
@@ -132,6 +135,8 @@ public sealed class FrameReader : IDisposable
             return true;
         }
     }
+
+    public bool WaitForFrame(int timeoutMs) => frameReady.WaitOne(timeoutMs);
 
     public void Dispose()
     {

@@ -11,7 +11,9 @@ public class ServerConfig
 
     public int Camera { get; set; } = 0;
     public int Port { get; set; } = NetProtocol.DefaultPort;
-    public int BitrateKbps { get; set; } = 10000;
+    public int Width { get; set; } = 0;
+    public int Height { get; set; } = 0;
+    public int MaxBitrateKbps { get; set; } = 10000;
 
     public static ServerConfig Load()
     {

@@ -14,11 +14,11 @@ public sealed unsafe class H264Encoder : IDisposable
     public int Width { get; }
     public int Height { get; }
 
-    public H264Encoder(int width, int height, int fps, int bitrateKbps)
+    public H264Encoder(int width, int height, int fps, int maxBitrateKbps)
     {
         Width = width;
         Height = height;
-        Name = new[] { "h264_nvenc", "libx264" }.FirstOrDefault(name => TryOpen(name, fps, bitrateKbps))
+        Name = new[] { "h264_nvenc", "libx264" }.FirstOrDefault(name => TryOpen(name, fps, maxBitrateKbps))
             ?? throw new InvalidOperationException("No H.264 encoder available.");
 
         frame = ffmpeg.av_frame_alloc();
@@ -28,7 +28,7 @@ public sealed unsafe class H264Encoder : IDisposable
         packet = ffmpeg.av_packet_alloc();
     }
 
-    private bool TryOpen(string name, int fps, int bitrateKbps)
+    private bool TryOpen(string name, int fps, int maxBitrateKbps)
     {
         AVCodec* codec = ffmpeg.avcodec_find_encoder_by_name(name);
         if (codec == null) return false;
@@ -39,9 +39,8 @@ public sealed unsafe class H264Encoder : IDisposable
         ctx->pix_fmt = AVPixelFormat.AV_PIX_FMT_YUV420P;
         ctx->time_base = new AVRational { num = 1, den = fps };
         ctx->framerate = new AVRational { num = fps, den = 1 };
-        ctx->bit_rate = bitrateKbps * 1000L;
-        ctx->rc_max_rate = ctx->bit_rate;
-        ctx->rc_buffer_size = (int)(ctx->bit_rate / fps * 2);
+        ctx->rc_max_rate = maxBitrateKbps * 1000L;
+        ctx->rc_buffer_size = (int)(ctx->rc_max_rate / fps * 2);
         ctx->gop_size = fps * 5;
         ctx->max_b_frames = 0;
 
@@ -49,7 +48,8 @@ public sealed unsafe class H264Encoder : IDisposable
         {
             SetOption(ctx, "preset", "p1");
             SetOption(ctx, "tune", "ull");
-            SetOption(ctx, "rc", "cbr");
+            SetOption(ctx, "rc", "vbr");
+            SetOption(ctx, "cq", "23");
             SetOption(ctx, "zerolatency", "1");
             SetOption(ctx, "delay", "0");
         }
@@ -57,6 +57,7 @@ public sealed unsafe class H264Encoder : IDisposable
         {
             SetOption(ctx, "preset", "veryfast");
             SetOption(ctx, "tune", "zerolatency");
+            SetOption(ctx, "crf", "23");
         }
         SetOption(ctx, "forced-idr", "1");
 

@@ -27,7 +27,7 @@ public sealed class FrameReader : IFrameSource
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint size);
 
-    public FrameReader(string source, bool hardware)
+    public FrameReader(string source, bool hardware, int width = 0, int height = 0)
     {
         source = ToAsciiPath(source);
         cap = Open(source, hardware);
@@ -40,6 +40,12 @@ public sealed class FrameReader : IFrameSource
         if (!IsOpened) return;
 
         cap.Set(VideoCaptureProperties.BufferSize, 1);
+        if (width > 0 && height > 0)
+        {
+            cap.Set(VideoCaptureProperties.FourCC, VideoWriter.FourCC('M', 'J', 'P', 'G'));
+            cap.Set(VideoCaptureProperties.FrameWidth, width);
+            cap.Set(VideoCaptureProperties.FrameHeight, height);
+        }
         isFile = cap.Get(VideoCaptureProperties.FrameCount) > 0;
         Fps = cap.Get(VideoCaptureProperties.Fps);
         frameTime = isFile && Fps > 0 && Fps < 240 ? 1.0 / Fps : 0;

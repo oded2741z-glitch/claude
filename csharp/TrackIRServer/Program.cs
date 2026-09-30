@@ -51,7 +51,9 @@ internal static class Program
 
     private static void RunCamera(ServerConfig config, StreamServer server)
     {
-        using var camera = new FrameReader(config.Camera.ToString(), true);
+        bool manual = config.Width > 0 && config.Height > 0;
+        using var camera = new FrameReader(config.Camera.ToString(), true,
+            manual ? config.Width : 10000, manual ? config.Height : 10000);
         if (!camera.IsOpened)
         {
             Log($"Camera {config.Camera} not found, retrying...");
@@ -86,10 +88,16 @@ internal static class Program
                 if (encoder == null || encoder.Width != width || encoder.Height != height)
                 {
                     encoder?.Dispose();
-                    encoder = new H264Encoder(width, height, fps, config.BitrateKbps);
-                    Log($"Camera {config.Camera}: {width}x{height} @ {fps} fps, encoder {encoder.Name}, {config.BitrateKbps} kbit/s");
+                    encoder = new H264Encoder(width, height, fps, config.MaxBitrateKbps);
+                    Log($"Camera {config.Camera}: {width}x{height} @ {fps} fps, encoder {encoder.Name}, max {config.MaxBitrateKbps} kbit/s");
                 }
-                if (!sending) continue;
+                if (!sending)
+                {
+                    frames = 0;
+                    bytes = 0;
+                    stats.Restart();
+                    continue;
+                }
 
                 encoder.Encode(yuv, server.NeedsKeyframe, (data, size, keyframe) =>
                 {

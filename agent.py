@@ -38,7 +38,7 @@ class PsToolsAgent:
         
         try:
             import keyboard
-            keyboard.add_hotkey("f4", self.toggle_visibility)
+            keyboard.add_hotkey("f4", lambda: self.root.after(0, self.toggle_visibility))
         except:
             root.bind_all("<F4>", self.toggle_visibility) 
 

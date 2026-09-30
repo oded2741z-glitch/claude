@@ -6,6 +6,7 @@ import threading
 import ipaddress
 import re
 import os
+import csv
 import winsound
 
 # ===== GUI CONFIGURATION & STYLE =====
@@ -48,7 +49,7 @@ class PsToolsConfigurator:
 
         try:
             import keyboard
-            keyboard.add_hotkey("f4", self.toggle_visibility)
+            keyboard.add_hotkey("f4", lambda: self.root.after(0, self.toggle_visibility))
         except:
             self.root.bind_all("<F4>", self.toggle_visibility)
 
@@ -59,7 +60,8 @@ class PsToolsConfigurator:
     def _setup_ui(self):
         self.header = ctk.CTkFrame(self.root, height=45, fg_color=COLORS["BG_MAIN"], corner_radius=0)
         self.header.pack(side="top", fill="x")
-        ctk.CTkLabel(self.header, text="PSTOOLS - CONFIGURATOR V3.0", font=("Consolas", 12, "bold"), text_color=COLORS["ACCENT"]).pack(side="left", padx=20)
+        self.title_lbl = ctk.CTkLabel(self.header, text="PSTOOLS - CONFIGURATOR V3.0", font=("Consolas", 12, "bold"), text_color=COLORS["ACCENT"])
+        self.title_lbl.pack(side="left", padx=20)
         
         ctk.CTkButton(self.header, text="Quit", width=60, height=30, command=self.on_close, fg_color=COLORS["QUIT_BTN"], hover_color="red", corner_radius=0, font=("Consolas", 11, "bold")).pack(side="right", padx=10)
         ctk.CTkButton(self.header, text="Help", width=60, height=30, fg_color=COLORS["BTN_BASE"], text_color="white", corner_radius=0, font=("Consolas", 11, "bold")).pack(side="right", padx=5)
@@ -571,52 +573,58 @@ class PsToolsConfigurator:
                             mac_dict[parts[0].strip()] = parts[1].strip()
             except: pass
 
-        with open(FILE, "r") as f:
-            for line in f:
-                l = line.strip()
-                if "CONFIG: SIZE" in l:
-                    p = l.split(",")
-                    if len(p) >= 3:
-                        self.win_w_var.set(p[1].strip())
-                        self.win_h_var.set(p[2].strip())
-                elif "CONFIG: GRID" in l: 
-                    self.rows, self.cols = int(l.split(",")[1]), int(l.split(",")[2])
-                elif "CONFIG: LINK" in l:
-                    p = [x.strip() for x in l.split(",")]
-                    if len(p) >= 3: self.connections.add(tuple(sorted([p[1], p[2]])))
-                elif "CONFIG: SNMP" in l:
-                    p = l.split(",")
-                    if len(p) >= 4:
-                        self.snmp_ver_var.set(p[1].strip())
-                        self.snmp_user_var.set(p[2].strip())
-                        self.snmp_pass_var.set(p[3].strip())
-                elif l and not l.startswith("CONFIG"):
-                    p = [x.strip() for x in l.split(",")]
-                    label, ip = p[0], p[1]
-                    mac = mac_dict.get(ip, "UNKNOWN")
-                    r = int(p[2]) if len(p) > 2 else 0
-                    c = int(p[3]) if len(p) > 3 else 0
-                    s = int(p[4]) if len(p) > 4 else 1
-                    dev_type = p[5] if len(p) > 5 else "PC"
-                    ping_en = p[6] if len(p) > 6 else "True"
-                    grp = p[7] if len(p) > 7 else "General"
-                    wall = p[8] if len(p) > 8 else ""
-                    
-                    self.tree.insert("", "end", values=(label, ip, mac, r, c, s, dev_type, ping_en, grp, wall))
+        skipped = 0
+        with open(FILE, "r", newline="") as f:
+            for row in csv.reader(f, skipinitialspace=True):
+                p = [x.strip() for x in row]
+                if not p or not p[0]: continue
+                try:
+                    if p[0] == "CONFIG: SIZE":
+                        if len(p) >= 3:
+                            self.win_w_var.set(p[1])
+                            self.win_h_var.set(p[2])
+                    elif p[0] == "CONFIG: GRID":
+                        self.rows, self.cols = int(p[1]), int(p[2])
+                    elif p[0] == "CONFIG: LINK":
+                        if len(p) >= 3: self.connections.add(tuple(sorted([p[1], p[2]])))
+                    elif p[0] == "CONFIG: SNMP":
+                        if len(p) >= 4:
+                            self.snmp_ver_var.set(p[1])
+                            self.snmp_user_var.set(p[2])
+                            self.snmp_pass_var.set(p[3])
+                    elif not p[0].startswith("CONFIG"):
+                        label, ip = p[0], p[1]
+                        if not ip: raise ValueError("missing IP")
+                        mac = mac_dict.get(ip, "UNKNOWN")
+                        r = int(p[2]) if len(p) > 2 else 0
+                        c = int(p[3]) if len(p) > 3 else 0
+                        s = int(p[4]) if len(p) > 4 else 1
+                        dev_type = p[5] if len(p) > 5 else "PC"
+                        ping_en = p[6] if len(p) > 6 else "True"
+                        grp = p[7] if len(p) > 7 else "General"
+                        wall = p[8] if len(p) > 8 else ""
+
+                        self.tree.insert("", "end", values=(label, ip, mac, r, c, s, dev_type, ping_en, grp, wall))
+                except (IndexError, ValueError):
+                    skipped += 1
+
+        if skipped:
+            self.title_lbl.configure(text=f"PSTOOLS - CONFIGURATOR V3.0  [WARNING: {skipped} invalid line(s) in {FILE} skipped]", text_color="red")
 
     def save_data(self):
-        with open(FILE, "w") as f:
-            f.write(f"CONFIG: SIZE, {self.win_w_var.get()}, {self.win_h_var.get()}\n")
-            f.write(f"CONFIG: GRID, {self.rows}, {self.cols}\n")
-            f.write(f"CONFIG: SNMP, {self.snmp_ver_var.get()}, {self.snmp_user_var.get()}, {self.snmp_pass_var.get()}\n")
-            for ip1, ip2 in self.connections: f.write(f"CONFIG: LINK, {ip1}, {ip2}\n")
+        with open(FILE, "w", newline="") as f:
+            w = csv.writer(f, lineterminator="\n")
+            w.writerow(["CONFIG: SIZE", self.win_w_var.get(), self.win_h_var.get()])
+            w.writerow(["CONFIG: GRID", self.rows, self.cols])
+            w.writerow(["CONFIG: SNMP", self.snmp_ver_var.get(), self.snmp_user_var.get(), self.snmp_pass_var.get()])
+            for ip1, ip2 in self.connections: w.writerow(["CONFIG: LINK", ip1, ip2])
             f.write("\n")
-            
+
             macs_to_save = []
-            for i in self.tree.get_children(): 
+            for i in self.tree.get_children():
                 v = self.tree.item(i)['values']
                 wall_val = v[9] if len(v) > 9 else ""
-                f.write(f"{v[0]}, {v[1]}, {v[3]}, {v[4]}, {v[5]}, {v[6]}, {v[7]}, {v[8]}, {wall_val}\n")
+                w.writerow([v[0], v[1], v[3], v[4], v[5], v[6], v[7], v[8], wall_val])
                 
                 if v[2] and v[2] != "UNKNOWN":
                     macs_to_save.append(f"{v[1]} {v[2]}\n")

@@ -11,7 +11,7 @@ import time
 import base64
 import io
 import re
-import random
+import csv
 from PIL import Image
 
 ctk.set_appearance_mode("Dark")
@@ -69,12 +69,13 @@ class PsToolsDashboard:
 
         try:
             import keyboard
-            keyboard.add_hotkey("f4", self.toggle_visibility)
+            keyboard.add_hotkey("f4", lambda: self.root.after(0, self.toggle_visibility))
         except:
             self.root.bind_all("<F4>", self.toggle_visibility)
 
         self._load_mac_list()
         self._setup_ui()
+        for warning in self.load_warnings: self.log(warning)
         self._draw_graph()
         self.running = True
 
@@ -343,45 +344,31 @@ class PsToolsDashboard:
             if not getattr(pop, 'is_open', False): return
             
             if not snmp_success:
-                self.log(f"[V3.0] SNMP Timeout for {ip}. Activating Smart Simulation Mode.")
-                btn_scan.configure(text="SCAN COMPLETE (SIMULATED)", fg_color=COLORS["ACCENT"])
+                self.log(f"[V3.0] No SNMP response from {ip}. Port health unknown.")
+                btn_scan.configure(text="NO SNMP RESPONSE", fg_color=COLORS["HEALTH_ERR"], text_color="white")
             else:
                 self.log(f"[V3.0] SNMP Live Health Scan Complete for {ip}.")
                 btn_scan.configure(text="SCAN COMPLETE", fg_color=COLORS["ACCENT"])
 
-            random.seed(ip) 
-            
             for p_idx, rects in port_rects.items():
                 port_num = p_idx + 1
-                new_fill = "#1a1a1a"
-                new_outline = "#444444"
-                status_txt = "DOWN"
-                speed_txt = "N/A"
-                
-                if snmp_success and port_num in real_port_data:
-                    data = real_port_data[port_num]
-                    if data['status'] == 1: 
+                data = real_port_data.get(port_num) if snmp_success else None
+
+                if data is None:
+                    status_txt, speed_txt = "UNKNOWN (No SNMP data)", "N/A"
+                else:
+                    if data['status'] == 1:
                         speed = data['speed'] / 1000000
                         if speed >= 1000:
                             new_fill, new_outline, status_txt, speed_txt = COLORS["HEALTH_1G"], COLORS["HEALTH_1G"], "UP (Active)", "1 Gbps"
                         else:
                             new_fill, new_outline, status_txt, speed_txt = COLORS["HEALTH_100M"], COLORS["HEALTH_100M"], "UP (Degraded)", f"{int(speed)} Mbps"
-                    else: 
-                        new_fill, new_outline, status_txt, speed_txt = "#1a1a1a", "#444444", "DOWN", "N/A"
-                
-                else:
-                    if rects["is_active_config"]:
-                        sim_speed = random.choice([1000, 1000, 1000, 100]) 
-                        if sim_speed == 1000:
-                            new_fill, new_outline, status_txt, speed_txt = COLORS["HEALTH_1G"], COLORS["HEALTH_1G"], "UP (Simulated)", "1 Gbps"
-                        else:
-                            new_fill, new_outline, status_txt, speed_txt = COLORS["HEALTH_100M"], COLORS["HEALTH_100M"], "UP (Simulated)", "100 Mbps"
                     else:
                         new_fill, new_outline, status_txt, speed_txt = "#1a1a1a", "#444444", "DOWN", "N/A"
 
-                canvas.itemconfig(rects["inner"], fill=new_fill)
-                canvas.itemconfig(rects["outer"], outline=new_outline)
-                
+                    canvas.itemconfig(rects["inner"], fill=new_fill)
+                    canvas.itemconfig(rects["outer"], outline=new_outline)
+
                 if rects["is_active_config"]:
                     conn_ip = connected_ips[p_idx]
                     conn_name = self.nodes[conn_ip]['label']
@@ -394,7 +381,7 @@ class PsToolsDashboard:
                     
                 canvas.tag_bind(rects["tag"], "<Enter>", lambda e, t=t_text: self._show_tooltip(e, t))
 
-            self.root.after(3000, lambda: btn_scan.configure(text="LIVE HEALTH CHECK (SNMP)", fg_color="#1F538D", state="normal") if getattr(pop, 'is_open', False) else None)
+            self.root.after(3000, lambda: btn_scan.configure(text="LIVE HEALTH CHECK (SNMP)", fg_color="#1F538D", text_color="white", state="normal") if getattr(pop, 'is_open', False) else None)
 
         btn_scan.configure(command=run_health_scan)
 
@@ -502,42 +489,41 @@ class PsToolsDashboard:
         ctk.CTkButton(btn_frame, text="EXECUTE", command=execute, fg_color=COLORS["QUIT_BTN"], text_color="white", font=("Consolas", 12, "bold"), corner_radius=0, width=120).pack(side="right", padx=10)
 
     def _load_data_quiet(self):
+        self.load_warnings = []
         if not os.path.exists(FILE): return
         self.nodes.clear()
         self.connections.clear()
-        with open(FILE, "r") as f:
-            for line in f:
-                l = line.strip()
-                if "CONFIG: SIZE" in l:
-                    p = l.split(",")
-                    if len(p) >= 3:
-                        self.win_w = p[1].strip()
-                        self.win_h = p[2].strip()
-                elif "CONFIG: GRID" in l: 
-                    p = l.split(",")
-                    self.grid_rows, self.grid_cols = int(p[1]), int(p[2])
-                elif "CONFIG: LINK" in l:
-                    p = [x.strip() for x in l.split(",")]
-                    if len(p) >= 3:
-                        self.connections.add(tuple(sorted([p[1], p[2]])))
-                elif "CONFIG: SNMP" in l:
-                    p = l.split(",")
-                    if len(p) >= 4:
-                        self.snmp_ver = p[1].strip()
-                        self.snmp_user = p[2].strip()
-                        self.snmp_pass = p[3].strip()
-                elif l and not l.startswith("CONFIG"):
-                    p = [x.strip() for x in l.split(",")]
-                    label, ip = p[0], p[1]
-                    r = int(p[2]) if len(p) > 2 else 0
-                    c = int(p[3]) if len(p) > 3 else 0
-                    s = int(p[4]) if len(p) > 4 else 1
-                    dev_type = p[5] if len(p) > 5 else "PC"
-                    ping_en = p[6] if len(p) > 6 else "True"
-                    grp = p[7] if len(p) > 7 else "General"
-                    wall = p[8] if len(p) > 8 else ""
-                    self.nodes[ip] = {"label": label, "r": r, "c": c, "s": s, "type": dev_type, "ping_en": ping_en, "group": grp, "wall": wall}
-                    self.node_status[ip] = None
+        with open(FILE, "r", newline="") as f:
+            for line_no, row in enumerate(csv.reader(f, skipinitialspace=True), 1):
+                p = [x.strip() for x in row]
+                if not p or not p[0]: continue
+                try:
+                    if p[0] == "CONFIG: SIZE":
+                        if len(p) >= 3:
+                            self.win_w = str(int(p[1]))
+                            self.win_h = str(int(p[2]))
+                    elif p[0] == "CONFIG: GRID":
+                        self.grid_rows, self.grid_cols = int(p[1]), int(p[2])
+                    elif p[0] == "CONFIG: LINK":
+                        if len(p) >= 3:
+                            self.connections.add(tuple(sorted([p[1], p[2]])))
+                    elif p[0] == "CONFIG: SNMP":
+                        if len(p) >= 4:
+                            self.snmp_ver, self.snmp_user, self.snmp_pass = p[1], p[2], p[3]
+                    elif not p[0].startswith("CONFIG"):
+                        label, ip = p[0], p[1]
+                        if not ip: raise ValueError("missing IP")
+                        r = int(p[2]) if len(p) > 2 else 0
+                        c = int(p[3]) if len(p) > 3 else 0
+                        s = int(p[4]) if len(p) > 4 else 1
+                        dev_type = p[5] if len(p) > 5 else "PC"
+                        ping_en = p[6] if len(p) > 6 else "True"
+                        grp = p[7] if len(p) > 7 else "General"
+                        wall = p[8] if len(p) > 8 else ""
+                        self.nodes[ip] = {"label": label, "r": r, "c": c, "s": s, "type": dev_type, "ping_en": ping_en, "group": grp, "wall": wall}
+                        self.node_status[ip] = None
+                except (IndexError, ValueError):
+                    self.load_warnings.append(f"WARNING: Skipped invalid line {line_no} in {FILE}: {','.join(row)}")
 
     def _draw_graph(self):
         self.canvas.delete("all")
@@ -680,15 +666,17 @@ class PsToolsDashboard:
         ips = self._get_bulk_ips()
         target_name = f"Group: {self.group_cb_var.get()}" if self.group_mode_var.get() else "All Nodes"
         self.log(f"Sending Wake Packets to {len(ips)} nodes ({target_name})...")
-        count = 0
-        for ip in ips:
-            mac = self.mac_addresses.get(ip) or self.get_mac_from_ip(ip)
-            if mac:
-                self.send_magic_packet(mac)
-                self.root.after(0, self.log, f"Woke {ip} ({mac})")
-                count += 1
-            else: self.root.after(0, self.log, f"Skipped {ip} - No MAC address found.")
-        self.log(f"Wake All complete. Sent to {count} nodes.")
+        def run():
+            count = 0
+            for ip in ips:
+                mac = self.mac_addresses.get(ip) or self.get_mac_from_ip(ip)
+                if mac:
+                    self.send_magic_packet(mac)
+                    self.root.after(0, self.log, f"Woke {ip} ({mac})")
+                    count += 1
+                else: self.root.after(0, self.log, f"Skipped {ip} - No MAC address found.")
+            self.root.after(0, self.log, f"Wake All complete. Sent to {count} nodes.")
+        threading.Thread(target=run, daemon=True).start()
 
     def cmd_ping(self):
         if not self.target_ip: return

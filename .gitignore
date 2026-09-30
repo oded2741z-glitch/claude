@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+network_map.txt
+mac_list.txt

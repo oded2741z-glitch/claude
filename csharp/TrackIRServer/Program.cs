@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using FFmpeg.AutoGen;
+using OpenCvSharp;
 using TrackIRLite;
 
 namespace TrackIRServer;
@@ -15,6 +16,7 @@ internal static class Program
 
         try
         {
+            Cv2.SetLogLevel(LogLevel.SILENT);
             ServerConfig config = ServerConfig.Load();
             Log($"Settings: {ServerConfig.FilePath}");
 
@@ -30,12 +32,21 @@ internal static class Program
                     Log($"Server address: {address}");
             }
 
-            new CameraStreamer("Main", NetProtocol.MainStream, config.Camera, config.Width, config.Height,
-                config.MaxBitrateKbps, server).Start();
-            if (config.PipCamera >= 0)
+            bool manual = config.Width > 0 && config.Height > 0;
+            var main = new StreamOutput("Main", NetProtocol.MainStream, manual ? config.Width : 0, config.MaxBitrateKbps, server);
+            var pip = new StreamOutput("PiP", NetProtocol.PipStream, config.PipWidth, config.PipMaxBitrateKbps, server);
+            if (config.PipCamera < 0)
             {
-                new CameraStreamer("PiP", NetProtocol.PipStream, config.PipCamera, config.PipWidth, config.PipHeight,
-                    config.PipMaxBitrateKbps, server).Start();
+                new CameraStreamer(config.Camera, config.Width, config.Height, server, main).Start();
+            }
+            else if (config.PipCamera == config.Camera)
+            {
+                new CameraStreamer(config.Camera, config.Width, config.Height, server, main, pip).Start();
+            }
+            else
+            {
+                new CameraStreamer(config.Camera, config.Width, config.Height, server, main).Start();
+                new CameraStreamer(config.PipCamera, config.PipWidth, config.PipHeight, server, pip).Start();
             }
             Thread.Sleep(Timeout.Infinite);
         }

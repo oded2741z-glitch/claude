@@ -1,31 +1,26 @@
-using System.Buffers.Binary;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using OpenCvSharp;
 using TrackIRLite;
 
 namespace TrackIRServer;
 
 public sealed class CameraStreamer
 {
-    private readonly string name;
-    private readonly byte stream;
     private readonly int camera;
     private readonly int width;
     private readonly int height;
-    private readonly int maxBitrateKbps;
     private readonly StreamServer server;
+    private readonly StreamOutput[] outputs;
+    private readonly string label;
     private bool missingReported;
+    private bool requestReported;
 
-    public CameraStreamer(string name, byte stream, int camera, int width, int height, int maxBitrateKbps, StreamServer server)
+    public CameraStreamer(int camera, int width, int height, StreamServer server, params StreamOutput[] outputs)
     {
-        this.name = name;
-        this.stream = stream;
         this.camera = camera;
         this.width = width;
         this.height = height;
-        this.maxBitrateKbps = maxBitrateKbps;
         this.server = server;
+        this.outputs = outputs;
+        label = string.Join("/", outputs.Select(o => o.Name));
     }
 
     public void Start()
@@ -43,7 +38,7 @@ public sealed class CameraStreamer
             }
             catch (Exception ex)
             {
-                Program.Log($"{name}: {ex.Message}");
+                Program.Log($"{label}: {ex.Message}");
                 Thread.Sleep(3000);
             }
         }
@@ -55,94 +50,37 @@ public sealed class CameraStreamer
         using var reader = new FrameReader(camera.ToString(), true, manual ? width : 10000, manual ? height : 10000);
         if (!reader.IsOpened)
         {
-            if (!missingReported) Program.Log($"{name}: camera {camera} not found, retrying...");
+            bool requested = outputs.Any(o => server.ViewerCount(o.Stream) > 0);
+            if (!missingReported || (requested && !requestReported))
+                Program.Log($"{label}: camera {camera} not found, retrying...");
             missingReported = true;
+            requestReported = requested;
             Thread.Sleep(3000);
             return;
         }
         missingReported = false;
+        requestReported = false;
 
-        int limit = manual ? width : 0;
         int fps = reader.Fps is > 0 and < 240 ? (int)Math.Round(reader.Fps) : 30;
-        H264Encoder? encoder = null;
-        using var scaled = new Mat();
-        using var yuv = new Mat();
+        foreach (StreamOutput output in outputs) output.Open(camera, fps);
         long lastId = 0;
-        int frames = 0;
-        long bytes = 0;
-        var stats = Stopwatch.StartNew();
 
         try
         {
             while (reader.WaitForFrame(5000))
             {
-                int w = 0, h = 0;
-                bool sending = server.ViewerCount(stream) > 0;
+                foreach (StreamOutput output in outputs) output.CheckViewers();
                 reader.TryRead(ref lastId, frame =>
                 {
-                    w = frame.Width;
-                    h = frame.Height;
-                    if (limit > 0 && w > limit)
-                    {
-                        h = h * limit / w;
-                        w = limit;
-                    }
-                    w &= ~1;
-                    h &= ~1;
-                    if (!sending) return;
-
-                    if (w < frame.Width - 1)
-                    {
-                        Cv2.Resize(frame, scaled, new Size(w, h), 0, 0, InterpolationFlags.Area);
-                        Cv2.CvtColor(scaled, yuv, ColorConversionCodes.BGRA2YUV_I420);
-                    }
-                    else
-                    {
-                        using var even = new Mat(frame, new OpenCvSharp.Rect(0, 0, w, h));
-                        Cv2.CvtColor(even, yuv, ColorConversionCodes.BGRA2YUV_I420);
-                    }
+                    foreach (StreamOutput output in outputs) output.Prepare(frame);
                 });
-                if (w == 0) continue;
-
-                if (encoder == null || encoder.Width != w || encoder.Height != h)
-                {
-                    encoder?.Dispose();
-                    encoder = new H264Encoder(w, h, fps, maxBitrateKbps);
-                    Program.Log($"{name}: camera {camera}, {w}x{h} @ {fps} fps, encoder {encoder.Name}, max {maxBitrateKbps} kbit/s");
-                }
-                if (!sending)
-                {
-                    frames = 0;
-                    bytes = 0;
-                    stats.Restart();
-                    continue;
-                }
-
-                encoder.Encode(yuv, server.NeedsKeyframe(stream), (data, size, keyframe) =>
-                {
-                    var message = new byte[NetProtocol.HeaderSize + size];
-                    BinaryPrimitives.WriteInt32LittleEndian(message, size);
-                    message[4] = stream;
-                    Marshal.Copy(data, message, NetProtocol.HeaderSize, size);
-                    server.Broadcast(stream, message, keyframe);
-                    bytes += size;
-                });
-                frames++;
-
-                if (stats.Elapsed.TotalSeconds >= 5)
-                {
-                    double seconds = stats.Elapsed.TotalSeconds;
-                    Program.Log($"{name}: {frames / seconds:0} fps, {bytes * 8 / seconds / 1e6:0.0} Mbit/s, clients: {server.ViewerCount(stream)}");
-                    frames = 0;
-                    bytes = 0;
-                    stats.Restart();
-                }
+                foreach (StreamOutput output in outputs) output.Encode();
             }
-            Program.Log($"{name}: camera {camera} stopped, reopening...");
+            Program.Log($"{label}: camera {camera} stopped, reopening...");
         }
         finally
         {
-            encoder?.Dispose();
+            foreach (StreamOutput output in outputs) output.Close();
         }
     }
 }

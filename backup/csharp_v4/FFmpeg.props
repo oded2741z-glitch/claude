@@ -1,0 +1,17 @@
+<Project>
+
+  <ItemGroup>
+    <PackageReference Include="FFmpeg.AutoGen" Version="7.1.1" />
+    <PackageReference Include="Sdcb.FFmpeg.runtime.windows-x64" Version="7.1.0" ExcludeAssets="all" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(PkgSdcb_FFmpeg_runtime_windows-x64)\runtimes\win-x64\native\avcodec-61.dll;
+                   $(PkgSdcb_FFmpeg_runtime_windows-x64)\runtimes\win-x64\native\avutil-59.dll;
+                   $(PkgSdcb_FFmpeg_runtime_windows-x64)\runtimes\win-x64\native\swresample-5.dll;
+                   $(PkgSdcb_FFmpeg_runtime_windows-x64)\runtimes\win-x64\native\swscale-8.dll"
+          Visible="false" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
+</Project>

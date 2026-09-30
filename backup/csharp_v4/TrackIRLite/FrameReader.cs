@@ -1,0 +1,159 @@
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using OpenCvSharp;
+
+namespace TrackIRLite;
+
+public sealed class FrameReader : IFrameSource
+{
+    private const int MaxWidth = 2500;
+
+    private readonly VideoCapture cap;
+    private readonly Thread? thread;
+    private readonly object frameLock = new();
+    private readonly AutoResetEvent frameReady = new(false);
+    private readonly bool isFile;
+    private readonly double frameTime;
+    private volatile bool running;
+    private Mat front = new();
+    private Mat back = new();
+    private long frameId;
+
+    public bool IsOpened { get; }
+    public double Fps { get; }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint size);
+
+    public FrameReader(string source, bool hardware, int width = 0, int height = 0)
+    {
+        source = ToAsciiPath(source);
+        cap = Open(source, hardware);
+        if (hardware && !cap.IsOpened() && !source.Contains("://"))
+        {
+            cap.Dispose();
+            cap = Open(source, false);
+        }
+        IsOpened = cap.IsOpened();
+        if (!IsOpened) return;
+
+        cap.Set(VideoCaptureProperties.BufferSize, 1);
+        if (width > 0 && height > 0)
+        {
+            cap.Set(VideoCaptureProperties.FourCC, VideoWriter.FourCC('M', 'J', 'P', 'G'));
+            cap.Set(VideoCaptureProperties.FrameWidth, width);
+            cap.Set(VideoCaptureProperties.FrameHeight, height);
+        }
+        isFile = cap.Get(VideoCaptureProperties.FrameCount) > 0;
+        Fps = cap.Get(VideoCaptureProperties.Fps);
+        frameTime = isFile && Fps > 0 && Fps < 240 ? 1.0 / Fps : 0;
+
+        running = true;
+        thread = new Thread(Run) { IsBackground = true };
+        thread.Start();
+    }
+
+    private static string ToAsciiPath(string source)
+    {
+        if (source.All(c => c < 128) || !File.Exists(source)) return source;
+        var shortPath = new StringBuilder(1024);
+        return GetShortPathName(source, shortPath, (uint)shortPath.Capacity) > 0 ? shortPath.ToString() : source;
+    }
+
+    private static VideoCapture Open(string source, bool hardware)
+    {
+        bool isIndex = int.TryParse(source, out int index);
+        if (!hardware) return isIndex ? new VideoCapture(index) : new VideoCapture(source);
+
+        int[] prms = { (int)VideoCaptureProperties.HwAcceleration, (int)VideoAccelerationType.Any };
+        return isIndex ? new VideoCapture(index, VideoCaptureAPIs.ANY, prms) : new VideoCapture(source, VideoCaptureAPIs.ANY, prms);
+    }
+
+    private void Run()
+    {
+        using var raw = new Mat();
+        using var scaled = new Mat();
+        var clock = Stopwatch.StartNew();
+
+        while (running)
+        {
+            double start = clock.Elapsed.TotalSeconds;
+            try
+            {
+                bool ok = cap.Read(raw);
+                if (!ok && isFile)
+                {
+                    cap.Set(VideoCaptureProperties.PosFrames, 0);
+                    ok = cap.Read(raw);
+                }
+
+                if (ok && !raw.Empty())
+                {
+                    Mat src = raw;
+                    if (raw.Width > MaxWidth)
+                    {
+                        double scale = (double)MaxWidth / raw.Width;
+                        Cv2.Resize(raw, scaled, new Size(0, 0), scale, scale);
+                        src = scaled;
+                    }
+                    Cv2.CvtColor(src, back, ColorConversionCodes.BGR2BGRA);
+                    lock (frameLock)
+                    {
+                        (front, back) = (back, front);
+                        frameId++;
+                    }
+                    frameReady.Set();
+                }
+                else
+                {
+                    Thread.Sleep(10);
+                }
+            }
+            catch
+            {
+                Thread.Sleep(10);
+            }
+
+            if (frameTime > 0)
+            {
+                double wait = frameTime - (clock.Elapsed.TotalSeconds - start);
+                if (wait > 0) Thread.Sleep(TimeSpan.FromSeconds(wait));
+            }
+        }
+        cap.Release();
+        cap.Dispose();
+        lock (frameLock)
+        {
+            front.Dispose();
+            back.Dispose();
+        }
+    }
+
+    public bool TryRead(ref long lastId, Action<Mat> use)
+    {
+        lock (frameLock)
+        {
+            if (frameId == lastId || front.Empty()) return false;
+            lastId = frameId;
+            use(front);
+            return true;
+        }
+    }
+
+    public bool WaitForFrame(int timeoutMs) => frameReady.WaitOne(timeoutMs);
+
+    public void Dispose()
+    {
+        if (thread != null)
+        {
+            running = false;
+            thread.Join(1000);
+            return;
+        }
+        cap.Dispose();
+        front.Dispose();
+        back.Dispose();
+    }
+}

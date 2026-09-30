@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <AssemblyName>TrackIRServer</AssemblyName>
+    <RootNamespace>TrackIRServer</RootNamespace>
+    <ApplicationIcon>..\TrackIRLite\app.ico</ApplicationIcon>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\TrackIRLite\FrameReader.cs" Link="FrameReader.cs" />
+    <Compile Include="..\TrackIRLite\IFrameSource.cs" Link="IFrameSource.cs" />
+    <Compile Include="..\TrackIRLite\NetProtocol.cs" Link="NetProtocol.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260627" />
+  </ItemGroup>
+
+  <Import Project="..\FFmpeg.props" />
+
+</Project>

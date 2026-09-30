@@ -14,6 +14,10 @@ public class ServerConfig
     public int Width { get; set; } = 0;
     public int Height { get; set; } = 0;
     public int MaxBitrateKbps { get; set; } = 10000;
+    public int PipCamera { get; set; } = 1;
+    public int PipWidth { get; set; } = 1280;
+    public int PipHeight { get; set; } = 720;
+    public int PipMaxBitrateKbps { get; set; } = 3000;
 
     public static ServerConfig Load()
     {

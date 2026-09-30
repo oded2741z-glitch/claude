@@ -34,7 +34,7 @@ public partial class MainWindow : Window
     private double lastRenderMs = double.MinValue;
     private double lastStripMs = double.MinValue;
 
-    private FrameReader? pipCap;
+    private IFrameSource? pipCap;
     private bool pipEnabled;
     private long lastPipId;
     private WriteableBitmap? pipBitmap;
@@ -73,7 +73,8 @@ public partial class MainWindow : Window
         view.InputMode = trackir.Connected ? "TRACKIR" : "MOUSE";
         UpdateControlsVisibility();
 
-        if (settings.PipIndex != -1)
+        bool networkMain = settings.LastMainSource != null && NetworkReader.IsNetworkSource(settings.LastMainSource);
+        if (settings.PipIndex != -1 && !networkMain)
         {
             pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
             if (pipCap.IsOpened) pipEnabled = true;
@@ -235,6 +236,13 @@ public partial class MainWindow : Window
     {
         if (!pipEnabled)
         {
+            if (cap is NetworkReader)
+            {
+                pipEnabled = true;
+                ReopenPip();
+                UpdatePipButton();
+                return;
+            }
             if (settings.PipIndex != -1)
             {
                 pipCap?.Dispose();
@@ -447,11 +455,28 @@ public partial class MainWindow : Window
                 cap = null;
             }
         }
-        if (pipEnabled && settings.PipIndex != -1)
+        if (pipEnabled) ReopenPip();
+    }
+
+    private void ReopenPip()
+    {
+        pipCap?.Dispose();
+        pipCap = null;
+        lastPipId = 0;
+        if (!pipEnabled) return;
+
+        if (cap is NetworkReader network)
         {
-            pipCap?.Dispose();
+            pipCap = network.OpenPip();
+        }
+        else if (settings.PipIndex != -1)
+        {
             pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
-            lastPipId = 0;
+        }
+        else
+        {
+            pipEnabled = false;
+            UpdatePipButton();
         }
     }
 
@@ -480,6 +505,7 @@ public partial class MainWindow : Window
             if (!silentFail)
                 MessageBox.Show(this, "Could not open source.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+        if (pipCap is NetworkReader.PipSource || cap is NetworkReader) ReopenPip();
     }
 
     private int? AskCameraIndex(string title)
@@ -526,12 +552,7 @@ public partial class MainWindow : Window
         cap = null;
         if (settings.LastMainSource != null) LoadSource(settings.LastMainSource, silentFail: false);
 
-        if (pipEnabled && settings.PipIndex != -1)
-        {
-            pipCap?.Dispose();
-            pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
-            lastPipId = 0;
-        }
+        if (pipEnabled && pipCap is not NetworkReader.PipSource) ReopenPip();
 
         if (trackir == null || !trackir.Connected)
         {

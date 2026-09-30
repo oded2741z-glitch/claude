@@ -29,34 +29,31 @@ public sealed class StreamServer : IDisposable
         }
     }
 
-    public int ClientCount
-    {
-        get
-        {
-            lock (clients)
-            {
-                for (int i = clients.Count - 1; i >= 0; i--)
-                {
-                    if (clients[i].Alive) continue;
-                    Program.Log($"Client disconnected: {clients[i].Name}");
-                    clients[i].Dispose();
-                    clients.RemoveAt(i);
-                }
-                return clients.Count;
-            }
-        }
-    }
-
-    public bool NeedsKeyframe
-    {
-        get { lock (clients) return clients.Any(c => c.NeedsKeyframe); }
-    }
-
-    public void Broadcast(byte[] message, bool keyframe)
+    public int ViewerCount(byte stream)
     {
         lock (clients)
         {
-            foreach (ClientConnection client in clients) client.Send(message, keyframe);
+            for (int i = clients.Count - 1; i >= 0; i--)
+            {
+                if (clients[i].Alive) continue;
+                Program.Log($"Client disconnected: {clients[i].Name}");
+                clients[i].Dispose();
+                clients.RemoveAt(i);
+            }
+            return clients.Count(c => c.Receives(stream));
+        }
+    }
+
+    public bool NeedsKeyframe(byte stream)
+    {
+        lock (clients) return clients.Any(c => c.NeedsKeyframe(stream));
+    }
+
+    public void Broadcast(byte stream, byte[] message, bool keyframe)
+    {
+        lock (clients)
+        {
+            foreach (ClientConnection client in clients) client.Send(stream, message, keyframe);
         }
     }
 

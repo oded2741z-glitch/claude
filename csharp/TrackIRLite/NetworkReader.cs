@@ -16,12 +16,11 @@ public sealed class NetworkReader : IFrameSource
     private readonly int port;
     private readonly bool hardware;
     private readonly Thread? thread;
-    private readonly object frameLock = new();
+    private readonly object writeLock = new();
+    private readonly FrameSlot[] slots = { new(), new() };
     private volatile bool running;
+    private volatile bool pipWanted;
     private TcpClient? client;
-    private Mat front = new();
-    private Mat back = new();
-    private long frameId;
 
     public bool IsOpened { get; }
 
@@ -77,6 +76,29 @@ public sealed class NetworkReader : IFrameSource
         return null;
     }
 
+    public PipSource OpenPip()
+    {
+        pipWanted = true;
+        SendPipState(client);
+        return new PipSource(this);
+    }
+
+    private void ClosePip()
+    {
+        pipWanted = false;
+        SendPipState(client);
+    }
+
+    private void SendPipState(TcpClient? tcp)
+    {
+        if (tcp == null) return;
+        lock (writeLock)
+        {
+            try { tcp.GetStream().WriteByte(pipWanted ? NetProtocol.PipOn : NetProtocol.PipOff); }
+            catch { }
+        }
+    }
+
     private void Run()
     {
         while (running)
@@ -88,54 +110,44 @@ public sealed class NetworkReader : IFrameSource
                 Thread.Sleep(500);
                 continue;
             }
+            SendPipState(tcp);
             try { Receive(tcp.GetStream()); }
             catch { }
             tcp.Dispose();
             client = null;
         }
-        lock (frameLock)
-        {
-            front.Dispose();
-            back.Dispose();
-        }
+        foreach (FrameSlot slot in slots) slot.Dispose();
     }
 
     private void Receive(NetworkStream stream)
     {
-        using var decoder = new H264Decoder(hardware);
+        var decoders = new H264Decoder?[slots.Length];
         var header = new byte[NetProtocol.HeaderSize];
         var payload = new byte[1 << 20];
 
-        while (running)
+        try
         {
-            stream.ReadExactly(header);
-            int size = BinaryPrimitives.ReadInt32LittleEndian(header);
-            if (size <= 0 || size > NetProtocol.MaxPacketSize) return;
-            if (payload.Length < size) payload = new byte[size];
-            stream.ReadExactly(payload, 0, size);
-            if (header[4] != 0) continue;
-
-            if (decoder.Decode(payload, size, back))
+            while (running)
             {
-                lock (frameLock)
-                {
-                    (front, back) = (back, front);
-                    frameId++;
-                }
+                stream.ReadExactly(header);
+                int size = BinaryPrimitives.ReadInt32LittleEndian(header);
+                if (size <= 0 || size > NetProtocol.MaxPacketSize) return;
+                if (payload.Length < size) payload = new byte[size];
+                stream.ReadExactly(payload, 0, size);
+
+                int index = header[4];
+                if (index >= slots.Length) continue;
+                H264Decoder decoder = decoders[index] ??= new H264Decoder(hardware);
+                if (decoder.Decode(payload, size, slots[index].Back)) slots[index].Publish();
             }
         }
-    }
-
-    public bool TryRead(ref long lastId, Action<Mat> use)
-    {
-        lock (frameLock)
+        finally
         {
-            if (frameId == lastId || front.IsDisposed || front.Empty()) return false;
-            lastId = frameId;
-            use(front);
-            return true;
+            foreach (H264Decoder? decoder in decoders) decoder?.Dispose();
         }
     }
+
+    public bool TryRead(ref long lastId, Action<Mat> use) => slots[NetProtocol.MainStream].TryRead(ref lastId, use);
 
     public void Dispose()
     {
@@ -146,7 +158,61 @@ public sealed class NetworkReader : IFrameSource
             thread.Join(1000);
             return;
         }
-        front.Dispose();
-        back.Dispose();
+        foreach (FrameSlot slot in slots) slot.Dispose();
+    }
+
+    public sealed class PipSource : IFrameSource
+    {
+        private readonly NetworkReader owner;
+
+        internal PipSource(NetworkReader owner)
+        {
+            this.owner = owner;
+        }
+
+        public bool IsOpened => true;
+
+        public bool TryRead(ref long lastId, Action<Mat> use) => owner.slots[NetProtocol.PipStream].TryRead(ref lastId, use);
+
+        public void Dispose() => owner.ClosePip();
+    }
+
+    private sealed class FrameSlot
+    {
+        private readonly object sync = new();
+        private Mat front = new();
+        private Mat back = new();
+        private long frameId;
+
+        public Mat Back => back;
+
+        public void Publish()
+        {
+            lock (sync)
+            {
+                (front, back) = (back, front);
+                frameId++;
+            }
+        }
+
+        public bool TryRead(ref long lastId, Action<Mat> use)
+        {
+            lock (sync)
+            {
+                if (frameId == lastId || front.IsDisposed || front.Empty()) return false;
+                lastId = frameId;
+                use(front);
+                return true;
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (sync)
+            {
+                front.Dispose();
+                back.Dispose();
+            }
+        }
     }
 }

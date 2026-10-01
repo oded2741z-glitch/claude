@@ -9,7 +9,8 @@ cbuffer View : register(b0)
     float SrcW;
     float SrcH;
     float Range;
-    float3 Padding;
+    float Mirror;
+    float2 Padding;
 };
 
 Texture2D Source : register(t0);
@@ -25,7 +26,8 @@ float4 VSMain(uint id : SV_VertexID) : SV_Position
 
 float4 PSMain(float4 pos : SV_Position) : SV_Target
 {
-    float3 v = normalize(float3(pos.x - 0.5 - OutW * 0.5, pos.y - 0.5 - OutH * 0.5, Focal));
+    float x = Mirror > 0.5 ? OutW - pos.x : pos.x;
+    float3 v = normalize(float3(x - 0.5 - OutW * 0.5, pos.y - 0.5 - OutH * 0.5, Focal));
 
     float cy = cos(Yaw), sy = sin(Yaw);
     float cp = cos(Pitch), sp = sin(Pitch);

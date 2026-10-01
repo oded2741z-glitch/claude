@@ -34,10 +34,7 @@ public partial class MainWindow : Window
     private double lastRenderMs = double.MinValue;
     private double lastStripMs = double.MinValue;
 
-    private IFrameSource? pipCap;
     private bool pipEnabled;
-    private long lastPipId;
-    private WriteableBitmap? pipBitmap;
     private string? pipInteraction;
     private Point pipDragStart;
     private (int W, int X, int Y) pipOrig;
@@ -56,6 +53,7 @@ public partial class MainWindow : Window
         view.CurrentFov = settings.BaseFov;
         view.HomeYaw = settings.HomeYaw;
         view.HomePitch = settings.HomePitch;
+        view.MirrorFov = settings.MirrorFov;
         view.OffsetYaw = settings.HomeYaw;
         view.OffsetPitch = settings.HomePitch;
         view.TirDeadzone = settings.TirDeadzone;
@@ -73,19 +71,14 @@ public partial class MainWindow : Window
         view.InputMode = trackir.Connected ? "TRACKIR" : "MOUSE";
         UpdateControlsVisibility();
 
-        bool networkMain = settings.LastMainSource != null && NetworkReader.IsNetworkSource(settings.LastMainSource);
-        if (settings.PipIndex != -1 && !networkMain)
-        {
-            pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
-            if (pipCap.IsOpened) pipEnabled = true;
-            else settings.PipIndex = -1;
-        }
+        pipEnabled = settings.PipEnabled;
         UpdatePipButton();
 
         try
         {
             renderer = new D3DRenderer(new WindowInteropHelper(this).Handle);
             VideoImage.Source = renderer.Image;
+            PipImage.Source = renderer.MirrorImage;
         }
         catch (Exception ex)
         {
@@ -103,7 +96,6 @@ public partial class MainWindow : Window
         CompositionTarget.Rendering -= OnRendering;
         barsTimer.Stop();
         cap?.Dispose();
-        pipCap?.Dispose();
         trackir?.Dispose();
         renderer?.Dispose();
     }
@@ -181,22 +173,11 @@ public partial class MainWindow : Window
 
     private void UpdatePip()
     {
-        if (!pipEnabled || pipCap == null)
+        if (!pipEnabled || renderer == null)
         {
             PipBox.Visibility = Visibility.Collapsed;
             return;
         }
-        pipCap.TryRead(ref lastPipId, frame =>
-        {
-            if (pipBitmap == null || pipBitmap.PixelWidth != frame.Width || pipBitmap.PixelHeight != frame.Height)
-            {
-                pipBitmap = new WriteableBitmap(frame.Width, frame.Height, 96, 96, PixelFormats.Bgra32, null);
-                PipImage.Source = pipBitmap;
-            }
-            int stride = (int)frame.Step();
-            pipBitmap.WritePixels(new Int32Rect(0, 0, frame.Width, frame.Height), frame.Data, stride * frame.Height, stride);
-        });
-        if (pipBitmap == null) return;
 
         int winW = (int)VideoArea.ActualWidth, winH = (int)VideoArea.ActualHeight;
         int pw = settings.PipWidth, ph = (int)(pw * 9 / 16.0);
@@ -210,6 +191,12 @@ public partial class MainWindow : Window
         PipBox.Height = ph;
         System.Windows.Controls.Canvas.SetLeft(PipBox, settings.PipX);
         System.Windows.Controls.Canvas.SetTop(PipBox, settings.PipY);
+        if (!fits) return;
+
+        DpiScale dpi = VisualTreeHelper.GetDpi(this);
+        int width = (int)Math.Round(pw * dpi.DpiScaleX);
+        int height = (int)Math.Round(ph * dpi.DpiScaleY);
+        renderer.RenderMirror(width, height, view.GetMirrorParams(width));
     }
 
     private void UpdatePipButton()
@@ -218,67 +205,26 @@ public partial class MainWindow : Window
         BtnPip.Foreground = (Brush)FindResource(pipEnabled ? "AccentBrush" : "TextBrush");
     }
 
-    private void OnPipSelected(int index)
-    {
-        pipCap?.Dispose();
-        pipCap = new FrameReader(index.ToString(), HardwareDecoding);
-        lastPipId = 0;
-        if (pipCap.IsOpened)
-        {
-            pipEnabled = true;
-            settings.PipIndex = index;
-            UpdatePipButton();
-            settings.Save();
-        }
-    }
-
     private void BtnPip_Click(object sender, RoutedEventArgs e)
     {
-        if (!pipEnabled)
-        {
-            if (cap is NetworkReader)
-            {
-                pipEnabled = true;
-                ReopenPip();
-                UpdatePipButton();
-                return;
-            }
-            if (settings.PipIndex != -1)
-            {
-                pipCap?.Dispose();
-                pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
-                lastPipId = 0;
-                if (pipCap.IsOpened)
-                {
-                    pipEnabled = true;
-                    UpdatePipButton();
-                    return;
-                }
-            }
-            int? index = AskCameraIndex("PIP USB CAMERA");
-            if (index != null) OnPipSelected(index.Value);
-        }
-        else
-        {
-            pipEnabled = false;
-            UpdatePipButton();
-            pipCap?.Dispose();
-            pipCap = null;
-            settings.Save();
-        }
+        pipEnabled = !pipEnabled;
+        settings.PipEnabled = pipEnabled;
+        UpdatePipButton();
+        settings.Save();
     }
 
     private void BtnConfig_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new ConfigDialog(view.LensMode, view.BaseFov, Math.Clamp(1000 / updateDelay, 15, 60), view.InputMode,
             view.SensX, view.SensZ, view.TirDeadzone, view.TirCurve, view.TirGain, Topmost, settings.VideoDecoding,
-            view.LockPitch, view.UseCurve) { Owner = this };
+            view.LockPitch, view.UseCurve, view.MirrorFov) { Owner = this };
         dialog.ShowDialog();
         if (!dialog.Applied) return;
 
         view.LensMode = dialog.LensMode;
         view.BaseFov = dialog.BaseFov;
         view.CurrentFov = view.BaseFov;
+        view.MirrorFov = dialog.MirrorFov;
         updateDelay = 1000 / dialog.TargetFps;
 
         string input = dialog.InputMode;
@@ -299,6 +245,7 @@ public partial class MainWindow : Window
         Topmost = dialog.AlwaysOnTop;
 
         settings.BaseFov = view.BaseFov;
+        settings.MirrorFov = view.MirrorFov;
         settings.TirDeadzone = view.TirDeadzone;
         settings.TirCurve = view.TirCurve;
         settings.TirGain = view.TirGain;
@@ -455,29 +402,6 @@ public partial class MainWindow : Window
                 cap = null;
             }
         }
-        if (pipEnabled) ReopenPip();
-    }
-
-    private void ReopenPip()
-    {
-        pipCap?.Dispose();
-        pipCap = null;
-        lastPipId = 0;
-        if (!pipEnabled) return;
-
-        if (cap is NetworkReader network)
-        {
-            pipCap = network.OpenPip();
-        }
-        else if (settings.PipIndex != -1)
-        {
-            pipCap = new FrameReader(settings.PipIndex.ToString(), HardwareDecoding);
-        }
-        else
-        {
-            pipEnabled = false;
-            UpdatePipButton();
-        }
     }
 
     private IFrameSource OpenSource(string source)
@@ -505,7 +429,6 @@ public partial class MainWindow : Window
             if (!silentFail)
                 MessageBox.Show(this, "Could not open source.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-        if (pipCap is NetworkReader.PipSource || cap is NetworkReader) ReopenPip();
     }
 
     private int? AskCameraIndex(string title)
@@ -538,11 +461,6 @@ public partial class MainWindow : Window
                 int? index = AskCameraIndex("MAIN USB CAMERA");
                 if (index != null) LoadSource(index.Value.ToString(), silentFail: false);
                 break;
-
-            case StreamChoice.PipCam:
-                int? pipIndex = AskCameraIndex("PIP USB CAMERA");
-                if (pipIndex != null) OnPipSelected(pipIndex.Value);
-                break;
         }
     }
 
@@ -551,8 +469,6 @@ public partial class MainWindow : Window
         cap?.Dispose();
         cap = null;
         if (settings.LastMainSource != null) LoadSource(settings.LastMainSource, silentFail: false);
-
-        if (pipEnabled && pipCap is not NetworkReader.PipSource) ReopenPip();
 
         if (trackir == null || !trackir.Connected)
         {

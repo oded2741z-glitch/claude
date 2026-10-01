@@ -19,7 +19,6 @@
             <Button Content="URL" Width="75" Padding="0,4" Margin="5,0" Style="{StaticResource FlatButton}" Click="Url_Click" />
             <Button Content="NETWORK" Width="75" Padding="0,4" Margin="5,0" Style="{StaticResource FlatButton}" Click="Network_Click" />
             <Button Content="MAIN CAM" Width="75" Padding="0,4" Margin="5,0" Style="{StaticResource FlatButton}" Click="MainCam_Click" />
-            <Button Content="PIP CAM" Width="75" Padding="0,4" Margin="5,0" Style="{StaticResource FlatButton}" Click="PipCam_Click" />
         </StackPanel>
 
         <Button Content="CANCEL" Width="110" Padding="0,4" Margin="0,5"

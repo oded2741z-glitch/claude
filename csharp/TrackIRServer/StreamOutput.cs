@@ -25,12 +25,10 @@ public sealed class StreamOutput
     private bool prepared;
 
     public string Name { get; }
-    public byte Stream { get; }
 
-    public StreamOutput(string name, byte stream, int limit, int maxBitrateKbps, StreamServer server)
+    public StreamOutput(string name, int limit, int maxBitrateKbps, StreamServer server)
     {
         Name = name;
-        Stream = stream;
         this.limit = limit;
         this.maxBitrateKbps = maxBitrateKbps;
         this.server = server;
@@ -46,7 +44,7 @@ public sealed class StreamOutput
 
     public void CheckViewers()
     {
-        sending = server.ViewerCount(Stream) > 0;
+        sending = server.ViewerCount() > 0;
     }
 
     public void Prepare(Mat frame)
@@ -92,13 +90,13 @@ public sealed class StreamOutput
             return;
         }
 
-        encoder.Encode(yuv, server.NeedsKeyframe(Stream), (data, size, keyframe) =>
+        encoder.Encode(yuv, server.NeedsKeyframe(), (data, size, keyframe) =>
         {
             var message = new byte[NetProtocol.HeaderSize + size];
             BinaryPrimitives.WriteInt32LittleEndian(message, size);
-            message[4] = Stream;
+            message[4] = NetProtocol.MainStream;
             Marshal.Copy(data, message, NetProtocol.HeaderSize, size);
-            server.Broadcast(Stream, message, keyframe);
+            server.Broadcast(message, keyframe);
             bytes += size;
         });
         frames++;
@@ -106,7 +104,7 @@ public sealed class StreamOutput
         if (stats.Elapsed.TotalSeconds >= 5)
         {
             double seconds = stats.Elapsed.TotalSeconds;
-            Program.Log($"{Name}: {frames / seconds:0} fps, {bytes * 8 / seconds / 1e6:0.0} Mbit/s, clients: {server.ViewerCount(Stream)}");
+            Program.Log($"{Name}: {frames / seconds:0} fps, {bytes * 8 / seconds / 1e6:0.0} Mbit/s, clients: {server.ViewerCount()}");
             ResetStats();
         }
     }

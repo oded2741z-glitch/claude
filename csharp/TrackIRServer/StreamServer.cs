@@ -29,7 +29,7 @@ public sealed class StreamServer : IDisposable
         }
     }
 
-    public int ViewerCount(byte stream)
+    public int ViewerCount()
     {
         lock (clients)
         {
@@ -40,20 +40,20 @@ public sealed class StreamServer : IDisposable
                 clients[i].Dispose();
                 clients.RemoveAt(i);
             }
-            return clients.Count(c => c.Receives(stream));
+            return clients.Count;
         }
     }
 
-    public bool NeedsKeyframe(byte stream)
+    public bool NeedsKeyframe()
     {
-        lock (clients) return clients.Any(c => c.NeedsKeyframe(stream));
+        lock (clients) return clients.Any(c => c.NeedsKeyframe);
     }
 
-    public void Broadcast(byte stream, byte[] message, bool keyframe)
+    public void Broadcast(byte[] message, bool keyframe)
     {
         lock (clients)
         {
-            foreach (ClientConnection client in clients) client.Send(stream, message, keyframe);
+            foreach (ClientConnection client in clients) client.Send(message, keyframe);
         }
     }
 

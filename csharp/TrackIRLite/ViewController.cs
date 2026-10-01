@@ -16,6 +16,7 @@ public class ViewController
     public double HomePitch { get; set; }
     public double BaseFov { get; set; } = 70;
     public double CurrentFov { get; set; } = 70;
+    public double MirrorFov { get; set; } = 60;
     public string ViewMode { get; private set; } = "360";
     public string LensMode { get; set; } = "Standard";
     public string InputMode { get; set; } = "MOUSE";
@@ -132,16 +133,21 @@ public class ViewController
         CurrentFov = Math.Clamp(CurrentFov + dy * SensZ * 10, 20, 130);
     }
 
-    public ViewParams GetParams(int outWidth)
+    public ViewParams GetParams(int outWidth) => MakeParams(Yaw, Pitch, CurrentFov, outWidth, false);
+
+    public ViewParams GetMirrorParams(int outWidth) => MakeParams(HomeYaw + 180, HomePitch, MirrorFov, outWidth, true);
+
+    private ViewParams MakeParams(double yaw, double pitch, double fov, int outWidth, bool mirror)
     {
         double range = ViewMode switch { "180" => Math.PI, "120" => 2.0 / 3.0 * Math.PI, _ => 2 * Math.PI };
         return new ViewParams
         {
-            Yaw = (float)(Yaw * Math.PI / 180),
-            Pitch = (float)(-Pitch * Math.PI / 180),
-            Focal = (float)(0.5 * outWidth / Math.Tan(0.5 * CurrentFov * Math.PI / 180)),
+            Yaw = (float)(yaw * Math.PI / 180),
+            Pitch = (float)(-pitch * Math.PI / 180),
+            Focal = (float)(0.5 * outWidth / Math.Tan(0.5 * fov * Math.PI / 180)),
             Fisheye = LensMode == "Fisheye" ? 1f : 0f,
-            Range = (float)range
+            Range = (float)range,
+            Mirror = mirror ? 1f : 0f
         };
     }
 }

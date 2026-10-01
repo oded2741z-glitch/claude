@@ -14,6 +14,7 @@ public partial class ConfigDialog : Window
     public bool LockPitch { get; private set; }
     public bool UseCurve { get; private set; }
     public double BaseFov => FovSlider.Value;
+    public double MirrorFov => MirrorFovSlider.Value;
     public int TargetFps => (int)FpsSlider.Value;
     public double SensX => Math.Round(SensXSlider.Value, 3);
     public double SensZ => Math.Round(SensZSlider.Value, 3);
@@ -23,7 +24,7 @@ public partial class ConfigDialog : Window
     public bool AlwaysOnTop => TopmostBox.IsChecked == true;
 
     public ConfigDialog(string lensMode, double baseFov, int fps, string inputMode, double sensX, double sensZ,
-        double deadzone, double curve, double gain, bool topmost, string decoding, bool lockPitch, bool useCurve)
+        double deadzone, double curve, double gain, bool topmost, string decoding, bool lockPitch, bool useCurve, double mirrorFov)
     {
         InitializeComponent();
         LockPitch = lockPitch;
@@ -32,6 +33,7 @@ public partial class ConfigDialog : Window
         Decoding = decoding;
         InputMode = inputMode;
         FovSlider.Value = baseFov;
+        MirrorFovSlider.Value = mirrorFov;
         FpsSlider.Value = fps;
         SensXSlider.Value = sensX;
         SensZSlider.Value = sensZ;

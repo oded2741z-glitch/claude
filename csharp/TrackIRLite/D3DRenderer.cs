@@ -24,7 +24,7 @@ public struct ViewParams
     public float SrcW;
     public float SrcH;
     public float Range;
-    public float Pad0;
+    public float Mirror;
     public float Pad1;
     public float Pad2;
 }
@@ -40,17 +40,14 @@ public sealed class D3DRenderer : IDisposable
     private readonly ID3D11SamplerState clampSampler;
     private readonly IDirect3D9Ex d3d9;
     private readonly IDirect3DDevice9Ex device9;
+    private readonly RenderTarget mainTarget;
+    private readonly RenderTarget mirrorTarget;
 
     private ID3D11Texture2D? sourceTexture;
     private ID3D11ShaderResourceView? sourceView;
-    private ID3D11Texture2D? targetTexture;
-    private ID3D11RenderTargetView? targetView;
-    private IDirect3DTexture9? sharedTexture9;
-    private IDirect3DSurface9? surface9;
-    private int targetWidth;
-    private int targetHeight;
 
-    public D3DImage Image { get; } = new();
+    public D3DImage Image => mainTarget.Image;
+    public D3DImage MirrorImage => mirrorTarget.Image;
     public bool HasSource => sourceTexture != null;
     public int SourceWidth { get; private set; }
     public int SourceHeight { get; private set; }
@@ -83,10 +80,8 @@ public sealed class D3DRenderer : IDisposable
         device9 = d3d9.CreateDeviceEx(0, Vortice.Direct3D9.DeviceType.Hardware, hwnd,
             CreateFlags.HardwareVertexProcessing | CreateFlags.Multithreaded | CreateFlags.FpuPreserve, present);
 
-        Image.IsFrontBufferAvailableChanged += (_, _) =>
-        {
-            if (Image.IsFrontBufferAvailable) AttachBackBuffer();
-        };
+        mainTarget = new RenderTarget(device, device9);
+        mirrorTarget = new RenderTarget(device, device9);
     }
 
     private static string LoadShaderSource()
@@ -134,75 +129,23 @@ public sealed class D3DRenderer : IDisposable
         context.UpdateSubresource(sourceTexture, 0, null, frame.Data, (uint)frame.Step(), 0);
     }
 
-    private void EnsureTarget(int width, int height)
+    public void Render(int width, int height, ViewParams view) => Render(mainTarget, width, height, view);
+
+    public void RenderMirror(int width, int height, ViewParams view) => Render(mirrorTarget, width, height, view);
+
+    private void Render(RenderTarget target, int width, int height, ViewParams view)
     {
-        if (targetTexture != null && width == targetWidth && height == targetHeight) return;
-
-        ReleaseTarget();
-        targetWidth = width;
-        targetHeight = height;
-        targetTexture = device.CreateTexture2D(new Texture2DDescription
-        {
-            Width = (uint)width,
-            Height = (uint)height,
-            MipLevels = 1,
-            ArraySize = 1,
-            Format = Vortice.DXGI.Format.B8G8R8A8_UNorm,
-            SampleDescription = new SampleDescription(1, 0),
-            Usage = ResourceUsage.Default,
-            BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
-            MiscFlags = ResourceOptionFlags.Shared
-        });
-        targetView = device.CreateRenderTargetView(targetTexture);
-
-        IntPtr handle;
-        using (var resource = targetTexture.QueryInterface<IDXGIResource>())
-            handle = resource.SharedHandle;
-        sharedTexture9 = device9.CreateTexture((uint)width, (uint)height, 1, Vortice.Direct3D9.Usage.RenderTarget,
-            Vortice.Direct3D9.Format.A8R8G8B8, Pool.Default, ref handle);
-        surface9 = sharedTexture9.GetSurfaceLevel(0);
-        AttachBackBuffer();
-    }
-
-    private void AttachBackBuffer()
-    {
-        if (surface9 == null) return;
-        Image.Lock();
-        Image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, surface9.NativePointer, true);
-        Image.Unlock();
-    }
-
-    private void ReleaseTarget()
-    {
-        if (surface9 != null)
-        {
-            Image.Lock();
-            Image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero);
-            Image.Unlock();
-        }
-        surface9?.Dispose();
-        sharedTexture9?.Dispose();
-        targetView?.Dispose();
-        targetTexture?.Dispose();
-        surface9 = null;
-        sharedTexture9 = null;
-        targetView = null;
-        targetTexture = null;
-    }
-
-    public void Render(int width, int height, ViewParams view)
-    {
-        if (sourceView == null || width < 1 || height < 1 || !Image.IsFrontBufferAvailable) return;
-        EnsureTarget(width, height);
+        if (sourceView == null || width < 1 || height < 1 || !target.Image.IsFrontBufferAvailable) return;
+        target.Ensure(width, height);
 
         view.OutW = width;
         view.OutH = height;
         view.SrcW = SourceWidth;
         view.SrcH = SourceHeight;
 
-        Image.Lock();
+        target.Image.Lock();
         context.UpdateSubresource(in view, constants);
-        context.OMSetRenderTargets(targetView!);
+        context.OMSetRenderTargets(target.View!);
         context.RSSetViewport(0, 0, width, height, 0, 1);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
         context.VSSetShader(vertexShader);
@@ -212,13 +155,14 @@ public sealed class D3DRenderer : IDisposable
         context.PSSetSampler(0, view.Fisheye < 0.5f && view.Range > 6.28f ? wrapSampler : clampSampler);
         context.Draw(3, 0);
         context.Flush();
-        Image.AddDirtyRect(new Int32Rect(0, 0, width, height));
-        Image.Unlock();
+        target.Image.AddDirtyRect(new Int32Rect(0, 0, width, height));
+        target.Image.Unlock();
     }
 
     public void Dispose()
     {
-        ReleaseTarget();
+        mainTarget.Dispose();
+        mirrorTarget.Dispose();
         sourceView?.Dispose();
         sourceTexture?.Dispose();
         clampSampler.Dispose();
@@ -230,5 +174,87 @@ public sealed class D3DRenderer : IDisposable
         device.Dispose();
         device9.Dispose();
         d3d9.Dispose();
+    }
+
+    private sealed class RenderTarget : IDisposable
+    {
+        private readonly ID3D11Device device;
+        private readonly IDirect3DDevice9Ex device9;
+        private ID3D11Texture2D? texture;
+        private IDirect3DTexture9? sharedTexture9;
+        private IDirect3DSurface9? surface9;
+        private int width;
+        private int height;
+
+        public D3DImage Image { get; } = new();
+        public ID3D11RenderTargetView? View { get; private set; }
+
+        public RenderTarget(ID3D11Device device, IDirect3DDevice9Ex device9)
+        {
+            this.device = device;
+            this.device9 = device9;
+            Image.IsFrontBufferAvailableChanged += (_, _) =>
+            {
+                if (Image.IsFrontBufferAvailable) AttachBackBuffer();
+            };
+        }
+
+        public void Ensure(int newWidth, int newHeight)
+        {
+            if (texture != null && newWidth == width && newHeight == height) return;
+
+            Release();
+            width = newWidth;
+            height = newHeight;
+            texture = device.CreateTexture2D(new Texture2DDescription
+            {
+                Width = (uint)width,
+                Height = (uint)height,
+                MipLevels = 1,
+                ArraySize = 1,
+                Format = Vortice.DXGI.Format.B8G8R8A8_UNorm,
+                SampleDescription = new SampleDescription(1, 0),
+                Usage = ResourceUsage.Default,
+                BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource,
+                MiscFlags = ResourceOptionFlags.Shared
+            });
+            View = device.CreateRenderTargetView(texture);
+
+            IntPtr handle;
+            using (var resource = texture.QueryInterface<IDXGIResource>())
+                handle = resource.SharedHandle;
+            sharedTexture9 = device9.CreateTexture((uint)width, (uint)height, 1, Vortice.Direct3D9.Usage.RenderTarget,
+                Vortice.Direct3D9.Format.A8R8G8B8, Pool.Default, ref handle);
+            surface9 = sharedTexture9.GetSurfaceLevel(0);
+            AttachBackBuffer();
+        }
+
+        private void AttachBackBuffer()
+        {
+            if (surface9 == null) return;
+            Image.Lock();
+            Image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, surface9.NativePointer, true);
+            Image.Unlock();
+        }
+
+        private void Release()
+        {
+            if (surface9 != null)
+            {
+                Image.Lock();
+                Image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero);
+                Image.Unlock();
+            }
+            surface9?.Dispose();
+            sharedTexture9?.Dispose();
+            View?.Dispose();
+            texture?.Dispose();
+            surface9 = null;
+            sharedTexture9 = null;
+            View = null;
+            texture = null;
+        }
+
+        public void Dispose() => Release();
     }
 }

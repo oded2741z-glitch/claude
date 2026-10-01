@@ -1,26 +1,29 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
-using TrackIRLite;
 
 namespace TrackIRServer;
 
 public sealed class ClientConnection : IDisposable
 {
-    private const int MaxQueue = 10;
+    private const int MaxQueue = 5;
 
     private readonly TcpClient tcp;
     private readonly BlockingCollection<byte[]> queue = new();
     private readonly object sync = new();
-    private readonly bool[] needsKeyframe = { true, true };
     private bool alive = true;
-    private bool wantsPip;
+    private bool needsKeyframe = true;
 
     public string Name { get; }
 
     public bool Alive
     {
         get { lock (sync) return alive; }
+    }
+
+    public bool NeedsKeyframe
+    {
+        get { lock (sync) return alive && needsKeyframe; }
     }
 
     public ClientConnection(TcpClient tcp)
@@ -32,31 +35,20 @@ public sealed class ClientConnection : IDisposable
         new Thread(ReceiveLoop) { IsBackground = true }.Start();
     }
 
-    public bool Receives(byte stream)
-    {
-        lock (sync) return alive && (stream == NetProtocol.MainStream || wantsPip);
-    }
-
-    public bool NeedsKeyframe(byte stream)
-    {
-        lock (sync) return Receives(stream) && needsKeyframe[stream];
-    }
-
-    public void Send(byte stream, byte[] message, bool keyframe)
+    public void Send(byte[] message, bool keyframe)
     {
         lock (sync)
         {
-            if (!Receives(stream)) return;
-            if (needsKeyframe[stream])
+            if (!alive) return;
+            if (needsKeyframe)
             {
                 if (!keyframe) return;
-                needsKeyframe[stream] = false;
+                needsKeyframe = false;
             }
             if (queue.Count >= MaxQueue)
             {
                 while (queue.TryTake(out _)) { }
-                needsKeyframe[NetProtocol.MainStream] = true;
-                needsKeyframe[NetProtocol.PipStream] = true;
+                needsKeyframe = true;
                 return;
             }
             queue.Add(message);
@@ -80,22 +72,7 @@ public sealed class ClientConnection : IDisposable
         try
         {
             NetworkStream stream = tcp.GetStream();
-            int command;
-            while ((command = stream.ReadByte()) >= 0)
-            {
-                lock (sync)
-                {
-                    if (command == NetProtocol.PipOn && !wantsPip)
-                    {
-                        wantsPip = true;
-                        needsKeyframe[NetProtocol.PipStream] = true;
-                    }
-                    else if (command == NetProtocol.PipOff)
-                    {
-                        wantsPip = false;
-                    }
-                }
-            }
+            while (stream.ReadByte() >= 0) { }
         }
         catch { }
         lock (sync) alive = false;

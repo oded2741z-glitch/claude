@@ -12,7 +12,8 @@ public class Settings
     public double HomePitch { get; set; } = 0.0;
     public double BaseFov { get; set; } = 70.0;
 
-    public int PipIndex { get; set; } = -1;
+    public bool PipEnabled { get; set; } = false;
+    public double MirrorFov { get; set; } = 60.0;
     public int PipWidth { get; set; } = 400;
     public int PipX { get; set; } = -1;
     public int PipY { get; set; } = 10;

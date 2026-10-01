@@ -8,19 +8,17 @@ public sealed class CameraStreamer
     private readonly int width;
     private readonly int height;
     private readonly StreamServer server;
-    private readonly StreamOutput[] outputs;
-    private readonly string label;
+    private readonly StreamOutput output;
     private bool missingReported;
     private bool requestReported;
 
-    public CameraStreamer(int camera, int width, int height, StreamServer server, params StreamOutput[] outputs)
+    public CameraStreamer(int camera, int width, int height, StreamServer server, StreamOutput output)
     {
         this.camera = camera;
         this.width = width;
         this.height = height;
         this.server = server;
-        this.outputs = outputs;
-        label = string.Join("/", outputs.Select(o => o.Name));
+        this.output = output;
     }
 
     public void Start()
@@ -38,7 +36,7 @@ public sealed class CameraStreamer
             }
             catch (Exception ex)
             {
-                Program.Log($"{label}: {ex.Message}");
+                Program.Log($"{output.Name}: {ex.Message}");
                 Thread.Sleep(3000);
             }
         }
@@ -50,9 +48,9 @@ public sealed class CameraStreamer
         using var reader = new FrameReader(camera.ToString(), true, manual ? width : 10000, manual ? height : 10000);
         if (!reader.IsOpened)
         {
-            bool requested = outputs.Any(o => server.ViewerCount(o.Stream) > 0);
+            bool requested = server.ViewerCount() > 0;
             if (!missingReported || (requested && !requestReported))
-                Program.Log($"{label}: camera {camera} not found, retrying...");
+                Program.Log($"{output.Name}: camera {camera} not found, retrying...");
             missingReported = true;
             requestReported = requested;
             Thread.Sleep(3000);
@@ -62,25 +60,22 @@ public sealed class CameraStreamer
         requestReported = false;
 
         int fps = reader.Fps is > 0 and < 240 ? (int)Math.Round(reader.Fps) : 30;
-        foreach (StreamOutput output in outputs) output.Open(camera, fps);
+        output.Open(camera, fps);
         long lastId = 0;
 
         try
         {
             while (reader.WaitForFrame(5000))
             {
-                foreach (StreamOutput output in outputs) output.CheckViewers();
-                reader.TryRead(ref lastId, frame =>
-                {
-                    foreach (StreamOutput output in outputs) output.Prepare(frame);
-                });
-                foreach (StreamOutput output in outputs) output.Encode();
+                output.CheckViewers();
+                reader.TryRead(ref lastId, output.Prepare);
+                output.Encode();
             }
-            Program.Log($"{label}: camera {camera} stopped, reopening...");
+            Program.Log($"{output.Name}: camera {camera} stopped, reopening...");
         }
         finally
         {
-            foreach (StreamOutput output in outputs) output.Close();
+            output.Close();
         }
     }
 }

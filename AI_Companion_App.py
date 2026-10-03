@@ -2,6 +2,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import threading
 import json
+import random
 import os
 import sys
 import io
@@ -27,6 +28,21 @@ FONT_STYLE = "italic"
 GEMINI_MODEL = "models/gemini-3.6-flash"
 HISTORY_TURNS = 24      # how much of the conversation is sent back to the model
 MAX_MESSAGES = 500      # how much is kept on disk
+
+IDLE_SECONDS = 180      # quiet time before the character speaks unprompted
+IDLE_JITTER = 90        # varied, so it never feels like a metronome
+VOICE_RETRY_MS = 1500   # pause before listening again after silence or a misheard phrase
+MAX_VOICE_FAILURES = 3  # consecutive microphone errors before voice mode switches itself off
+
+OPENING_NUDGE = (
+    "The conversation has not started yet. Open it yourself: say the first thing, "
+    "in character, as if you had been waiting for them."
+)
+IDLE_NUDGE = (
+    "They have gone quiet for a while and have not written anything new. "
+    "Say something unprompted — pick it up yourself, from your own mood and what you want. "
+    "Do not pretend they just spoke."
+)
 
 GENDERS = ["Female", "Male", "Non-binary", "Unspecified"]
 
@@ -140,7 +156,13 @@ class AICompanionApp:
 
         self.dragged = False
         self.error_text_id = None
-        self.waiting = False
+
+        # one state machine for the turn: at most one of these is true at a time
+        self.waiting = False      # the model is composing a reply
+        self.speaking = False     # the character's voice is playing
+        self.listening = False    # the microphone is open
+        self.idle_timer = None
+        self.voice_failures = 0
 
         self.data = self.load_data()
 
@@ -227,8 +249,12 @@ class AICompanionApp:
         self.cover_frame.destroy()
         self.main_frame.pack(fill="both", expand=True)
         self.refresh_all()
+        self.schedule_idle_turn()
+        self.start_listening()
 
     def return_to_cover(self):
+        self.cancel_idle_timer()
+        self.voice_var.set(False)       # stop listening before the cover goes back up
         self.save_data()
         if self.password_enabled:
             self.fernet = None
@@ -326,6 +352,18 @@ class AICompanionApp:
                                      font=(MAIN_FONT, 11, FONT_STYLE), command=self.start_dictation)
         self.dictate_btn.pack(side="left", fill="x", expand=True, padx=(2, 0))
 
+        self.initiative_var = tk.BooleanVar(value=bool(self.config_data.get("speak_first", False)))
+        self.voice_var = tk.BooleanVar(value=bool(self.config_data.get("voice_mode", False)))
+
+        tk.Checkbutton(self.left_panel, text="Let them speak first", variable=self.initiative_var,
+                       bg="#F9F9F8", activebackground="#F9F9F8", selectcolor="#FFFFFF", fg="#505050",
+                       font=(MAIN_FONT, 10, FONT_STYLE), anchor="w",
+                       command=self.toggle_initiative).pack(fill="x", pady=(10, 0))
+        tk.Checkbutton(self.left_panel, text="Voice mode (always listening)", variable=self.voice_var,
+                       bg="#F9F9F8", activebackground="#F9F9F8", selectcolor="#FFFFFF", fg="#505050",
+                       font=(MAIN_FONT, 10, FONT_STYLE), anchor="w",
+                       command=self.toggle_voice_mode).pack(fill="x")
+
     def build_chat_panel(self):
         self.transcript = tk.Text(self.center_panel, bg="#FFFFFF", fg="#333333", relief="flat",
                                   highlightbackground="#E0E0E0", highlightthickness=1, wrap="word",
@@ -417,15 +455,54 @@ class AICompanionApp:
 
         self.input_area.delete("1.0", tk.END)
         self.append_message("you", text)
+        self.dispatch()
 
+    def dispatch(self, nudge=""):
+        """Ask the model for the next line, whether or not the user just said something."""
         character = self.data["character"]
         instruction = persona_instruction(character, self.data["state"], self.user_name)
         transcript = self.recent_transcript()
+        if nudge:
+            transcript = (transcript + "\n\n" if transcript else "") + f"[{nudge}]"
 
         self.waiting = True
+        self.cancel_idle_timer()
         self.send_btn.config(state="disabled")
         self.set_status(f"{character.get('name') or 'They'} is typing…")
         threading.Thread(target=self.call_model, args=(self.api_key, instruction, transcript), daemon=True).start()
+
+    # ---------- speaking unprompted ----------
+    def toggle_initiative(self):
+        self.persist_config()
+        self.schedule_idle_turn()
+
+    def cancel_idle_timer(self):
+        if self.idle_timer is not None:
+            self.root.after_cancel(self.idle_timer)
+            self.idle_timer = None
+
+    def schedule_idle_turn(self):
+        """Re-arm the quiet-time timer. Called after every turn and whenever the toggle moves."""
+        self.cancel_idle_timer()
+        if not self.initiative_var.get():
+            return
+        delay = int((IDLE_SECONDS + random.uniform(0, IDLE_JITTER)) * 1000)
+        self.idle_timer = self.root.after(delay, self.idle_turn)
+
+    def idle_turn(self):
+        self.idle_timer = None
+        if not self.initiative_var.get() or self.waiting or self.speaking:
+            self.schedule_idle_turn()
+            return
+        if not self.api_key or self.load_failed:
+            return
+        if self.password_enabled and self.fernet is None:
+            return      # locked: nothing should be happening behind the cover screen
+        if self.input_area.get("1.0", tk.END).strip():
+            self.schedule_idle_turn()       # they are mid-sentence; do not talk over them
+            return
+
+        self.dispatch(OPENING_NUDGE if not self.data["messages"] else IDLE_NUDGE)
 
     def recent_transcript(self):
         """The tail of the conversation, labelled so the model can follow who said what."""
@@ -464,14 +541,20 @@ class AICompanionApp:
         self.append_message("them", reply)
         self.refresh_state()
         self.finish_turn("")
+        if self.voice_var.get():
+            self.read_aloud()       # its "finished speaking" hand-off reopens the microphone
+        else:
+            self.start_listening()
 
     def receive_error(self, message):
         self.finish_turn(f"⚠ {message[:50]}")
+        self.start_listening()
 
     def finish_turn(self, status):
         self.waiting = False
         self.send_btn.config(state="normal")
         self.set_status(status)
+        self.schedule_idle_turn()
 
     def append_message(self, role, text):
         self.data["messages"].append({"role": role, "text": text,
@@ -521,7 +604,9 @@ class AICompanionApp:
         try:
             core.write_json_atomic(CONFIG_FILE, {"api_key": self.api_key, "user_name": self.user_name,
                                                  "password_salt": self.password_salt,
-                                                 "password_check": self.password_check})
+                                                 "password_check": self.password_check,
+                                                 "speak_first": bool(self.initiative_var.get()),
+                                                 "voice_mode": bool(self.voice_var.get())})
         except Exception as e:
             self.set_status(f"⚠ Settings not saved: {str(e)[:45]}")
 
@@ -684,8 +769,9 @@ class AICompanionApp:
     # ==========================================
     def read_aloud(self):
         text = self.last_reply()
-        if not text:
+        if not text or self.speaking:
             return
+        self.speaking = True
         self.set_status("")
         self.read_btn.config(state="disabled", text="Speaking...")
         threading.Thread(target=self.speak_text, args=(text,), daemon=True).start()
@@ -703,7 +789,72 @@ class AICompanionApp:
         except Exception as e:
             self.root.after(0, self.set_status, f"⚠ Playback failed: {str(e)[:45]}")
         finally:
-            self.root.after(0, lambda: self.read_btn.config(state="normal", text="Listen 🔊"))
+            self.root.after(0, self.finish_speaking)
+
+    def finish_speaking(self):
+        self.speaking = False
+        self.read_btn.config(state="normal", text="Listen 🔊")
+        self.start_listening()      # only reopens the microphone when voice mode is on
+
+    # ---------- voice mode: a microphone that stays open between turns ----------
+    def toggle_voice_mode(self):
+        self.persist_config()
+        if self.voice_var.get():
+            self.voice_failures = 0
+            self.start_listening()
+        else:
+            self.set_status("")
+
+    def start_listening(self):
+        """Open the microphone, unless something else in the turn is already using it."""
+        if not self.voice_var.get() or self.listening or self.waiting or self.speaking:
+            return
+        if self.password_enabled and self.fernet is None:
+            return
+        self.listening = True
+        self.set_status("listening…")
+        threading.Thread(target=self.voice_worker, daemon=True).start()
+
+    def voice_worker(self):
+        recognizer = sr.Recognizer()
+        try:
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = recognizer.listen(source, timeout=8, phrase_time_limit=20)
+            text = recognizer.recognize_google(audio, language="en-US")
+            self.root.after(0, self.voice_heard, text)
+        except (sr.WaitTimeoutError, sr.UnknownValueError):
+            self.root.after(0, self.voice_quiet)        # nobody spoke; just listen again
+        except Exception as e:
+            self.root.after(0, self.voice_failed, str(e))
+
+    def voice_heard(self, text):
+        self.listening = False
+        self.voice_failures = 0
+        if not text.strip():
+            self.voice_quiet()
+            return
+        self.input_area.delete("1.0", tk.END)
+        self.input_area.insert("1.0", text)
+        self.send_message()
+
+    def voice_quiet(self):
+        self.listening = False
+        self.voice_failures = 0
+        if self.voice_var.get():
+            self.root.after(VOICE_RETRY_MS, self.start_listening)
+
+    def voice_failed(self, message):
+        """A real microphone problem, not silence — back off, and give up after a few."""
+        self.listening = False
+        self.voice_failures += 1
+        if self.voice_failures >= MAX_VOICE_FAILURES:
+            self.voice_var.set(False)
+            self.persist_config()
+            self.set_status(f"⚠ Voice mode off: {message[:40]}")
+            return
+        self.set_status(f"⚠ Microphone: {message[:40]}")
+        self.root.after(VOICE_RETRY_MS, self.start_listening)
 
     def start_dictation(self):
         self.dictate_btn.config(state="disabled", text="Listening... 🎙️")

@@ -40,11 +40,15 @@ def fake_model(reply_text, reject_system_instruction=False):
     return seen
 
 
-def open_app(unlocked=True):
+def open_app(unlocked=True, password="hunter2"):
     root = tk.Tk()
     app = app_mod.AICompanionApp(root)
     if unlocked:
-        app.enter_chat()
+        if app.password_enabled:
+            app.pass_entry.insert(0, password)
+            app.verify_password()
+        else:
+            app.enter_chat()
         root.update()
     return root, app
 
@@ -203,6 +207,129 @@ app.verify_password()
 root.update()
 app.read_aloud()
 check("Listen speaks the character's last line", tts_calls[-1] == "en", tts_calls)
+root.destroy()
+
+# ================= speaking unprompted =================
+root, app = open_app()
+app.api_key = "key"
+app.data["messages"] = []
+sent = {}
+app.dispatch = lambda nudge="": sent.update(nudge=nudge)
+
+app.initiative_var.set(True)
+app.idle_turn()
+check("opens the conversation when there is nothing yet", sent.get("nudge") == app_mod.OPENING_NUDGE)
+
+app.data["messages"] = [{"role": "you", "text": "hi"}]
+sent.clear()
+app.idle_turn()
+check("picks it up again mid-conversation", sent.get("nudge") == app_mod.IDLE_NUDGE)
+
+sent.clear()
+app.input_area.insert("1.0", "half a sentence")
+app.idle_turn()
+check("stays quiet while you are typing", "nudge" not in sent)
+check("and tries again later", app.idle_timer is not None)
+app.input_area.delete("1.0", "end")
+
+sent.clear()
+app.waiting = True
+app.idle_turn()
+check("never interrupts a reply in flight", "nudge" not in sent)
+app.waiting = False
+
+sent.clear()
+app.api_key = ""
+app.idle_turn()
+check("stays quiet without an API key", "nudge" not in sent)
+app.api_key = "key"
+
+app.initiative_var.set(False)
+app.schedule_idle_turn()
+check("toggle off disarms the timer", app.idle_timer is None)
+app.initiative_var.set(True)
+app.schedule_idle_turn()
+check("toggle on arms the timer", app.idle_timer is not None)
+
+del app.dispatch
+app.data["messages"] = []
+seen = fake_model('{"reply": "You went quiet.", "mood": "wistful", "desire": "a word", "closeness_delta": 0}')
+app.idle_turn()
+app.call_model("key", "instruction", app.recent_transcript() + f"\n\n[{app_mod.IDLE_NUDGE}]")
+root.update()
+check("the nudge reaches the model", app_mod.IDLE_NUDGE in seen["prompt"])
+check("an unprompted line is recorded as theirs", app.data["messages"][-1]["role"] == "them")
+check("no fake user message is invented",
+      not [m for m in app.data["messages"] if m["role"] == "you"])
+
+# ================= voice mode =================
+app.voice_var.set(False)
+app.start_listening()
+check("microphone stays shut when voice mode is off", not app.listening)
+
+app.voice_worker = lambda: None          # keep the real microphone out of the test
+app.voice_var.set(True)
+app.start_listening()
+check("voice mode opens the microphone", app.listening)
+check("listening is shown", "listening" in app.status_lbl.cget("text"), app.status_lbl.cget("text"))
+
+app.listening = False
+app.waiting = True
+app.start_listening()
+check("never listens while the model is answering", not app.listening)
+app.waiting = False
+app.speaking = True
+app.start_listening()
+check("never listens while the character is talking", not app.listening)
+app.speaking = False
+
+app.listening = True
+app.voice_heard("  ")
+check("an empty transcription just listens again", not app.listening)
+
+app.listening = True
+before = len(app.data["messages"])
+app.dispatch = lambda nudge="": None
+app.voice_heard("say that again")
+check("what you said is sent as your message",
+      app.data["messages"][-1]["text"] == "say that again" and len(app.data["messages"]) == before + 1)
+del app.dispatch
+
+app.voice_failures = 0
+app.voice_failed("no default input device")
+check("a microphone error is reported", "Microphone" in app.status_lbl.cget("text"))
+check("voice mode survives one failure", app.voice_var.get())
+app.voice_failed("no default input device")
+app.voice_failed("no default input device")
+check("voice mode gives up after repeated failures", not app.voice_var.get())
+check("and says why", "Voice mode off" in app.status_lbl.cget("text"), app.status_lbl.cget("text"))
+
+spoken = []
+app.read_aloud = lambda: spoken.append(app.last_reply())
+app.voice_var.set(True)
+app.receive_reply('{"reply": "Out loud, then.", "mood": "warm", "desire": "more", "closeness_delta": 1}')
+check("voice mode speaks every reply without asking", spoken == ["Out loud, then."])
+app.voice_var.set(False)
+spoken.clear()
+app.receive_reply('{"reply": "Quietly.", "mood": "warm", "desire": "more", "closeness_delta": 0}')
+check("with voice mode off nothing is spoken", spoken == [])
+del app.read_aloud
+
+app.speaking = True
+app.voice_var.set(True)
+app.voice_worker = lambda: None
+app.finish_speaking()
+check("the microphone reopens once they stop talking", app.listening and not app.speaking)
+
+app.initiative_var.set(True)
+app.return_to_cover()
+root.update()
+check("locking up stops the microphone", not app.voice_var.get())
+check("locking up disarms the unprompted timer", app.idle_timer is None)
+root.destroy()
+
+root, app = open_app()
+check("toggles are remembered", app.initiative_var.get() is True)
 root.destroy()
 
 report()

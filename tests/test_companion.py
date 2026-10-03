@@ -249,12 +249,14 @@ check("interval clamped low", app_mod.AICompanionApp.read_idle_minutes("0.01") =
 check("interval clamped high", app_mod.AICompanionApp.read_idle_minutes("9999") == app_mod.MAX_IDLE_MINUTES)
 check("junk interval falls back", app_mod.AICompanionApp.read_idle_minutes("soon") == app_mod.DEFAULT_IDLE_MINUTES)
 
-app.idle_minutes = 0.5
+app.idle_minutes = 3.0
 app.initiative_var.set(True)
+app.unanswered = 0
 app.schedule_idle_turn()
 root.update()
 waiting_for = app.idle_due - __import__("time").monotonic()
-check("the configured interval is what gets armed", 29 <= waiting_for <= 40, round(waiting_for, 1))
+check("the first try comes quickly, not after the long wait",
+      waiting_for <= app_mod.FIRST_BURST_SECONDS, round(waiting_for, 1))
 check("countdown is shown while armed", "speaks up in" in app.idle_lbl.cget("text"), app.idle_lbl.cget("text"))
 
 app.api_key = ""
@@ -297,14 +299,18 @@ app.data["messages"] = [{"role": "you", "text": "earlier"}]
 nudges = []
 app.dispatch = lambda nudge="": nudges.append(nudge)
 
+bursts = []
 for _ in range(app_mod.MAX_UNANSWERED_TURNS):
     app.idle_turn()
     app.schedule_idle_turn()
+    bursts.append(app.idle_due - __import__("time").monotonic())
 check("reaches out three times", len(nudges) == 3 and all(n == app_mod.IDLE_NUDGE for n in nudges))
+check("the first tries are seconds apart, not minutes",
+      all(b <= app_mod.FIRST_BURST_SECONDS for b in bursts[:-1]),
+      [round(b, 1) for b in bursts])
 check("still armed after three", app.idle_timer is not None and not app.dormant)
 pause = app.idle_due - __import__("time").monotonic()
-check("the wait before the last try uses the pause factor",
-      pause >= 60 * app_mod.FINAL_PAUSE_FACTOR * 0.95, round(pause, 1))
+check("the long wait only comes before the last try", 55 <= pause <= 61, round(pause, 1))
 
 app.idle_turn()
 check("the fourth try is marked as the last one", nudges[-1] == app_mod.LAST_NUDGE)

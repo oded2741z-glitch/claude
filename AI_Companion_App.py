@@ -34,8 +34,8 @@ DEFAULT_IDLE_MINUTES = 3.0   # quiet time before the character speaks unprompted
 MIN_IDLE_MINUTES = 0.25      # low enough to actually try the feature out
 MAX_IDLE_MINUTES = 120.0
 IDLE_JITTER_SHARE = 0.3      # varied, so it never feels like a metronome
-MAX_UNANSWERED_TURNS = 3     # reaches out this many times, then pauses for one last try
-FINAL_PAUSE_FACTOR = 1.0     # the pause before that last try, as a share of the interval
+MAX_UNANSWERED_TURNS = 3     # quick tries first, then one long wait and a last try
+FIRST_BURST_SECONDS = 20     # those first tries come at most this far apart
 VOICE_RETRY_MS = 1500   # pause before listening again after silence or a misheard phrase
 MAX_VOICE_FAILURES = 3  # consecutive microphone errors before voice mode switches itself off
 
@@ -529,10 +529,13 @@ class AICompanionApp:
             self.tick_idle_countdown()
             return
 
-        base = self.idle_minutes * 60
-        if self.unanswered == MAX_UNANSWERED_TURNS:
-            base *= FINAL_PAUSE_FACTOR      # the longer wait before one last attempt
-        seconds = base + random.uniform(0, base * IDLE_JITTER_SHARE)
+        interval = self.idle_minutes * 60
+        if self.unanswered < MAX_UNANSWERED_TURNS:
+            # the opening tries come quickly, and never further apart than the burst cap
+            cap = min(FIRST_BURST_SECONDS, interval)
+            seconds = random.uniform(cap * (1 - IDLE_JITTER_SHARE), cap)
+        else:
+            seconds = interval      # the long wait before one last attempt
         self.idle_due = time.monotonic() + seconds
         self.idle_timer = self.root.after(int(seconds * 1000), self.idle_turn)
         self.tick_idle_countdown()
@@ -749,7 +752,7 @@ class AICompanionApp:
         api_entry.place(x=20, y=191, width=360, height=28)
         api_entry.insert(0, self.api_key)
 
-        tk.Label(frame, text="Speaks first after (minutes of quiet):", bg="#FFFFFF", fg="#505050",
+        tk.Label(frame, text="Long wait before the last try (minutes):", bg="#FFFFFF", fg="#505050",
                  font=(MAIN_FONT, 11, FONT_STYLE)).place(x=20, y=224)
         idle_entry = tk.Entry(frame, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1,
                               font=(MAIN_FONT, 11, FONT_STYLE))

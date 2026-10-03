@@ -3,6 +3,7 @@ import tkinter.font as tkfont
 import threading
 import json
 import random
+import time
 import os
 import sys
 import io
@@ -29,8 +30,10 @@ GEMINI_MODEL = "models/gemini-3.6-flash"
 HISTORY_TURNS = 24      # how much of the conversation is sent back to the model
 MAX_MESSAGES = 500      # how much is kept on disk
 
-IDLE_SECONDS = 180      # quiet time before the character speaks unprompted
-IDLE_JITTER = 90        # varied, so it never feels like a metronome
+DEFAULT_IDLE_MINUTES = 3.0   # quiet time before the character speaks unprompted
+MIN_IDLE_MINUTES = 0.25      # low enough to actually try the feature out
+MAX_IDLE_MINUTES = 120.0
+IDLE_JITTER_SHARE = 0.3      # varied, so it never feels like a metronome
 VOICE_RETRY_MS = 1500   # pause before listening again after silence or a misheard phrase
 MAX_VOICE_FAILURES = 3  # consecutive microphone errors before voice mode switches itself off
 
@@ -162,6 +165,9 @@ class AICompanionApp:
         self.speaking = False     # the character's voice is playing
         self.listening = False    # the microphone is open
         self.idle_timer = None
+        self.idle_countdown = None
+        self.idle_due = 0.0
+        self.idle_minutes = self.read_idle_minutes(self.config_data.get("idle_minutes"))
         self.voice_failures = 0
 
         self.data = self.load_data()
@@ -364,6 +370,10 @@ class AICompanionApp:
                        font=(MAIN_FONT, 10, FONT_STYLE), anchor="w",
                        command=self.toggle_voice_mode).pack(fill="x")
 
+        self.idle_lbl = tk.Label(self.left_panel, text="", bg="#F9F9F8", fg="#A0A0A0",
+                                 font=(MAIN_FONT, 10, FONT_STYLE), anchor="w")
+        self.idle_lbl.pack(fill="x", pady=(4, 0))
+
     def build_chat_panel(self):
         self.transcript = tk.Text(self.center_panel, bg="#FFFFFF", fg="#333333", relief="flat",
                                   highlightbackground="#E0E0E0", highlightthickness=1, wrap="word",
@@ -480,21 +490,54 @@ class AICompanionApp:
         if self.idle_timer is not None:
             self.root.after_cancel(self.idle_timer)
             self.idle_timer = None
+        if self.idle_countdown is not None:
+            self.root.after_cancel(self.idle_countdown)
+            self.idle_countdown = None
+        if hasattr(self, "idle_lbl") and self.idle_lbl.winfo_exists():
+            self.idle_lbl.config(text="")
+
+    @staticmethod
+    def read_idle_minutes(value):
+        try:
+            return max(MIN_IDLE_MINUTES, min(MAX_IDLE_MINUTES, float(value)))
+        except (TypeError, ValueError):
+            return DEFAULT_IDLE_MINUTES
 
     def schedule_idle_turn(self):
         """Re-arm the quiet-time timer. Called after every turn and whenever the toggle moves."""
         self.cancel_idle_timer()
         if not self.initiative_var.get():
             return
-        delay = int((IDLE_SECONDS + random.uniform(0, IDLE_JITTER)) * 1000)
-        self.idle_timer = self.root.after(delay, self.idle_turn)
+        base = self.idle_minutes * 60
+        seconds = base + random.uniform(0, base * IDLE_JITTER_SHARE)
+        self.idle_due = time.monotonic() + seconds
+        self.idle_timer = self.root.after(int(seconds * 1000), self.idle_turn)
+        self.tick_idle_countdown()
+
+    def tick_idle_countdown(self):
+        """Show how long the quiet has to run, so an armed timer is visible rather than hoped for."""
+        if self.idle_countdown is not None:
+            self.root.after_cancel(self.idle_countdown)
+            self.idle_countdown = None
+        if not hasattr(self, "idle_lbl") or not self.idle_lbl.winfo_exists():
+            return
+        if self.idle_timer is None or not self.initiative_var.get():
+            self.idle_lbl.config(text="")
+            return
+
+        remaining = max(0, int(round(self.idle_due - time.monotonic())))
+        self.idle_lbl.config(text=f"speaks up in {remaining // 60}:{remaining % 60:02d}")
+        self.idle_countdown = self.root.after(1000, self.tick_idle_countdown)
 
     def idle_turn(self):
         self.idle_timer = None
         if not self.initiative_var.get() or self.waiting or self.speaking:
             self.schedule_idle_turn()
             return
-        if not self.api_key or self.load_failed:
+        if not self.api_key:
+            self.set_status("⚠ API key missing — open Settings")
+            return
+        if self.load_failed:
             return
         if self.password_enabled and self.fernet is None:
             return      # locked: nothing should be happening behind the cover screen
@@ -606,7 +649,8 @@ class AICompanionApp:
                                                  "password_salt": self.password_salt,
                                                  "password_check": self.password_check,
                                                  "speak_first": bool(self.initiative_var.get()),
-                                                 "voice_mode": bool(self.voice_var.get())})
+                                                 "voice_mode": bool(self.voice_var.get()),
+                                                 "idle_minutes": self.idle_minutes})
         except Exception as e:
             self.set_status(f"⚠ Settings not saved: {str(e)[:45]}")
 
@@ -642,7 +686,7 @@ class AICompanionApp:
     def show_settings(self):
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("400x310")
+        window.geometry("400x370")
         window.configure(bg="#FFFFFF")
 
         frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -667,16 +711,26 @@ class AICompanionApp:
         api_entry.place(x=20, y=191, width=360, height=28)
         api_entry.insert(0, self.api_key)
 
+        tk.Label(frame, text="Speaks first after (minutes of quiet):", bg="#FFFFFF", fg="#505050",
+                 font=(MAIN_FONT, 11, FONT_STYLE)).place(x=20, y=224)
+        idle_entry = tk.Entry(frame, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1,
+                              font=(MAIN_FONT, 11, FONT_STYLE))
+        idle_entry.place(x=20, y=247, width=360, height=28)
+        idle_entry.insert(0, str(self.idle_minutes))
+
         def save_and_close():
-            self.save_settings(api_entry.get().strip(), name_entry.get().strip(), pass_entry.get().strip())
+            self.save_settings(api_entry.get().strip(), name_entry.get().strip(),
+                               pass_entry.get().strip(), idle_entry.get().strip())
             window.destroy()
 
         tk.Button(frame, text="Save Settings", bg="#323232", fg="#FFFFFF", relief="flat",
-                  font=(MAIN_FONT, 11, FONT_STYLE), command=save_and_close).place(x=20, y=245, width=150, height=35)
+                  font=(MAIN_FONT, 11, FONT_STYLE), command=save_and_close).place(x=20, y=300, width=150, height=35)
 
-    def save_settings(self, api_key, user_name, user_password):
+    def save_settings(self, api_key, user_name, user_password, idle_minutes=None):
         self.api_key = api_key
         self.user_name = user_name
+        if idle_minutes is not None:
+            self.idle_minutes = self.read_idle_minutes(idle_minutes)
 
         if user_password != self.user_password and not self.apply_password_change(user_password):
             return
@@ -684,6 +738,7 @@ class AICompanionApp:
         self.persist_config()
         self.refresh_transcript()
         self.set_status("")
+        self.schedule_idle_turn()
 
     def show_character_editor(self):
         window = tk.Toplevel(self.root)

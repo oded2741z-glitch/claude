@@ -244,9 +244,34 @@ app.idle_turn()
 check("stays quiet without an API key", "nudge" not in sent)
 app.api_key = "key"
 
+check("interval parsed", app_mod.AICompanionApp.read_idle_minutes("0.5") == 0.5)
+check("interval clamped low", app_mod.AICompanionApp.read_idle_minutes("0.01") == app_mod.MIN_IDLE_MINUTES)
+check("interval clamped high", app_mod.AICompanionApp.read_idle_minutes("9999") == app_mod.MAX_IDLE_MINUTES)
+check("junk interval falls back", app_mod.AICompanionApp.read_idle_minutes("soon") == app_mod.DEFAULT_IDLE_MINUTES)
+
+app.idle_minutes = 0.5
+app.initiative_var.set(True)
+app.schedule_idle_turn()
+root.update()
+waiting_for = app.idle_due - __import__("time").monotonic()
+check("the configured interval is what gets armed", 29 <= waiting_for <= 40, round(waiting_for, 1))
+check("countdown is shown while armed", "speaks up in" in app.idle_lbl.cget("text"), app.idle_lbl.cget("text"))
+
+app.api_key = ""
+app.idle_turn()
+check("a missing key is reported rather than silently skipped",
+      "API key" in app.status_lbl.cget("text"), app.status_lbl.cget("text"))
+app.api_key = "key"
+
+app.save_settings("key", "Oded", app.user_password, "0.25")
+check("interval saved to config",
+      json.loads(open(app_mod.CONFIG_FILE, encoding="utf-8").read())["idle_minutes"] == 0.25)
+check("saving re-arms with the new interval", app.idle_timer is not None)
+
 app.initiative_var.set(False)
 app.schedule_idle_turn()
 check("toggle off disarms the timer", app.idle_timer is None)
+check("countdown cleared when disarmed", app.idle_lbl.cget("text") == "")
 app.initiative_var.set(True)
 app.schedule_idle_turn()
 check("toggle on arms the timer", app.idle_timer is not None)

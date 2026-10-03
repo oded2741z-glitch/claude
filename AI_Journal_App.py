@@ -1,7 +1,6 @@
 import tkinter as tk
 import tkinter.font as tkfont
 import threading
-import json
 import os
 import sys
 import io
@@ -11,45 +10,17 @@ import pygame
 from datetime import datetime
 from PIL import Image, ImageTk
 import speech_recognition as sr
-import base64
 import calendar
 import shutil
-import tempfile
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+import core
 
 APP_DIR_NAME = "AI_Journal"
 MAX_TODO_ITEMS = 10
 
-
-def user_data_dir():
-    """Per-user data directory, so the journal does not depend on the working directory."""
-    try:
-        if sys.platform == "win32":
-            base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        elif sys.platform == "darwin":
-            base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
-        else:
-            base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-        path = os.path.join(base, APP_DIR_NAME)
-        os.makedirs(path, exist_ok=True)
-        return path
-    except Exception:
-        return os.path.abspath(".")
-
-
-DATA_DIR = user_data_dir()
+DATA_DIR = core.user_data_dir(APP_DIR_NAME)
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 HISTORY_FILE = os.path.join(DATA_DIR, "journal_history.json")
-
-KDF_ITERATIONS = 480000
-
-
-def derive_key(password, salt):
-    """Fernet key from the cover-screen password. Deliberately slow to brute-force."""
-    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=KDF_ITERATIONS)
-    return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
 
 
 def migrate_legacy_files():
@@ -62,24 +33,6 @@ def migrate_legacy_files():
                 shutil.copy2(legacy, target)
             except Exception:
                 pass
-
-
-def write_json_atomic(path, data):
-    """Write through a temp file so a failed write cannot truncate the existing one."""
-    directory = os.path.dirname(path) or "."
-    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".tmp_", suffix=".json")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
 
 
 migrate_legacy_files()
@@ -199,16 +152,14 @@ class AIJournalHardcoded:
 
     def verify_password(self):
         entered_pass = self.pass_entry.get()
-        try:
-            key = derive_key(entered_pass, base64.urlsafe_b64decode(self.password_salt))
-            Fernet(key).decrypt(self.password_check.encode("utf-8"))
-        except Exception:
+        fernet = core.unlock(entered_pass, self.password_salt, self.password_check)
+        if fernet is None:
             if self.error_text_id:
                 self.canvas.itemconfig(self.error_text_id, text="Incorrect password, try again.")
             return
 
         self.user_password = entered_pass
-        self.fernet = Fernet(key)
+        self.fernet = fernet
         self.journal_data = self.load_journal_data()
 
         self.cover_frame.destroy()
@@ -499,41 +450,12 @@ class AIJournalHardcoded:
     # ==========================================
     def load_journal_data(self):
         """Read the history. An encrypted file read before unlocking returns {}, not a failure."""
-        self.history_load_failed = False
-        if not os.path.exists(HISTORY_FILE):
-            return {}
-
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                raw = json.load(f)
-        except Exception:
-            self.history_load_failed = True
-            return {}
-
-        if not isinstance(raw, dict):
-            self.history_load_failed = True
-            return {}
-
-        if not raw.get("encrypted"):
-            return raw
-
-        if self.fernet is None:
-            return {}
-
-        try:
-            plain = self.fernet.decrypt(raw["payload"].encode("utf-8"))
-            data = json.loads(plain.decode("utf-8"))
-        except Exception:
-            self.history_load_failed = True
-            return {}
-        return data if isinstance(data, dict) else {}
+        data, status = core.read_store(HISTORY_FILE, self.fernet)
+        self.history_load_failed = (status == "failed")
+        return data
 
     def write_history(self):
-        if self.fernet is None:
-            write_json_atomic(HISTORY_FILE, self.journal_data)
-            return
-        payload = self.fernet.encrypt(json.dumps(self.journal_data, ensure_ascii=False).encode("utf-8"))
-        write_json_atomic(HISTORY_FILE, {"encrypted": True, "payload": payload.decode("ascii")})
+        core.write_store(HISTORY_FILE, self.journal_data, self.fernet)
 
     def get_current_date_key(self):
         return f"{self.current_year}-{self.current_month}-{self.current_day}"
@@ -749,18 +671,7 @@ class AIJournalHardcoded:
     # LOGIC (API, TTS, CONFIG)
     # ==========================================
     def load_config(self):
-        if not os.path.exists(CONFIG_FILE):
-            return {}
-        # utf-8 first, then the locale encoding for files written by older versions
-        for encoding in ("utf-8", None):
-            try:
-                with open(CONFIG_FILE, 'r', encoding=encoding) as f:
-                    return json.load(f)
-            except UnicodeError:
-                continue
-            except Exception:
-                return {}
-        return {}
+        return core.read_json(CONFIG_FILE)
 
     def save_config(self, api_key, user_name, user_password):
         self.api_key = api_key
@@ -784,11 +695,7 @@ class AIJournalHardcoded:
 
         previous = (self.fernet, self.password_salt, self.password_check, self.password_enabled)
         if new_password:
-            salt = os.urandom(16)
-            key = derive_key(new_password, salt)
-            self.password_salt = base64.urlsafe_b64encode(salt).decode("ascii")
-            self.password_check = Fernet(key).encrypt(b"unlocked").decode("ascii")
-            self.fernet = Fernet(key)
+            self.password_salt, self.password_check, self.fernet = core.new_password_credentials(new_password)
             self.password_enabled = True
         else:
             self.password_salt = ""
@@ -808,9 +715,9 @@ class AIJournalHardcoded:
 
     def persist_config(self):
         try:
-            write_json_atomic(CONFIG_FILE, {"api_key": self.api_key, "user_name": self.user_name,
-                                            "password_salt": self.password_salt,
-                                            "password_check": self.password_check})
+            core.write_json_atomic(CONFIG_FILE, {"api_key": self.api_key, "user_name": self.user_name,
+                                                 "password_salt": self.password_salt,
+                                                 "password_check": self.password_check})
             self.set_status("")
         except Exception as e:
             self.set_status(f"⚠ Settings not saved: {str(e)[:45]}")

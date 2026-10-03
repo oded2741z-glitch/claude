@@ -287,6 +287,57 @@ check("an unprompted line is recorded as theirs", app.data["messages"][-1]["role
 check("no fake user message is invented",
       not [m for m in app.data["messages"] if m["role"] == "you"])
 
+# ================= backing off when nobody answers =================
+root.destroy()
+root, app = open_app()
+app.api_key = "key"
+app.idle_minutes = 1.0
+app.initiative_var.set(True)
+app.data["messages"] = [{"role": "you", "text": "earlier"}]
+nudges = []
+app.dispatch = lambda nudge="": nudges.append(nudge)
+
+for _ in range(app_mod.MAX_UNANSWERED_TURNS):
+    app.idle_turn()
+    app.schedule_idle_turn()
+check("reaches out three times", len(nudges) == 3 and all(n == app_mod.IDLE_NUDGE for n in nudges))
+check("still armed after three", app.idle_timer is not None and not app.dormant)
+pause = app.idle_due - __import__("time").monotonic()
+check("the wait before the last try uses the pause factor",
+      pause >= 60 * app_mod.FINAL_PAUSE_FACTOR * 0.95, round(pause, 1))
+
+app.idle_turn()
+check("the fourth try is marked as the last one", nudges[-1] == app_mod.LAST_NUDGE)
+app.schedule_idle_turn()
+check("then it stops reaching out", app.dormant)
+check("and no timer is left running", app.idle_timer is None)
+app.tick_idle_countdown()
+check("the panel says it is waiting", app.idle_lbl.cget("text") == "waiting for you",
+      app.idle_lbl.cget("text"))
+
+nudges.clear()
+app.idle_turn()
+check("a dormant character stays quiet", nudges == [])
+
+del app.dispatch
+app.dispatch = lambda nudge="": None
+app.input_area.insert("1.0", "sorry, I'm here")
+app.send_message()
+check("one word from you wakes it up", not app.dormant and app.unanswered == 0)
+app.schedule_idle_turn()
+check("and the timer starts over", app.idle_timer is not None)
+check("countdown is back", "speaks up in" in app.idle_lbl.cget("text"), app.idle_lbl.cget("text"))
+del app.dispatch
+
+app.unanswered = 9
+app.dormant = True
+app.enter_chat_reset = None
+root.destroy()
+root, app = open_app()
+check("reopening the app counts as coming back", not app.dormant and app.unanswered == 0)
+app.api_key = "key"
+app.voice_worker = lambda: None
+
 # ================= voice mode =================
 app.voice_var.set(False)
 app.start_listening()

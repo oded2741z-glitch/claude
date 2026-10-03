@@ -34,6 +34,8 @@ DEFAULT_IDLE_MINUTES = 3.0   # quiet time before the character speaks unprompted
 MIN_IDLE_MINUTES = 0.25      # low enough to actually try the feature out
 MAX_IDLE_MINUTES = 120.0
 IDLE_JITTER_SHARE = 0.3      # varied, so it never feels like a metronome
+MAX_UNANSWERED_TURNS = 3     # reaches out this many times, then pauses for one last try
+FINAL_PAUSE_FACTOR = 1.0     # the pause before that last try, as a share of the interval
 VOICE_RETRY_MS = 1500   # pause before listening again after silence or a misheard phrase
 MAX_VOICE_FAILURES = 3  # consecutive microphone errors before voice mode switches itself off
 
@@ -44,6 +46,11 @@ OPENING_NUDGE = (
 IDLE_NUDGE = (
     "They have gone quiet for a while and have not written anything new. "
     "Say something unprompted — pick it up yourself, from your own mood and what you want. "
+    "Do not pretend they just spoke."
+)
+LAST_NUDGE = (
+    "You have reached out several times now and they have not answered once. "
+    "Say one last thing and then let it rest — you are not going to keep talking to an empty room. "
     "Do not pretend they just spoke."
 )
 
@@ -168,6 +175,8 @@ class AICompanionApp:
         self.idle_countdown = None
         self.idle_due = 0.0
         self.idle_minutes = self.read_idle_minutes(self.config_data.get("idle_minutes"))
+        self.unanswered = 0      # unprompted turns since they last said anything
+        self.dormant = False     # stopped reaching out until they come back
         self.voice_failures = 0
 
         self.data = self.load_data()
@@ -254,6 +263,8 @@ class AICompanionApp:
     def enter_chat(self):
         self.cover_frame.destroy()
         self.main_frame.pack(fill="both", expand=True)
+        self.unanswered = 0      # opening the app counts as coming back
+        self.dormant = False
         self.refresh_all()
         self.schedule_idle_turn()
         self.start_listening()
@@ -464,6 +475,8 @@ class AICompanionApp:
             return
 
         self.input_area.delete("1.0", tk.END)
+        self.unanswered = 0
+        self.dormant = False
         self.append_message("you", text)
         self.dispatch()
 
@@ -508,7 +521,17 @@ class AICompanionApp:
         self.cancel_idle_timer()
         if not self.initiative_var.get():
             return
+        if self.dormant:
+            self.tick_idle_countdown()
+            return
+        if self.unanswered > MAX_UNANSWERED_TURNS:
+            self.dormant = True      # nobody is there; stop reaching out until they speak
+            self.tick_idle_countdown()
+            return
+
         base = self.idle_minutes * 60
+        if self.unanswered == MAX_UNANSWERED_TURNS:
+            base *= FINAL_PAUSE_FACTOR      # the longer wait before one last attempt
         seconds = base + random.uniform(0, base * IDLE_JITTER_SHARE)
         self.idle_due = time.monotonic() + seconds
         self.idle_timer = self.root.after(int(seconds * 1000), self.idle_turn)
@@ -521,7 +544,13 @@ class AICompanionApp:
             self.idle_countdown = None
         if not hasattr(self, "idle_lbl") or not self.idle_lbl.winfo_exists():
             return
-        if self.idle_timer is None or not self.initiative_var.get():
+        if not self.initiative_var.get():
+            self.idle_lbl.config(text="")
+            return
+        if self.dormant:
+            self.idle_lbl.config(text="waiting for you")
+            return
+        if self.idle_timer is None:
             self.idle_lbl.config(text="")
             return
 
@@ -531,6 +560,8 @@ class AICompanionApp:
 
     def idle_turn(self):
         self.idle_timer = None
+        if self.dormant:
+            return      # nobody answered the last few times; stay quiet until they speak
         if not self.initiative_var.get() or self.waiting or self.speaking:
             self.schedule_idle_turn()
             return
@@ -545,7 +576,14 @@ class AICompanionApp:
             self.schedule_idle_turn()       # they are mid-sentence; do not talk over them
             return
 
-        self.dispatch(OPENING_NUDGE if not self.data["messages"] else IDLE_NUDGE)
+        self.unanswered += 1
+        if self.unanswered > MAX_UNANSWERED_TURNS:
+            nudge = LAST_NUDGE
+        elif not self.data["messages"]:
+            nudge = OPENING_NUDGE
+        else:
+            nudge = IDLE_NUDGE
+        self.dispatch(nudge)
 
     def recent_transcript(self):
         """The tail of the conversation, labelled so the model can follow who said what."""

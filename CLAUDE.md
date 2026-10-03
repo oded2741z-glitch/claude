@@ -4,13 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`AI_Journal_App.py` is the whole application: a single-file Tkinter desktop journal with a Gemini-powered "AI reflection", text-to-speech playback (gTTS + pygame) and microphone dictation (SpeechRecognition). There is no package, no build system, and no test suite — the file is run directly.
+Two Tkinter desktop apps sharing one storage layer:
+
+- `AI_Journal_App.py` — a day-by-day journal with a Gemini "AI reflection", text-to-speech playback (gTTS + pygame) and microphone dictation (SpeechRecognition).
+- `AI_Companion_App.py` — a conversation with one character you define, whose mood, closeness and current desire shift as you talk.
+- `core.py` — the data directory, atomic writes, key derivation and encrypted read/write that both apps use. Deliberately free of Tkinter so it can be tested without a display.
+
+There is no package and no build system; each app is run directly. The two apps keep separate data directories and separate passwords — they share code, not state.
 
 ## Commands
 
 ```bash
 # Run
 python AI_Journal_App.py
+python AI_Companion_App.py
+
+# Tests — they drive the real windows, so they need a display
+xvfb-run -a python3 tests/test_journal.py
+xvfb-run -a python3 tests/test_companion.py
 
 # Dependencies (no requirements.txt exists yet)
 pip install google-generativeai gTTS pygame pillow SpeechRecognition cryptography
@@ -40,5 +51,13 @@ Day/month selection is a save-then-load cycle: `select_day`/`select_month` flush
 **Threading.** Gemini calls (`call_gemini`), TTS (`speak_text`) and dictation (`dictation_worker`) each run on a daemon thread; every touch of a widget from those threads is marshalled back through `self.root.after(0, ...)`. Keep that discipline — Tkinter is not thread-safe. Each also disables its button on start and re-enables it in the `after` callback / `finally`.
 
 **Audio is English-only, deliberately.** `speak_text` calls `gTTS(lang="en")` and dictation passes `language="en-US"`; there is no language setting, and one was removed on request. If a language option is ever reintroduced: the two services spell languages differently and the codes cannot be shared — gTTS still expects the legacy `"iw"` for Hebrew and raises `ValueError` on `"he"`, while the recognizer wants `"he-IL"`. `speak_text` also reports failures through `set_status` (via `root.after`), which is how that mismatch was caught.
+
+## The companion app
+
+**One character, with state that moves.** `AI_Companion_App.py` holds a single character sheet (name, gender, age, personality, desires, behaviour, backstory) and a state of `mood`, `closeness` (0-100) and `desire`. `persona_instruction()` folds both into the system prompt, and the model is asked to answer with one JSON object carrying its reply *and* the state it is left in: `{"reply", "mood", "desire", "closeness_delta"}`. `parse_model_reply()` accepts that object plain, fenced in a code block, or embedded in prose, and falls back to treating the whole text as speech with the state untouched — so a model that ignores the contract degrades to an ordinary chat instead of breaking. `closeness_delta` is clamped to ±5 per exchange and the total to 0-100.
+
+`call_model()` passes the persona through `system_instruction` and the labelled transcript as the prompt, falling back to prepending the persona when the installed SDK does not accept that argument. Only the last `HISTORY_TURNS` messages are sent; only the last `MAX_MESSAGES` are kept on disk.
+
+**Layout order matters here.** In both the chat panel and the input row, the fixed-size widget is packed *before* the one that expands. Pack an expanding widget first and it takes the whole container, leaving the input box and Send button with no space at all — which is exactly what happened, invisibly, until a screenshot showed it. `tests/test_companion.py` asserts both are mapped and inside the window.
 
 **Prompting.** `analyze_journal` assembles the prompt (recent-entry context, date, mood, to-dos, persona instruction from the `persona_instructions` dict) and hands it to the thread; `call_gemini` strips `*` from the response because the prompt asks for no asterisk formatting. The model id is hardcoded in `call_gemini`.

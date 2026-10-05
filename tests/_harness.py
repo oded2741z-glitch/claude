@@ -51,6 +51,25 @@ def install_stubs():
           WaitTimeoutError=type("W", (Exception,), {}), UnknownValueError=type("U", (Exception,), {}))
 
 
+class InlineThread:
+    """Runs its target the moment it is started, on the calling thread.
+
+    Real background threads outlive the test that started them and then call back into a Tk
+    loop that has stopped. Running them inline keeps every test deterministic, and the code
+    path is the same: the app still hands results back through root.after.
+    """
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self.target, self.args, self.kwargs = target, args, kwargs or {}
+
+    def start(self):
+        self.target(*self.args, **self.kwargs)
+
+
+def run_threads_inline(module):
+    module.threading = types.SimpleNamespace(Thread=InlineThread)
+
+
 def isolate_home():
     """Point the per-user data directory at a throwaway location."""
     home = tempfile.mkdtemp()

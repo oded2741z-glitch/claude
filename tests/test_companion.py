@@ -4,7 +4,7 @@ import json
 import os
 import types
 
-from _harness import check, install_stubs, isolate_home, report, tts_calls
+from _harness import check, install_stubs, isolate_home, report, run_threads_inline, tts_calls
 
 install_stubs()
 home = isolate_home()
@@ -13,6 +13,9 @@ import tkinter as tk
 
 import core
 import AI_Companion_App as app_mod
+
+app_mod.TYPING_PACE = 0     # deliver replies at once; the paced delivery has its own section below
+run_threads_inline(app_mod)
 
 SECRET = "אמרתי לה משהו אישי"
 
@@ -54,23 +57,43 @@ def open_app(unlocked=True, password="hunter2"):
 
 
 # ================= reply parsing =================
-reply, mood, desire, delta = app_mod.parse_model_reply(
+turn = app_mod.parse_model_turn(
     '{"reply": "I missed you.", "mood": "soft", "desire": "to hear more", "closeness_delta": 3}')
-check("plain JSON parsed", (reply, mood, desire, delta) == ("I missed you.", "soft", "to hear more", 3))
+check("plain JSON parsed", (turn["bubbles"], turn["mood"], turn["desire"], turn["delta"])
+      == (["I missed you."], "soft", "to hear more", 3))
 
-reply, mood, _, _ = app_mod.parse_model_reply(
+turn = app_mod.parse_model_turn(
     '```json\n{"reply": "Hi.", "mood": "wary", "desire": "space", "closeness_delta": -2}\n```')
-check("fenced JSON parsed", (reply, mood) == ("Hi.", "wary"))
+check("fenced JSON parsed", (turn["bubbles"], turn["mood"]) == (["Hi."], "wary"))
 
-reply, mood, _, delta = app_mod.parse_model_reply(
+turn = app_mod.parse_model_turn(
     'Sure thing!\n{"reply": "Hello.", "mood": "calm", "desire": "quiet", "closeness_delta": 99}')
-check("JSON inside prose parsed", reply == "Hello." and mood == "calm")
-check("closeness delta clamped", delta == 5, delta)
+check("JSON inside prose parsed", turn["bubbles"] == ["Hello."] and turn["mood"] == "calm")
+check("closeness delta clamped", turn["delta"] == 5, turn["delta"])
 
-reply, mood, desire, delta = app_mod.parse_model_reply("Just *talking* normally, no JSON here.")
-check("non-JSON falls back to speech", reply == "Just talking normally, no JSON here.")
-check("fallback leaves mood and desire alone", mood == "" and desire == "")
-check("fallback nudges closeness", delta == 1)
+turn = app_mod.parse_model_turn("Just *talking* normally, no JSON here.")
+check("non-JSON falls back to speech", turn["bubbles"] == ["Just talking normally, no JSON here."])
+check("fallback leaves mood and desire alone", turn["mood"] == "" and turn["desire"] == "")
+check("fallback nudges closeness", turn["delta"] == 1)
+check("fallback remembers nothing", turn["remember"] == [] and turn["follow_ups"] == [])
+
+turn = app_mod.parse_model_turn('{"reply": ["wait", "", "  ", "ok so", "the thing is", "also"], "mood": "x"}')
+check("a reply can be several messages", turn["bubbles"][:2] == ["wait", "ok so"])
+check("never more than three, and no words lost",
+      len(turn["bubbles"]) == app_mod.MAX_BUBBLES and turn["bubbles"][-1] == "the thing is also", turn["bubbles"])
+turn = app_mod.parse_model_turn('{"reply": "", "mood": "x"}')
+check("an empty reply is not taken as a turn", turn["bubbles"] == ['{"reply": "", "mood": "x"}'])
+
+turn = app_mod.parse_model_turn(json.dumps({
+    "reply": ["ok"], "remember": ["has a dog called Pita", "", None],
+    "follow_up": [{"about": "dentist", "on": "2026-10-09"}, {"about": "gig", "on": "next week"},
+                  "moving flats", {"on": "2026-01-01"}],
+    "done_follow_ups": [3, "4", "x", None]}))
+check("facts read, blanks dropped", turn["remember"] == ["has a dog called Pita"], turn["remember"])
+check("follow-ups read, a non-date kept undated, an item with no subject dropped",
+      turn["follow_ups"] == [{"about": "dentist", "on": "2026-10-09"}, {"about": "gig", "on": ""},
+                             {"about": "moving flats", "on": ""}], turn["follow_ups"])
+check("done ids read, junk dropped", turn["done"] == [3, 4], turn["done"])
 
 check("closeness clamps low", app_mod.clamp_closeness(-40) == 0)
 check("closeness clamps high", app_mod.clamp_closeness(400) == 100)
@@ -98,8 +121,6 @@ check("input box cleared", app.input_area.get("1.0", "end").strip() == "")
 check("send disabled while waiting", str(app.send_btn.cget("state")) == "disabled")
 check("status shows they are typing", "typing" in app.status_lbl.cget("text"), app.status_lbl.cget("text"))
 
-app.call_model(app.api_key, *(app_mod.persona_instruction(app.data["character"], app.data["state"], app.user_name),
-                              app.recent_transcript()))
 root.update()
 check("reply recorded", app.data["messages"][-1]["text"] == "Tell me about it.")
 check("mood updated from the reply", app.data["state"]["mood"] == "attentive")
@@ -374,9 +395,8 @@ del app.dispatch
 app.data["messages"] = []
 seen = fake_model('{"reply": "You went quiet.", "mood": "wistful", "desire": "a word", "closeness_delta": 0}')
 app.idle_turn()
-app.call_model("key", "instruction", app.recent_transcript() + f"\n\n[{app_mod.IDLE_NUDGE}]")
 root.update()
-check("the nudge reaches the model", app_mod.IDLE_NUDGE in seen["prompt"])
+check("the nudge reaches the model", app_mod.OPENING_NUDGE in seen["prompt"])
 check("an unprompted line is recorded as theirs", app.data["messages"][-1]["role"] == "them")
 check("no fake user message is invented",
       not [m for m in app.data["messages"] if m["role"] == "you"])
@@ -505,5 +525,183 @@ root.destroy()
 root, app = open_app()
 check("toggles are remembered", app.initiative_var.get() is True)
 root.destroy()
+
+# ================= feeling human: time =================
+from datetime import datetime, timedelta, date
+import time as clock
+
+check("parts of the day", [app_mod.part_of_day(h) for h in (3, 9, 14, 19, 23)] ==
+      ["the middle of the night", "morning", "afternoon", "evening", "night"])
+check("gaps said like a person", [app_mod.describe_gap(s) for s in (30, 600, 3 * 3600, 4 * 86400)] ==
+      ["a moment", "10 minutes", "3 hours", "4 days"])
+today = date(2026, 10, 7)
+check("relative days", [app_mod.relative_day(d, today) for d in
+                        ("2026-10-07", "2026-10-08", "2026-10-06", "2026-10-10", "2026-10-01", "soon")] ==
+      ["today", "tomorrow", "yesterday", "in 3 days", "6 days ago", ""])
+
+now = datetime(2026, 10, 7, 2, 14)
+night = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "Oded",
+                                    now=now, last_contact=now - timedelta(days=2, hours=5))
+check("the prompt knows the day and hour", "It is Wednesday 7 October 2026, 02:14 — the middle of the night" in night)
+check("and how long the silence was", "was 2 days ago" in night)
+recent = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "Oded",
+                                     now=now, last_contact=now - timedelta(minutes=3))
+check("a short pause is not worth mentioning", "the last thing either of you said" not in recent)
+check("no clock when none is given",
+      "It is " not in app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "Oded"))
+
+root, app = open_app()
+# no idle turns or voice from earlier sections: a real event loop runs below, and a background
+# thread that outlives it would try to call back into Tk after it has stopped
+app.initiative_var.set(False)
+app.voice_var.set(False)
+app.cancel_idle_timer()
+app.persist_config()
+app.data["messages"] = [
+    {"role": "you", "text": "night", "time": "2026-10-04T21:00:00"},
+    {"role": "them", "text": "sleep well", "time": "2026-10-04T21:01:00"},
+    {"role": "you", "text": "morning!", "time": "2026-10-07T08:00:00"},
+]
+transcript = app.recent_transcript()
+check("a long pause is marked where it happened", transcript.splitlines()[2] == "(— 2 days later —)", transcript)
+check("short pauses are not", transcript.count("later") == 1)
+check("a typed message measures the silence before it",
+      app.last_contact(skip_latest=True) == datetime(2026, 10, 4, 21, 1))
+check("an unprompted turn measures the silence since the last word",
+      app.last_contact(skip_latest=False) == datetime(2026, 10, 7, 8, 0))
+
+# ================= feeling human: how they talk =================
+talk = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "Oded")
+check("they are allowed to disagree", "Disagree when you disagree" in talk)
+check("they do not flatter", "do not agree by reflex" in talk)
+check("not every reply ends in a question", "Do not end every reply with a question" in talk)
+check("no assistant phrases", "I'm here for you" in talk and "Never offer help" in talk)
+check("length follows the moment, not a fixed size", "under 120 words" not in talk and "Let the length fit" in talk)
+
+# ================= feeling human: memory =================
+app.data["memory"] = app_mod.empty_memory()
+app.update_memory({"remember": ["Has a sister, Noa", "has a sister, noa", "Works nights"],
+                   "follow_ups": [{"about": "job interview", "on": "2026-10-09"}, {"about": "Job interview", "on": ""}],
+                   "done": []})
+memory = app.data["memory"]
+check("facts kept, duplicates ignored", memory["facts"] == ["Has a sister, Noa", "Works nights"], memory["facts"])
+check("follow-up kept once", [f["about"] for f in memory["follow_ups"]] == ["job interview"])
+first_id = memory["follow_ups"][0]["id"]
+app.update_memory({"remember": [], "follow_ups": [{"about": "dentist", "on": ""}], "done": [first_id]})
+check("asked-about follow-up removed", [f["about"] for f in memory["follow_ups"]] == ["dentist"])
+check("ids are never reused", memory["follow_ups"][0]["id"] > first_id)
+
+app.update_memory({"remember": [f"fact {i}" for i in range(app_mod.MAX_FACTS + 5)], "follow_ups": [], "done": []})
+check("memory is capped, oldest dropped first",
+      len(memory["facts"]) == app_mod.MAX_FACTS and memory["facts"][-1] == f"fact {app_mod.MAX_FACTS + 4}")
+
+app.data["memory"] = {"facts": ["Has a sister, Noa"], "last_id": 7, "follow_ups": [
+    {"id": 6, "about": "job interview", "on": "2026-10-06"},
+    {"id": 7, "about": "old exam", "on": "2026-09-01"},
+    {"id": 5, "about": "the move", "on": ""}]}
+app.prune_follow_ups(date(2026, 10, 7))
+check("long-past follow-ups are dropped, undated ones kept",
+      [f["about"] for f in app.data["memory"]["follow_ups"]] == ["job interview", "the move"])
+recalled = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "Oded",
+                                       app.data["memory"], now=datetime(2026, 10, 7, 12, 0))
+check("the prompt carries what they remember", "- Has a sister, Noa" in recalled)
+check("and what is coming up, dated in words", "- #6 job interview (on 2026-10-06, yesterday)" in recalled, recalled)
+check("an undated follow-up has no date", "- #5 the move\n" in recalled)
+
+app.data["messages"] = [{"role": "you", "text": "hi"}]
+app.receive_reply('{"reply": ["ok"], "remember": ["Plays bass"], "done_follow_ups": [6]}')
+check("a reply's memories are stored", "Plays bass" in app.data["memory"]["facts"])
+check("and its finished follow-ups cleared", 6 not in [f["id"] for f in app.data["memory"]["follow_ups"]])
+root.destroy()
+
+root, app = open_app()
+check("memory survives a restart", "Plays bass" in app.data["memory"]["facts"])
+
+app.show_memory()
+root.update()
+memory_window = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+boxes = [w for w in walk(memory_window) if isinstance(w, tk.Text)]
+check("the memory window shows the facts", "Plays bass" in boxes[0].get("1.0", "end"))
+check("and the follow-ups", "the move" in boxes[1].get("1.0", "end"))
+boxes[0].delete("1.0", "end")
+boxes[0].insert("1.0", "Plays bass\n\nLives in Jaffa\n")
+boxes[1].delete("1.0", "end")
+boxes[1].insert("1.0", "the move\n2026-10-20 sister's wedding\n2026-13-45 broken date\n")
+next(w for w in walk(memory_window) if isinstance(w, tk.Button) and w.cget("text") == "Save Memory").invoke()
+root.update()
+edited = app.data["memory"]
+check("edited facts saved, blank lines dropped", edited["facts"] == ["Plays bass", "Lives in Jaffa"])
+check("a follow-up still there keeps its id", next(f for f in edited["follow_ups"] if f["about"] == "the move")["id"] == 5)
+check("a new dated follow-up is read", {"about": "sister's wedding", "on": "2026-10-20"} ==
+      {k: v for k, v in edited["follow_ups"][1].items() if k != "id"})
+check("an impossible date is dropped, not kept", edited["follow_ups"][2]["on"] == "")
+
+app.show_character_editor()
+root.update()
+editor = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+next(w for w in walk(editor) if isinstance(w, tk.Button) and w.cget("text") == "Start over").invoke()
+root.update()
+check("starting over forgets too", app.data["memory"]["facts"] == [] and app.data["memory"]["follow_ups"] == [])
+
+core.write_store(app_mod.COMPANION_FILE, {"character": {}, "state": {}, "messages": []}, app.fernet)
+check("a save from before memory existed still loads", app.load_data()["memory"] == app_mod.empty_memory())
+app.save_data()
+
+# ================= feeling human: pace =================
+app_mod.TYPING_PACE = 1.0
+check("longer messages take longer to type", app_mod.typing_delay("ok") < app_mod.typing_delay("x" * 80))
+check("but never too long", app_mod.typing_delay("x" * 5000) == app_mod.MAX_TYPING_SECONDS)
+app_mod.TYPING_PACE = 0
+check("pace 0 is instant", app_mod.typing_delay("x" * 80) == 0)
+
+app_mod.TYPING_PACE = 0.2
+app.data["messages"] = [{"role": "you", "text": "so?"}]
+app.voice_var.set(False)
+app.waiting = True
+app.send_btn.config(state="disabled")     # as dispatch() leaves it while the model is asked
+app.turn_started = clock.monotonic()
+app.turn_id = "turn-A"
+arrivals = []
+start = clock.monotonic()
+app.receive_reply('{"reply": ["hm.", "ok so here is the longer second thought", "fine"], "mood": "x"}')
+check("nothing appears before it has been 'typed'", len(app.data["messages"]) == 1)
+check("send stays blocked while they type", str(app.send_btn.cget("state")) == "disabled" and app.waiting)
+
+def watch():
+    count = len([m for m in app.data["messages"] if m["role"] == "them"])
+    if not arrivals or arrivals[-1][1] != count:
+        arrivals.append((clock.monotonic() - start, count))
+    if count < 3 or app.waiting:
+        root.after(10, watch)
+    else:
+        root.quit()
+root.after(10, watch)
+root.after(5000, root.quit)
+root.mainloop()
+times = [round(t, 2) for t, c in arrivals if c > 0]
+check("all three messages arrive, in order",
+      [m["text"] for m in app.data["messages"][1:]] == ["hm.", "ok so here is the longer second thought", "fine"])
+check("one at a time, with typing time between them", len(times) == 3 and times[0] < times[1] < times[2], times)
+check("the longer message took longer", times[1] - times[0] > times[2] - times[1], times)
+check("the turn only ends after the last one", not app.waiting and str(app.send_btn.cget("state")) == "normal")
+check("one name line for a run of messages", app.transcript.get("1.0", "end").count(app.data["character"]["name"]) == 1)
+check("Listen reads the whole turn",
+      app.last_reply() == "hm. ok so here is the longer second thought fine", app.last_reply())
+
+app.data["messages"] = [{"role": "you", "text": "so?"}]
+app.waiting = True
+app.turn_started = clock.monotonic() - 30       # the model took longer than any typing would
+app.turn_id = "turn-B"
+app.receive_reply('{"reply": ["already here", "and more"], "mood": "x"}')
+check("model latency counts as typing time", app.data["messages"][1]["text"] == "already here")
+check("the rest is still on its way", len(app.data["messages"]) == 2 and app.pending_bubbles == ["and more"])
+app.return_to_cover()
+check("locking mid-reply loses nothing", app.pending_bubbles == [] and app.delivery_timer is None)
+root.destroy()
+root, app = open_app()
+check("the half-typed reply was saved in full", [m["text"] for m in app.data["messages"]][-2:] == ["already here", "and more"])
+check("and the app is not stuck waiting", not app.waiting)
+root.destroy()
+app_mod.TYPING_PACE = 0
 
 report()

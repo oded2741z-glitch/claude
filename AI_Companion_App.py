@@ -37,6 +37,21 @@ MAX_IDLE_MINUTES = 120.0
 IDLE_JITTER_SHARE = 0.3      # varied, so it never feels like a metronome
 MAX_UNANSWERED_TURNS = 3     # quick tries first, then one long wait and a last try
 FIRST_BURST_SECONDS = 20     # those first tries come at most this far apart
+MAX_FACTS = 60               # long-term memory about the user; the oldest drop off first
+MAX_FOLLOW_UPS = 20          # things coming up for the user that are worth asking about later
+FOLLOW_UP_EXPIRY_DAYS = 14   # a follow-up this far past its date is dropped, not asked about
+GAP_MARKER_HOURS = 3         # a pause this long is marked in the transcript the model reads
+
+MAX_BUBBLES = 3              # a reply may arrive as up to this many separate messages
+TYPING_PACE = 1.0            # multiplier on the human typing delay; 0 delivers instantly
+MIN_TYPING_SECONDS = 0.8
+SECONDS_PER_CHAR = 0.03
+MAX_TYPING_SECONDS = 5.0
+
+WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+          "September", "October", "November", "December"]
+
 VOICE_RETRY_MS = 1500   # pause before listening again after silence or a misheard phrase
 MAX_VOICE_FAILURES = 3  # consecutive microphone errors before voice mode switches itself off
 
@@ -106,10 +121,89 @@ def clamp_closeness(value):
         return 0
 
 
-def parse_model_reply(text):
-    """The model is asked for one JSON object; fall back to treating the text as speech.
+def empty_memory():
+    return {"facts": [], "follow_ups": [], "last_id": 0}
 
-    Returns (reply, mood, desire, closeness_delta). Empty mood/desire mean "leave as is".
+
+def parse_time(value):
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def describe_gap(seconds):
+    """A pause the way a person would say it."""
+    if seconds < 90:
+        return "a moment"
+    minutes = seconds / 60
+    if minutes < 90:
+        return f"{round(minutes)} minutes"
+    hours = minutes / 60
+    if hours < 36:
+        return f"{round(hours)} hours"
+    return f"{round(hours / 24)} days"
+
+
+def part_of_day(hour):
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 21:
+        return "evening"
+    if 21 <= hour < 24:
+        return "night"
+    return "the middle of the night"
+
+
+def relative_day(on, today):
+    """'today', 'tomorrow', 'in 3 days', '2 days ago' — or '' when there is no usable date."""
+    try:
+        days = (datetime.strptime(on, "%Y-%m-%d").date() - today).days
+    except (TypeError, ValueError):
+        return ""
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "tomorrow"
+    if days == -1:
+        return "yesterday"
+    return f"in {days} days" if days > 0 else f"{-days} days ago"
+
+
+def typing_delay(text):
+    """Seconds a person would plausibly take to type this; 0 when the pace is switched off."""
+    if TYPING_PACE <= 0:
+        return 0.0
+    seconds = MIN_TYPING_SECONDS + SECONDS_PER_CHAR * len(text)
+    return min(MAX_TYPING_SECONDS, seconds) * TYPING_PACE
+
+
+def _strings(value):
+    items = value if isinstance(value, list) else [value]
+    return [str(item).strip() for item in items if item is not None and str(item).strip()]
+
+
+def _follow_ups(value):
+    found = []
+    for item in value if isinstance(value, list) else []:
+        if isinstance(item, dict):
+            about, on = str(item.get("about", "")).strip(), str(item.get("on", "")).strip()
+        else:
+            about, on = str(item).strip(), ""
+        if about:
+            found.append({"about": about, "on": on if relative_day(on, datetime.now().date()) else ""})
+    return found
+
+
+def parse_model_turn(text):
+    """Read the model's turn; fall back to treating the whole text as one spoken message.
+
+    Returns a dict: bubbles (the messages to deliver), mood and desire ("" = leave as is),
+    delta (clamped to ±5), remember (new facts about the user), follow_ups ({about, on})
+    and done (ids of follow-ups just asked about). A model that ignores the contract
+    degrades to an ordinary chat instead of breaking.
     """
     cleaned = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
     candidates = [cleaned]
@@ -122,21 +216,39 @@ def parse_model_reply(text):
             data = json.loads(candidate)
         except Exception:
             continue
-        if isinstance(data, dict) and str(data.get("reply", "")).strip():
+        if not isinstance(data, dict):
+            continue
+        bubbles = [b.replace("*", "") for b in _strings(data.get("reply"))]
+        if not bubbles:
+            continue
+        if len(bubbles) > MAX_BUBBLES:      # never drop words: fold the overflow into the last one
+            bubbles = bubbles[:MAX_BUBBLES - 1] + [" ".join(bubbles[MAX_BUBBLES - 1:])]
+        try:
+            delta = int(data.get("closeness_delta", 0))
+        except (TypeError, ValueError):
+            delta = 0
+        done = []
+        for item in data.get("done_follow_ups") or []:
             try:
-                delta = int(data.get("closeness_delta", 0))
+                done.append(int(item))
             except (TypeError, ValueError):
-                delta = 0
-            return (str(data["reply"]).strip().replace("*", ""),
-                    str(data.get("mood", "")).strip(),
-                    str(data.get("desire", "")).strip(),
-                    max(-5, min(5, delta)))
+                pass
+        return {"bubbles": bubbles,
+                "mood": str(data.get("mood", "")).strip(),
+                "desire": str(data.get("desire", "")).strip(),
+                "delta": max(-5, min(5, delta)),
+                "remember": _strings(data.get("remember")),
+                "follow_ups": _follow_ups(data.get("follow_up")),
+                "done": done}
 
-    return cleaned.replace("*", ""), "", "", 1
+    speech = cleaned.replace("*", "")
+    return {"bubbles": [speech] if speech else [], "mood": "", "desire": "", "delta": 1,
+            "remember": [], "follow_ups": [], "done": []}
 
 
-def persona_instruction(character, state, user_name):
-    """The system prompt: who they are, how they feel right now, and the reply contract."""
+def persona_instruction(character, state, user_name, memory=None, now=None, last_contact=None):
+    """The system prompt: who they are, what they remember, what time it is, how they feel,
+    how they talk, and the shape the reply must come back in."""
     name = character.get("name") or "They"
     addressed = f"The person you are talking to is called {user_name}. " if user_name else ""
     relationship = (character.get("relationship") or "").strip()
@@ -147,6 +259,34 @@ def persona_instruction(character, state, user_name):
         bond += f"What {subject} {verb} to you: {relationship}. "
     if treatment:
         bond += f"How you treat {obj}: {treatment}"
+
+    today = (now or datetime.now()).date()
+    remembered = ""
+    facts = (memory or {}).get("facts") or []
+    follow_ups = (memory or {}).get("follow_ups") or []
+    if facts:
+        remembered += (f"What you remember about {obj} from before — use it the way a friend would, "
+                       f"never recite it:\n" + "".join(f"- {fact}\n" for fact in facts))
+    if follow_ups:
+        lines = []
+        for item in follow_ups:
+            when = relative_day(item.get("on", ""), today)
+            dated = f" (on {item['on']}, {when})" if when else ""
+            lines.append(f"- #{item['id']} {item['about']}{dated}\n")
+        remembered += (f"Coming up for {obj}:\n" + "".join(lines) +
+                       "If one of these has arrived or passed, ask how it went when it fits naturally, "
+                       "then put its number in done_follow_ups.\n")
+
+    clock = ""
+    if now is not None:
+        clock = (f"It is {WEEKDAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]} {now.year}, "
+                 f"{now:%H:%M} — {part_of_day(now.hour)}. ")
+        if last_contact is not None and (now - last_contact).total_seconds() >= 600:
+            clock += (f"Before this, the last thing either of you said was "
+                      f"{describe_gap((now - last_contact).total_seconds())} ago. ")
+        clock += ("Let the hour and any long silence colour what you say, the way a person would — "
+                  "never announce the time.\n\n")
+
     return (
         f"You are {name}, a person in an ongoing conversation. Stay in character at all times. "
         f"Never say or imply that you are an AI, a model, an assistant or a program, and never "
@@ -158,16 +298,34 @@ def persona_instruction(character, state, user_name):
         f"What you want: {character.get('desires', '')}\n"
         f"How you behave: {character.get('behaviour', '')}\n"
         f"Background: {character.get('backstory', '')}\n\n"
+        f"{remembered}{chr(10) if remembered else ''}"
+        f"{clock}"
         f"Right now your mood is \"{state.get('mood', '')}\", you feel "
         f"{clamp_closeness(state.get('closeness'))} out of 100 close to them, and what you want "
         f"from this moment is \"{state.get('desire', '')}\". Let that colour your reply, and let it "
         f"shift when the conversation earns it — warmth and honesty bring you closer, dismissiveness "
         f"pushes you away.\n\n"
-        "Answer with one JSON object and nothing else:\n"
-        '{"reply": "<what you say, in character>", "mood": "<your mood after this exchange, one to '
-        'three words>", "desire": "<what you want right now, a short phrase>", '
-        '"closeness_delta": <whole number from -5 to 5>}\n'
-        "Keep the reply conversational and under 120 words. No asterisks, no stage directions."
+        "How you talk:\n"
+        "- Like a real person texting, not like an assistant. Let the length fit the moment: often a few "
+        "words or a sentence or two, longer only when something matters. Never more than about 120 words.\n"
+        "- You have your own opinions and tastes. Disagree when you disagree, push back, tease. Do not "
+        "flatter, do not praise everything, do not agree by reflex.\n"
+        "- Do not end every reply with a question. Often just react, or say something of your own.\n"
+        "- Never offer help, advice or lists unless asked, and never say things like \"I'm here for you\" "
+        "or \"that's a great question\".\n"
+        "- No asterisks, no stage directions.\n\n"
+        "Answer with one JSON object and nothing else, shaped like this:\n"
+        '{"reply": ["<a message>"], "mood": "<mood>", "desire": "<desire>", "closeness_delta": 0, '
+        '"remember": [], "follow_up": [], "done_follow_ups": []}\n'
+        "- reply: one to three messages, split the way you would actually send them; usually just one.\n"
+        "- mood: your mood after this exchange, one to three words. desire: what you want right now, "
+        "a short phrase.\n"
+        "- closeness_delta: a whole number from -5 to 5.\n"
+        f"- remember: new, lasting facts about {obj} worth knowing in a month — people, work, plans, "
+        "likes. Usually empty. Never repeat something you already remember.\n"
+        f"- follow_up: things coming up for {obj} that you would ask about later, each as "
+        '{"about": "...", "on": "YYYY-MM-DD"} with the date if you know it. Usually empty.\n'
+        "- done_follow_ups: the numbers of any listed follow-ups you just asked about."
     )
 
 
@@ -205,6 +363,10 @@ class AICompanionApp:
         self.listening = False    # the microphone is open
         self.idle_timer = None
         self.idle_countdown = None
+        self.delivery_timer = None    # the next message of a reply, waiting out its typing time
+        self.pending_bubbles = []
+        self.turn_started = 0.0       # when the model was asked, so its own latency counts as typing
+        self.turn_id = ""
         self.idle_due = 0.0
         self.idle_minutes = self.read_idle_minutes(self.config_data.get("idle_minutes"))
         self.unanswered = 0      # unprompted turns since they last said anything
@@ -304,6 +466,7 @@ class AICompanionApp:
     def return_to_cover(self):
         self.cancel_idle_timer()
         self.voice_var.set(False)       # stop listening before the cover goes back up
+        self.flush_delivery()           # a reply half-typed is still a reply; keep all of it
         self.save_data()
         if self.password_enabled:
             self.fernet = None
@@ -393,6 +556,8 @@ class AICompanionApp:
 
         tk.Button(self.left_panel, text="Edit Character", bg="#323232", fg="#FFFFFF", relief="flat",
                   font=(MAIN_FONT, 11, FONT_STYLE), command=self.show_character_editor).pack(fill="x", pady=3)
+        tk.Button(self.left_panel, text="What they remember", bg="#E0E0E0", fg="#333333", relief="flat",
+                  font=(MAIN_FONT, 11, FONT_STYLE), command=self.show_memory).pack(fill="x", pady=(0, 3))
 
         audio_frame = tk.Frame(self.left_panel, bg="#F9F9F8")
         audio_frame.pack(fill="x", pady=2)
@@ -479,11 +644,14 @@ class AICompanionApp:
 
         if not self.data["messages"]:
             self.transcript.insert(tk.END, f"Say something to {name}.\n", "you_name")
+        previous_role = None
         for message in self.data["messages"]:
-            speaker = you if message.get("role") == "you" else name
-            tag = "you_name" if message.get("role") == "you" else "them_name"
-            self.transcript.insert(tk.END, speaker + "\n", tag)
+            role = message.get("role")
+            if role != previous_role:
+                speaker = you if role == "you" else name
+                self.transcript.insert(tk.END, speaker + "\n", "you_name" if role == "you" else "them_name")
             self.transcript.insert(tk.END, message.get("text", "") + "\n")
+            previous_role = role
 
         self.transcript.config(state="disabled")
         self.transcript.see(tk.END)
@@ -518,8 +686,14 @@ class AICompanionApp:
     def dispatch(self, nudge=""):
         """Ask the model for the next line, whether or not the user just said something."""
         character = self.data["character"]
-        instruction = persona_instruction(character, self.data["state"], self.user_name)
+        now = datetime.now()
+        self.prune_follow_ups(now.date())
+        # a typed message is already the newest one, so the silence it broke is the one before it
+        instruction = persona_instruction(character, self.data["state"], self.user_name,
+                                          self.data["memory"], now, self.last_contact(skip_latest=not nudge))
         transcript = self.recent_transcript()
+        self.turn_started = time.monotonic()
+        self.turn_id = now.isoformat(timespec="seconds")
         if nudge:
             transcript = (transcript + "\n\n" if transcript else "") + f"[{nudge}]"
 
@@ -628,10 +802,20 @@ class AICompanionApp:
         name = self.data["character"].get("name") or "They"
         you = self.user_name or "User"
         lines = []
+        previous = None
         for message in self.data["messages"][-HISTORY_TURNS:]:
+            sent = parse_time(message.get("time"))
+            if previous and sent and (sent - previous).total_seconds() >= GAP_MARKER_HOURS * 3600:
+                lines.append(f"(— {describe_gap((sent - previous).total_seconds())} later —)")
+            previous = sent or previous
             speaker = you if message.get("role") == "you" else name
             lines.append(f"{speaker}: {message.get('text', '')}")
         return "\n".join(lines)
+
+    def last_contact(self, skip_latest):
+        """When the last thing was said before this turn."""
+        messages = self.data["messages"][:-1] if skip_latest else self.data["messages"]
+        return parse_time(messages[-1].get("time")) if messages else None
 
     def call_model(self, api_key, instruction, transcript):
         try:
@@ -649,21 +833,88 @@ class AICompanionApp:
             self.root.after(0, self.receive_error, str(e))
 
     def receive_reply(self, raw_text):
-        reply, mood, desire, delta = parse_model_reply(raw_text)
+        turn = parse_model_turn(raw_text)
         state = self.data["state"]
-        if mood:
-            state["mood"] = mood
-        if desire:
-            state["desire"] = desire
-        state["closeness"] = clamp_closeness(clamp_closeness(state.get("closeness")) + delta)
-
-        self.append_message("them", reply)
+        if turn["mood"]:
+            state["mood"] = turn["mood"]
+        if turn["desire"]:
+            state["desire"] = turn["desire"]
+        state["closeness"] = clamp_closeness(clamp_closeness(state.get("closeness")) + turn["delta"])
+        self.update_memory(turn)
         self.refresh_state()
+        self.save_data()
+
+        self.pending_bubbles = list(turn["bubbles"])
+        self.deliver_next(first=True)
+
+    # ---------- delivering a reply at a human pace ----------
+    def deliver_next(self, first=False):
+        """Post the next message once a person could have typed it; `waiting` holds until the last."""
+        if not self.pending_bubbles:
+            self.finish_delivery()
+            return
+        delay = typing_delay(self.pending_bubbles[0])
+        if first:
+            delay -= time.monotonic() - self.turn_started     # the model's own latency already counts
+        if delay <= 0:
+            self.post_next_bubble()
+        else:
+            self.delivery_timer = self.root.after(int(delay * 1000), self.post_next_bubble)
+
+    def post_next_bubble(self):
+        self.delivery_timer = None
+        if not self.pending_bubbles:
+            return
+        self.append_message("them", self.pending_bubbles.pop(0), turn=self.turn_id)
+        self.deliver_next()
+
+    def finish_delivery(self):
         self.finish_turn("")
         if self.voice_var.get():
             self.read_aloud()       # its "finished speaking" hand-off reopens the microphone
         else:
             self.start_listening()
+
+    def flush_delivery(self):
+        """Post whatever is still being 'typed' at once — used when the app locks mid-reply."""
+        if self.delivery_timer is not None:
+            self.root.after_cancel(self.delivery_timer)
+            self.delivery_timer = None
+        if self.pending_bubbles:
+            while self.pending_bubbles:
+                self.append_message("them", self.pending_bubbles.pop(0), turn=self.turn_id)
+            self.waiting = False
+            self.send_btn.config(state="normal")
+
+    # ---------- memory ----------
+    def update_memory(self, turn):
+        memory = self.data["memory"]
+        known = {fact.lower() for fact in memory["facts"]}
+        for fact in turn["remember"]:
+            if fact.lower() not in known:
+                memory["facts"].append(fact)
+                known.add(fact.lower())
+        del memory["facts"][:-MAX_FACTS]
+
+        done = set(turn["done"])
+        memory["follow_ups"] = [item for item in memory["follow_ups"] if item["id"] not in done]
+        pending = {item["about"].lower() for item in memory["follow_ups"]}
+        for item in turn["follow_ups"]:
+            if item["about"].lower() not in pending:
+                memory["last_id"] += 1      # ids only ever grow, so a stale one can never hit a new item
+                memory["follow_ups"].append({"id": memory["last_id"], "about": item["about"], "on": item["on"]})
+                pending.add(item["about"].lower())
+        del memory["follow_ups"][:-MAX_FOLLOW_UPS]
+
+    def prune_follow_ups(self, today):
+        """Drop what is long past: asking about last month's interview would be strange."""
+        def still_relevant(item):
+            when = item.get("on")
+            try:
+                return (today - datetime.strptime(when, "%Y-%m-%d").date()).days <= FOLLOW_UP_EXPIRY_DAYS
+            except (TypeError, ValueError):
+                return True     # undated: keep until it is asked about or edited away
+        self.data["memory"]["follow_ups"] = [i for i in self.data["memory"]["follow_ups"] if still_relevant(i)]
 
     def receive_error(self, message):
         self.finish_turn(f"⚠ {message[:50]}")
@@ -675,18 +926,24 @@ class AICompanionApp:
         self.set_status(status)
         self.schedule_idle_turn()
 
-    def append_message(self, role, text):
-        self.data["messages"].append({"role": role, "text": text,
-                                      "time": datetime.now().isoformat(timespec="seconds")})
+    def append_message(self, role, text, turn=None):
+        message = {"role": role, "text": text, "time": datetime.now().isoformat(timespec="seconds")}
+        if turn:
+            message["turn"] = turn
+        self.data["messages"].append(message)
         del self.data["messages"][:-MAX_MESSAGES]
         self.refresh_transcript()
         self.save_data()
 
     def last_reply(self):
-        for message in reversed(self.data["messages"]):
-            if message.get("role") == "them":
-                return message.get("text", "")
-        return ""
+        """Everything said in the character's most recent turn, which may be several messages."""
+        latest = next((m for m in reversed(self.data["messages"]) if m.get("role") == "them"), None)
+        if latest is None:
+            return ""
+        if not latest.get("turn"):
+            return latest.get("text", "")
+        return " ".join(m.get("text", "") for m in self.data["messages"]
+                        if m.get("role") == "them" and m.get("turn") == latest["turn"])
 
     # ==========================================
     # DATA
@@ -705,8 +962,15 @@ class AICompanionApp:
         if isinstance(stored.get("state"), dict):
             state.update(stored["state"])
         messages = stored.get("messages")
+        memory = empty_memory()
+        if isinstance(stored.get("memory"), dict):
+            memory["facts"] = [str(f) for f in stored["memory"].get("facts") or [] if str(f).strip()]
+            memory["follow_ups"] = [f for f in stored["memory"].get("follow_ups") or []
+                                    if isinstance(f, dict) and f.get("about") and isinstance(f.get("id"), int)]
+            memory["last_id"] = max([stored["memory"].get("last_id") or 0] +
+                                    [f["id"] for f in memory["follow_ups"]])
         return {"character": character, "state": state,
-                "messages": messages if isinstance(messages, list) else []}
+                "messages": messages if isinstance(messages, list) else [], "memory": memory}
 
     def save_data(self):
         if self.password_enabled and self.fernet is None:
@@ -896,6 +1160,7 @@ class AICompanionApp:
 
         def clear_conversation():
             self.data["messages"] = []
+            self.data["memory"] = empty_memory()     # memories of a conversation that no longer exists
             self.data["state"] = dict(DEFAULT_STATE)
             self.data["state"]["closeness"] = starting_closeness(character.get("relationship"))
             self.save_data()
@@ -906,6 +1171,76 @@ class AICompanionApp:
                   font=(MAIN_FONT, 11, FONT_STYLE), command=save_character).pack(side="left", ipadx=14, ipady=4)
         tk.Button(footer, text="Start over", bg="#FFFFFF", fg="#cc0000", relief="flat",
                   font=(MAIN_FONT, 10, FONT_STYLE), command=clear_conversation).pack(side="right")
+
+    def show_memory(self):
+        """What the character knows about you, editable: a wrong memory should not be permanent."""
+        window = tk.Toplevel(self.root)
+        window.overrideredirect(True)
+        window.geometry("440x560")
+        window.configure(bg="#FFFFFF")
+
+        frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
+        frame.pack(fill="both", expand=True)
+
+        header = tk.Frame(frame, bg="#FFFFFF")
+        header.pack(fill="x", padx=20, pady=(18, 10))
+        tk.Label(header, text="WHAT THEY REMEMBER", bg="#FFFFFF", fg="#333333",
+                 font=(MAIN_FONT, 12, FONT_STYLE)).pack(side="left")
+        tk.Button(header, text="X", bg="#cc0000", fg="#FFFFFF", relief="flat", borderwidth=0,
+                  font=(MAIN_FONT, 10, FONT_STYLE), width=2, command=window.destroy).pack(side="right")
+
+        body = tk.Frame(frame, bg="#FFFFFF")
+        body.pack(fill="both", expand=True, padx=20)
+        memory = self.data["memory"]
+
+        tk.Label(body, text="About you — one per line", bg="#FFFFFF", fg="#505050",
+                 font=(MAIN_FONT, 10, FONT_STYLE)).pack(anchor="w")
+        facts_box = tk.Text(body, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, height=12,
+                            font=(MAIN_FONT, 10, FONT_STYLE), wrap="word", insertbackground="#333333", padx=4, pady=3)
+        facts_box.pack(fill="x")
+        facts_box.insert("1.0", "\n".join(memory["facts"]))
+
+        tk.Label(body, text="Coming up for you — a date first if there is one, e.g. 2026-10-07 job interview",
+                 bg="#FFFFFF", fg="#505050", font=(MAIN_FONT, 10, FONT_STYLE),
+                 wraplength=400, justify="left").pack(anchor="w", pady=(12, 0))
+        follow_box = tk.Text(body, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, height=6,
+                             font=(MAIN_FONT, 10, FONT_STYLE), wrap="word", insertbackground="#333333", padx=4, pady=3)
+        follow_box.pack(fill="x")
+        follow_box.insert("1.0", "\n".join(f"{i['on']}  {i['about']}" if i.get("on") else i["about"]
+                                           for i in memory["follow_ups"]))
+
+        footer = tk.Frame(frame, bg="#FFFFFF")
+        footer.pack(fill="x", padx=20, pady=14)
+
+        def save_memory():
+            self.data["memory"] = self.memory_from_text(facts_box.get("1.0", tk.END), follow_box.get("1.0", tk.END))
+            self.save_data()
+            window.destroy()
+
+        tk.Button(footer, text="Save Memory", bg="#323232", fg="#FFFFFF", relief="flat",
+                  font=(MAIN_FONT, 11, FONT_STYLE), command=save_memory).pack(side="left", ipadx=14, ipady=4)
+
+    def memory_from_text(self, facts_text, follow_ups_text):
+        """Rebuild memory from the editor. A follow-up that is still there keeps its id."""
+        memory = self.data["memory"]
+        facts = [line.strip() for line in facts_text.splitlines() if line.strip()][-MAX_FACTS:]
+        existing = {item["about"].lower(): item["id"] for item in memory["follow_ups"]}
+        last_id = memory["last_id"]
+        follow_ups = []
+        for line in follow_ups_text.splitlines():
+            match = re.match(r"\s*(\d{4}-\d{2}-\d{2})?\s*(.*?)\s*$", line)
+            on, about = match.group(1) or "", match.group(2)
+            if not about:
+                continue
+            if on and not relative_day(on, datetime.now().date()):
+                on = ""     # not a real date
+            if about.lower() in existing:
+                item_id = existing[about.lower()]
+            else:
+                last_id += 1
+                item_id = last_id
+            follow_ups.append({"id": item_id, "about": about, "on": on})
+        return {"facts": facts, "follow_ups": follow_ups[-MAX_FOLLOW_UPS:], "last_id": last_id}
 
     # ==========================================
     # AUDIO

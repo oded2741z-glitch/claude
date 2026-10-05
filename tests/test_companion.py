@@ -4,7 +4,8 @@ import json
 import os
 import types
 
-from _harness import check, install_stubs, isolate_home, report, run_threads_inline, tts_calls
+from _harness import (FakeCommunicate, check, edge_calls, install_stubs, isolate_home, report,
+                      run_threads_inline, tts_calls)
 
 install_stubs()
 home = isolate_home()
@@ -226,8 +227,10 @@ root, app = open_app(unlocked=False)
 app.pass_entry.insert(0, "hunter2")
 app.verify_password()
 root.update()
+edge_calls.clear()
 app.read_aloud()
-check("Listen speaks the character's last line", tts_calls[-1] == "en", tts_calls)
+check("Listen speaks the character's last line",
+      edge_calls and edge_calls[-1][1] == app.last_reply(), edge_calls)
 root.destroy()
 
 # ================= how they relate to you =================
@@ -258,7 +261,8 @@ def open_editor(app):
     root.update()
     window = [w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
     widgets = list(walk(window))
-    combo = next(w for w in widgets if w.winfo_class() == "TCombobox")
+    combo = next(w for w in widgets if w.winfo_class() == "TCombobox"
+                 and list(w.cget("values")) == list(app_mod.RELATIONSHIPS))
     texts = [w for w in widgets if isinstance(w, tk.Text)]
     buttons = {w.cget("text"): w for w in widgets if isinstance(w, tk.Button)}
     return window, combo, texts, buttons
@@ -703,5 +707,120 @@ check("the half-typed reply was saved in full", [m["text"] for m in app.data["me
 check("and the app is not stuck waiting", not app.waiting)
 root.destroy()
 app_mod.TYPING_PACE = 0
+
+# ================= feeling human: a life of their own =================
+turn = app_mod.parse_model_turn('{"reply": "hi", "my_life": ["started a pottery class", ""]}')
+check("their own news is read from a reply", turn["life"] == ["started a pottery class"])
+check("and is empty by default", app_mod.parse_model_turn('{"reply": "hi"}')["life"] == [])
+
+now = datetime(2026, 10, 7, 19, 0)
+away = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, dict(app_mod.DEFAULT_STATE, mood="hurt"), "Oded",
+                                   now=now, last_contact=now - timedelta(days=2))
+check("after a long silence, time passed in their life too", "That time passed in your own life too" in away)
+check("and the old mood is offered as the past, free to fade",
+      'When you last spoke your mood was "hurt"; 2 days have passed since' in away)
+check("their own news has somewhere to go", '"my_life": []' in away)
+soon = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, dict(app_mod.DEFAULT_STATE, mood="hurt"), "Oded",
+                                   now=now, last_contact=now - timedelta(hours=1))
+check("an hour is not long enough for life to happen", "That time passed" not in soon)
+check("so the mood is simply current", 'Right now your mood is "hurt"' in soon)
+
+life_prompt = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "Oded",
+                                          {"facts": [], "follow_ups": [], "last_id": 0, "life": [
+                                              {"on": "2026-10-04", "what": "started a pottery class"},
+                                              {"on": "", "what": "has a brother in Eilat"}]},
+                                          now=now)
+check("their life is in the prompt, dated in words", "- (3 days ago) started a pottery class" in life_prompt)
+check("an undated part of their life too", "- has a brother in Eilat\n" in life_prompt)
+
+root, app = open_app()
+app.data["memory"] = app_mod.empty_memory()
+app.update_memory({"remember": [], "follow_ups": [], "done": [],
+                   "life": ["Started a pottery class", "started a pottery class", "Burned a pot"]})
+check("their news is kept once, dated today",
+      app.data["memory"]["life"] == [{"on": date.today().isoformat(), "what": "Started a pottery class"},
+                                     {"on": date.today().isoformat(), "what": "Burned a pot"}],
+      app.data["memory"]["life"])
+app.update_memory({"remember": [], "follow_ups": [], "done": [],
+                   "life": [f"event {i}" for i in range(app_mod.MAX_LIFE_EVENTS + 3)]})
+check("their life is capped, oldest dropped first",
+      len(app.data["memory"]["life"]) == app_mod.MAX_LIFE_EVENTS
+      and app.data["memory"]["life"][-1]["what"] == f"event {app_mod.MAX_LIFE_EVENTS + 2}")
+
+app.data["memory"]["life"] = [{"on": "2026-10-04", "what": "started a pottery class"}]
+app.save_data()
+app.show_memory()
+root.update()
+memory_window = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+boxes = [w for w in walk(memory_window) if isinstance(w, tk.Text)]
+check("the memory window has their life as a third box", len(boxes) == 3
+      and boxes[2].get("1.0", "end").strip() == "2026-10-04  started a pottery class")
+boxes[2].delete("1.0", "end")
+boxes[2].insert("1.0", "2026-10-04  started a pottery class\nquit the pottery class\n")
+next(w for w in walk(memory_window) if isinstance(w, tk.Button) and w.cget("text") == "Save Memory").invoke()
+root.update()
+check("edits to their life are saved", [e["what"] for e in app.data["memory"]["life"]] ==
+      ["started a pottery class", "quit the pottery class"])
+check("editing facts alone leaves their life alone",
+      app.memory_from_text("a fact", "")["life"] == app.data["memory"]["life"])
+root.destroy()
+
+root, app = open_app()
+check("their life survives a restart", [e["what"] for e in app.data["memory"]["life"]] ==
+      ["started a pottery class", "quit the pottery class"])
+
+# ================= feeling human: a natural voice =================
+check("a female character gets a female voice",
+      app_mod.voice_for({"gender": "Female", "voice": app_mod.AUTO_VOICE}) == "en-US-AriaNeural")
+check("a male character gets a male voice", app_mod.voice_for({"gender": "Male"}) == "en-US-GuyNeural")
+check("anyone else gets the neutral default", app_mod.voice_for({"gender": "Non-binary"}) == app_mod.NEUTRAL_VOICE)
+check("a chosen voice wins over gender",
+      app_mod.voice_for({"gender": "Male", "voice": "Sonia (UK, female)"}) == "en-GB-SoniaNeural")
+check("an unknown voice name falls back to gender",
+      app_mod.voice_for({"gender": "Male", "voice": "Nobody"}) == "en-US-GuyNeural")
+
+app.data["character"].update(gender="Female", voice=app_mod.AUTO_VOICE)
+edge_calls.clear()
+tts_before = len(tts_calls)
+audio = app.synthesize("I noticed.")
+check("speech uses the natural voice", edge_calls == [("en-US-AriaNeural", "I noticed.")], edge_calls)
+check("only the audio chunks are kept", audio == b"ID3-fake-mp3")
+check("the basic voice is not touched", len(tts_calls) == tts_before)
+
+FakeCommunicate.fail = True
+audio = app.synthesize("still here")
+root.update()
+check("if the natural voice fails, the basic one speaks instead", len(tts_calls) == tts_before + 1)
+check("and says why", "Natural voice unavailable" in app.status_lbl.cget("text"), app.status_lbl.cget("text"))
+FakeCommunicate.fail = False
+
+real_edge = app_mod.edge_tts
+app_mod.edge_tts = None
+app.synthesize("no package")
+root.update()
+check("without edge-tts installed it still speaks", len(tts_calls) == tts_before + 2)
+check("and tells you how to get the natural voice", "run install.py" in app.status_lbl.cget("text"))
+app_mod.edge_tts = real_edge
+
+edge_calls.clear()
+app.data["messages"] = [{"role": "them", "text": "out loud", "turn": "t9"}]
+app.read_aloud()
+root.update()
+check("Listen goes through the natural voice", edge_calls == [("en-US-AriaNeural", "out loud")], edge_calls)
+check("and hands back to the microphone when done", not app.speaking)
+
+app.show_character_editor()
+root.update()
+editor = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+combos = [w for w in walk(editor) if w.winfo_class() == "TCombobox"]
+voice_box = next(c for c in combos if app_mod.AUTO_VOICE in c.cget("values"))
+check("the editor offers every voice", list(voice_box.cget("values")) == [app_mod.AUTO_VOICE] + list(app_mod.VOICES))
+check("the voice list cannot be typed into", str(voice_box.cget("state")) == "readonly")
+voice_box.set("Ryan (UK, male)")
+next(w for w in walk(editor) if isinstance(w, tk.Button) and w.cget("text") == "Save Character").invoke()
+root.update()
+check("the chosen voice is saved", app.data["character"]["voice"] == "Ryan (UK, male)")
+check("and used", app_mod.voice_for(app.data["character"]) == "en-GB-RyanNeural")
+root.destroy()
 
 report()

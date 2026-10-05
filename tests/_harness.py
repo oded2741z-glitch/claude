@@ -12,7 +12,23 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 tts_calls = []
+edge_calls = []
 _failures = []
+
+
+class FakeCommunicate:
+    """Stands in for edge_tts.Communicate. Set FakeCommunicate.fail to simulate the service being down."""
+    fail = False
+
+    def __init__(self, text, voice="en-US-EmmaMultilingualNeural"):
+        self.text, self.voice = text, voice
+
+    async def stream(self):
+        if FakeCommunicate.fail:
+            raise RuntimeError("service unavailable")
+        edge_calls.append((self.voice, self.text))
+        yield {"type": "audio", "data": b"ID3-fake-mp3"}
+        yield {"type": "WordBoundary", "offset": 0, "duration": 1, "text": "x"}
 
 
 def _stub(name, **attrs):
@@ -40,6 +56,7 @@ def install_stubs():
     google = _stub("google")
     google.generativeai = genai
     _stub("gtts", gTTS=FakeGTTS)
+    _stub("edge_tts", Communicate=FakeCommunicate)
     _stub("pygame", mixer=types.SimpleNamespace(
         init=lambda: None,
         music=types.SimpleNamespace(load=lambda f: None, play=lambda: None, get_busy=lambda: False)),

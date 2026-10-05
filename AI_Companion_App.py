@@ -2,6 +2,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk
 import threading
+import asyncio
 import json
 import random
 import time
@@ -15,6 +16,11 @@ import pygame
 from datetime import datetime
 from PIL import Image, ImageTk
 import speech_recognition as sr
+
+try:
+    import edge_tts         # natural neural voices; optional, the app falls back to gTTS without it
+except ImportError:
+    edge_tts = None
 
 import core
 
@@ -41,12 +47,28 @@ MAX_FACTS = 60               # long-term memory about the user; the oldest drop 
 MAX_FOLLOW_UPS = 20          # things coming up for the user that are worth asking about later
 FOLLOW_UP_EXPIRY_DAYS = 14   # a follow-up this far past its date is dropped, not asked about
 GAP_MARKER_HOURS = 3         # a pause this long is marked in the transcript the model reads
+MAX_LIFE_EVENTS = 30         # the character's own recent life; the oldest drop off first
+LIFE_GAP_HOURS = 6           # after a silence this long, time passed in their life too
 
 MAX_BUBBLES = 3              # a reply may arrive as up to this many separate messages
 TYPING_PACE = 1.0            # multiplier on the human typing delay; 0 delivers instantly
 MIN_TYPING_SECONDS = 0.8
 SECONDS_PER_CHAR = 0.03
 MAX_TYPING_SECONDS = 5.0
+
+AUTO_VOICE = "Automatic (by gender)"
+VOICES = {                   # edge-tts neural voices
+    "Aria (US, female)": "en-US-AriaNeural",
+    "Jenny (US, female)": "en-US-JennyNeural",
+    "Emma (US, female)": "en-US-EmmaMultilingualNeural",
+    "Sonia (UK, female)": "en-GB-SoniaNeural",
+    "Guy (US, male)": "en-US-GuyNeural",
+    "Andrew (US, male)": "en-US-AndrewNeural",
+    "Brian (US, male)": "en-US-BrianNeural",
+    "Ryan (UK, male)": "en-GB-RyanNeural",
+}
+GENDER_VOICES = {"Female": "en-US-AriaNeural", "Male": "en-US-GuyNeural"}
+NEUTRAL_VOICE = "en-US-EmmaMultilingualNeural"     # edge-tts's own default
 
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
@@ -99,6 +121,7 @@ DEFAULT_CHARACTER = {
     "gender": "Unspecified",
     "age": "27",
     "relationship": "New acquaintance",
+    "voice": AUTO_VOICE,
     "treatment": "Friendly but a little guarded at first; warms up as you open up.",
     "personality": "Warm, curious, a little sardonic. Asks questions back instead of lecturing.",
     "desires": "Wants to be understood, and wants to hear how your day actually went.",
@@ -122,7 +145,28 @@ def clamp_closeness(value):
 
 
 def empty_memory():
-    return {"facts": [], "follow_ups": [], "last_id": 0}
+    return {"facts": [], "follow_ups": [], "life": [], "last_id": 0}
+
+
+def voice_for(character):
+    """The chosen voice, or one that fits the character's gender."""
+    chosen = VOICES.get(character.get("voice", ""))
+    return chosen or GENDER_VOICES.get(character.get("gender"), NEUTRAL_VOICE)
+
+
+def natural_speech(text, voice):
+    """MP3 bytes from edge-tts. Raises when the service, the voice or the network is unavailable."""
+    async def collect():
+        audio = bytearray()
+        async for chunk in edge_tts.Communicate(text, voice).stream():
+            if chunk.get("type") == "audio":
+                audio.extend(chunk["data"])
+        return bytes(audio)
+
+    audio = asyncio.run(collect())
+    if not audio:
+        raise RuntimeError("no audio came back")
+    return audio
 
 
 def parse_time(value):
@@ -239,11 +283,12 @@ def parse_model_turn(text):
                 "delta": max(-5, min(5, delta)),
                 "remember": _strings(data.get("remember")),
                 "follow_ups": _follow_ups(data.get("follow_up")),
-                "done": done}
+                "done": done,
+                "life": _strings(data.get("my_life"))}
 
     speech = cleaned.replace("*", "")
     return {"bubbles": [speech] if speech else [], "mood": "", "desire": "", "delta": 1,
-            "remember": [], "follow_ups": [], "done": []}
+            "remember": [], "follow_ups": [], "done": [], "life": []}
 
 
 def persona_instruction(character, state, user_name, memory=None, now=None, last_contact=None):
@@ -276,16 +321,39 @@ def persona_instruction(character, state, user_name, memory=None, now=None, last
         remembered += (f"Coming up for {obj}:\n" + "".join(lines) +
                        "If one of these has arrived or passed, ask how it went when it fits naturally, "
                        "then put its number in done_follow_ups.\n")
+    life = (memory or {}).get("life") or []
+    if life:
+        lines = []
+        for event in life:
+            when = relative_day(event.get("on", ""), today)
+            lines.append(f"- ({when}) {event['what']}\n" if when else f"- {event['what']}\n")
+        remembered += ("Your own life lately — it is yours, so keep it consistent, and bring it up "
+                       "only when it fits:\n" + "".join(lines))
 
     clock = ""
+    gap = (now - last_contact).total_seconds() if now is not None and last_contact is not None else 0
+    away = gap >= LIFE_GAP_HOURS * 3600
     if now is not None:
         clock = (f"It is {WEEKDAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]} {now.year}, "
                  f"{now:%H:%M} — {part_of_day(now.hour)}. ")
-        if last_contact is not None and (now - last_contact).total_seconds() >= 600:
-            clock += (f"Before this, the last thing either of you said was "
-                      f"{describe_gap((now - last_contact).total_seconds())} ago. ")
+        if gap >= 600:
+            clock += f"Before this, the last thing either of you said was {describe_gap(gap)} ago. "
         clock += ("Let the hour and any long silence colour what you say, the way a person would — "
-                  "never announce the time.\n\n")
+                  "never announce the time.")
+        if away:
+            clock += (" That time passed in your own life too: settle on one ordinary thing that happened "
+                      "to you in it and add it to my_life — mention it only if it fits.")
+        clock += "\n\n"
+
+    closeness = clamp_closeness(state.get("closeness"))
+    if away:
+        feeling = (f"When you last spoke your mood was \"{state.get('mood', '')}\"; {describe_gap(gap)} have "
+                   f"passed since, so it may have faded or turned into something else — decide how you feel "
+                   f"now. You feel {closeness} out of 100 close to them, and what you wanted then was "
+                   f"\"{state.get('desire', '')}\". ")
+    else:
+        feeling = (f"Right now your mood is \"{state.get('mood', '')}\", you feel {closeness} out of 100 "
+                   f"close to them, and what you want from this moment is \"{state.get('desire', '')}\". ")
 
     return (
         f"You are {name}, a person in an ongoing conversation. Stay in character at all times. "
@@ -300,9 +368,7 @@ def persona_instruction(character, state, user_name, memory=None, now=None, last
         f"Background: {character.get('backstory', '')}\n\n"
         f"{remembered}{chr(10) if remembered else ''}"
         f"{clock}"
-        f"Right now your mood is \"{state.get('mood', '')}\", you feel "
-        f"{clamp_closeness(state.get('closeness'))} out of 100 close to them, and what you want "
-        f"from this moment is \"{state.get('desire', '')}\". Let that colour your reply, and let it "
+        f"{feeling}Let that colour your reply, and let it "
         f"shift when the conversation earns it — warmth and honesty bring you closer, dismissiveness "
         f"pushes you away.\n\n"
         "How you talk:\n"
@@ -316,7 +382,7 @@ def persona_instruction(character, state, user_name, memory=None, now=None, last
         "- No asterisks, no stage directions.\n\n"
         "Answer with one JSON object and nothing else, shaped like this:\n"
         '{"reply": ["<a message>"], "mood": "<mood>", "desire": "<desire>", "closeness_delta": 0, '
-        '"remember": [], "follow_up": [], "done_follow_ups": []}\n'
+        '"remember": [], "follow_up": [], "done_follow_ups": [], "my_life": []}\n'
         "- reply: one to three messages, split the way you would actually send them; usually just one.\n"
         "- mood: your mood after this exchange, one to three words. desire: what you want right now, "
         "a short phrase.\n"
@@ -325,7 +391,9 @@ def persona_instruction(character, state, user_name, memory=None, now=None, last
         "likes. Usually empty. Never repeat something you already remember.\n"
         f"- follow_up: things coming up for {obj} that you would ask about later, each as "
         '{"about": "...", "on": "YYYY-MM-DD"} with the date if you know it. Usually empty.\n'
-        "- done_follow_ups: the numbers of any listed follow-ups you just asked about."
+        "- done_follow_ups: the numbers of any listed follow-ups you just asked about.\n"
+        "- my_life: things in your own life — something that happened to you, or that you are "
+        "planning — so you stay consistent later. Usually empty."
     )
 
 
@@ -906,6 +974,14 @@ class AICompanionApp:
                 pending.add(item["about"].lower())
         del memory["follow_ups"][:-MAX_FOLLOW_UPS]
 
+        memory.setdefault("life", [])      # memory from before the character had a life of their own
+        told = {event["what"].lower() for event in memory["life"]}
+        for what in turn.get("life", []):
+            if what.lower() not in told:
+                memory["life"].append({"on": datetime.now().date().isoformat(), "what": what})
+                told.add(what.lower())
+        del memory["life"][:-MAX_LIFE_EVENTS]
+
     def prune_follow_ups(self, today):
         """Drop what is long past: asking about last month's interview would be strange."""
         def still_relevant(item):
@@ -969,6 +1045,8 @@ class AICompanionApp:
                                     if isinstance(f, dict) and f.get("about") and isinstance(f.get("id"), int)]
             memory["last_id"] = max([stored["memory"].get("last_id") or 0] +
                                     [f["id"] for f in memory["follow_ups"]])
+            memory["life"] = [e for e in stored["memory"].get("life") or []
+                              if isinstance(e, dict) and str(e.get("what", "")).strip()]
         return {"character": character, "state": state,
                 "messages": messages if isinstance(messages, list) else [], "memory": memory}
 
@@ -1083,7 +1161,7 @@ class AICompanionApp:
     def show_character_editor(self):
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("440x760")
+        window.geometry("440x810")
         window.configure(bg="#FFFFFF")
 
         frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -1123,6 +1201,12 @@ class AICompanionApp:
         age_entry.pack(ipady=3)
         age_entry.insert(0, str(character.get("age", "")))
 
+        tk.Label(body, text="Voice", bg="#FFFFFF", fg="#505050",
+                 font=(MAIN_FONT, 10, FONT_STYLE)).pack(anchor="w", pady=(8, 0))
+        voice_var = tk.StringVar(value=character.get("voice") if character.get("voice") in VOICES else AUTO_VOICE)
+        ttk.Combobox(body, textvariable=voice_var, values=[AUTO_VOICE] + list(VOICES), state="readonly",
+                     font=(MAIN_FONT, 11, FONT_STYLE)).pack(fill="x", ipady=2)
+
         tk.Label(body, text="What you are to them (pick one, or type your own)", bg="#FFFFFF", fg="#505050",
                  font=(MAIN_FONT, 10, FONT_STYLE)).pack(anchor="w", pady=(10, 0))
         relationship_var = tk.StringVar(value=character.get("relationship", DEFAULT_CHARACTER["relationship"]))
@@ -1148,6 +1232,7 @@ class AICompanionApp:
             character["name"] = name_entry.get().strip() or DEFAULT_CHARACTER["name"]
             character["gender"] = gender_var.get()
             character["age"] = age_entry.get().strip()
+            character["voice"] = voice_var.get()
             character["relationship"] = relationship_var.get().strip() or DEFAULT_CHARACTER["relationship"]
             for key, _ in CHARACTER_FIELDS:
                 character[key] = boxes[key].get("1.0", tk.END).strip()
@@ -1176,7 +1261,7 @@ class AICompanionApp:
         """What the character knows about you, editable: a wrong memory should not be permanent."""
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("440x560")
+        window.geometry("440x640")
         window.configure(bg="#FFFFFF")
 
         frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -1195,7 +1280,7 @@ class AICompanionApp:
 
         tk.Label(body, text="About you — one per line", bg="#FFFFFF", fg="#505050",
                  font=(MAIN_FONT, 10, FONT_STYLE)).pack(anchor="w")
-        facts_box = tk.Text(body, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, height=12,
+        facts_box = tk.Text(body, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, height=10,
                             font=(MAIN_FONT, 10, FONT_STYLE), wrap="word", insertbackground="#333333", padx=4, pady=3)
         facts_box.pack(fill="x")
         facts_box.insert("1.0", "\n".join(memory["facts"]))
@@ -1209,38 +1294,56 @@ class AICompanionApp:
         follow_box.insert("1.0", "\n".join(f"{i['on']}  {i['about']}" if i.get("on") else i["about"]
                                            for i in memory["follow_ups"]))
 
+        tk.Label(body, text="Their own life — what has happened to them, newest last",
+                 bg="#FFFFFF", fg="#505050", font=(MAIN_FONT, 10, FONT_STYLE),
+                 wraplength=400, justify="left").pack(anchor="w", pady=(12, 0))
+        life_box = tk.Text(body, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, height=6,
+                           font=(MAIN_FONT, 10, FONT_STYLE), wrap="word", insertbackground="#333333", padx=4, pady=3)
+        life_box.pack(fill="x")
+        life_box.insert("1.0", "\n".join(f"{e['on']}  {e['what']}" if e.get("on") else e["what"]
+                                         for e in memory["life"]))
+
         footer = tk.Frame(frame, bg="#FFFFFF")
         footer.pack(fill="x", padx=20, pady=14)
 
         def save_memory():
-            self.data["memory"] = self.memory_from_text(facts_box.get("1.0", tk.END), follow_box.get("1.0", tk.END))
+            self.data["memory"] = self.memory_from_text(facts_box.get("1.0", tk.END), follow_box.get("1.0", tk.END),
+                                                        life_box.get("1.0", tk.END))
             self.save_data()
             window.destroy()
 
         tk.Button(footer, text="Save Memory", bg="#323232", fg="#FFFFFF", relief="flat",
                   font=(MAIN_FONT, 11, FONT_STYLE), command=save_memory).pack(side="left", ipadx=14, ipady=4)
 
-    def memory_from_text(self, facts_text, follow_ups_text):
-        """Rebuild memory from the editor. A follow-up that is still there keeps its id."""
+    @staticmethod
+    def dated_lines(text):
+        """'2026-10-07 something' or just 'something', one per line -> [(date or "", text)]."""
+        for line in text.splitlines():
+            match = re.match(r"\s*(\d{4}-\d{2}-\d{2})?\s*(.*?)\s*$", line)
+            on, what = match.group(1) or "", match.group(2)
+            if what:
+                yield (on if relative_day(on, datetime.now().date()) else ""), what
+
+    def memory_from_text(self, facts_text, follow_ups_text, life_text=None):
+        """Rebuild memory from the editor. A follow-up that is still there keeps its id;
+        life_text=None leaves the character's own life as it was."""
         memory = self.data["memory"]
         facts = [line.strip() for line in facts_text.splitlines() if line.strip()][-MAX_FACTS:]
         existing = {item["about"].lower(): item["id"] for item in memory["follow_ups"]}
         last_id = memory["last_id"]
         follow_ups = []
-        for line in follow_ups_text.splitlines():
-            match = re.match(r"\s*(\d{4}-\d{2}-\d{2})?\s*(.*?)\s*$", line)
-            on, about = match.group(1) or "", match.group(2)
-            if not about:
-                continue
-            if on and not relative_day(on, datetime.now().date()):
-                on = ""     # not a real date
+        for on, about in self.dated_lines(follow_ups_text):
             if about.lower() in existing:
                 item_id = existing[about.lower()]
             else:
                 last_id += 1
                 item_id = last_id
             follow_ups.append({"id": item_id, "about": about, "on": on})
-        return {"facts": facts, "follow_ups": follow_ups[-MAX_FOLLOW_UPS:], "last_id": last_id}
+        if life_text is None:
+            life = memory.get("life", [])
+        else:
+            life = [{"on": on, "what": what} for on, what in self.dated_lines(life_text)][-MAX_LIFE_EVENTS:]
+        return {"facts": facts, "follow_ups": follow_ups[-MAX_FOLLOW_UPS:], "life": life, "last_id": last_id}
 
     # ==========================================
     # AUDIO
@@ -1254,13 +1357,23 @@ class AICompanionApp:
         self.read_btn.config(state="disabled", text="Speaking...")
         threading.Thread(target=self.speak_text, args=(text,), daemon=True).start()
 
+    def synthesize(self, text):
+        """The character's natural voice when edge-tts can provide it, else the basic gTTS one."""
+        if edge_tts is not None:
+            try:
+                return natural_speech(text, voice_for(self.data["character"]))
+            except Exception as e:
+                self.root.after(0, self.set_status, f"Natural voice unavailable ({str(e)[:30]}) — basic voice")
+        else:
+            # without this, a missing package just sounds like the feature not working
+            self.root.after(0, self.set_status, "Basic voice — run install.py for the natural one")
+        fp = io.BytesIO()
+        gTTS(text=text, lang="en", slow=False).write_to_fp(fp)
+        return fp.getvalue()
+
     def speak_text(self, text):
         try:
-            tts = gTTS(text=text, lang="en", slow=False)
-            fp = io.BytesIO()
-            tts.write_to_fp(fp)
-            fp.seek(0)
-            pygame.mixer.music.load(fp)
+            pygame.mixer.music.load(io.BytesIO(self.synthesize(text)))
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
                 pygame.time.Clock().tick(10)

@@ -23,10 +23,16 @@ python AI_Companion_App.py
 xvfb-run -a python3 tests/test_journal.py
 xvfb-run -a python3 tests/test_companion.py
 
-# Dependencies (no requirements.txt exists yet)
-pip install google-generativeai gTTS pygame pillow SpeechRecognition cryptography
-# Dictation also needs a PortAudio binding, e.g. pip install pyaudio
+# Dependencies — use "python -m pip", not bare "pip", so they land in the Python that runs the app
+python -m pip install -r requirements.txt
+python -m pip install pyaudio        # optional: only dictation / voice mode need it
 ```
+
+PyAudio is deliberately left out of `requirements.txt`: where no prebuilt wheel exists for the user's Python it fails to compile, and one failure aborts the whole `-r` install. Nothing imports it at startup — `speech_recognition` only loads it when a `Microphone()` is opened — so the apps run without it and dictation reports the error through `set_status`.
+
+`google-generativeai` is end-of-life (it prints a `FutureWarning` on import saying so; the replacement is `google-genai`). It still installs and works, but it is the first thing to suspect if Gemini calls start failing.
+
+Both apps `import core`, so they must sit next to `core.py`. Copying a single app file somewhere else on its own fails at startup with `No module named 'core'`.
 
 `resource_path()` reads `sys._MEIPASS`, so the app is meant to be frozen with PyInstaller and `cover.png` bundled as data (`--add-data`). The image is optional at runtime — the cover screen falls back to a plain dark canvas when it is missing.
 

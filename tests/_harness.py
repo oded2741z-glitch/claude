@@ -61,7 +61,7 @@ def install_stubs():
         init=lambda: None,
         music=types.SimpleNamespace(load=lambda f: None, play=lambda: None, get_busy=lambda: False)),
         time=types.SimpleNamespace(Clock=lambda: types.SimpleNamespace(tick=lambda n: None)))
-    _stub("PIL", Image=types.SimpleNamespace(open=lambda p: None,
+    _stub("PIL", __version__="10.0.0", Image=types.SimpleNamespace(open=lambda p: None,
                                              Resampling=types.SimpleNamespace(LANCZOS=1)),
           ImageTk=types.SimpleNamespace(PhotoImage=lambda i: None))
     _stub("speech_recognition", Recognizer=object, Microphone=object,

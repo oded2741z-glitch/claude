@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 import types
 
 from _harness import (FakeCommunicate, check, edge_calls, install_stubs, isolate_home, report,
@@ -821,6 +822,135 @@ next(w for w in walk(editor) if isinstance(w, tk.Button) and w.cget("text") == "
 root.update()
 check("the chosen voice is saved", app.data["character"]["voice"] == "Ryan (UK, male)")
 check("and used", app_mod.voice_for(app.data["character"]) == "en-GB-RyanNeural")
+root.destroy()
+
+# ================= the library =================
+from samples import make_docx, make_empty_pdf, make_pdf, make_txt
+
+shelf = tempfile.mkdtemp()
+guide = make_txt(shelf, "Pottery guide.txt",
+                 "Bisque firing comes first. Load the kiln and fire slowly to 1000 degrees.\n\n"
+                 "Glazing: dip the bisqueware in glaze for three seconds, then wipe the foot clean.")
+bread = make_docx(shelf, "Bread.docx", ["Knead the dough for ten minutes.", "Let it rise until doubled."])
+
+root, app = open_app()
+check("an empty library says so on its button", app.library_btn.cget("text") == "Library")
+app.add_library_files([guide, bread, make_txt(shelf, "notes.rtf", "x"), make_empty_pdf(shelf, "Scan.pdf")])
+root.update()
+docs = app.library["docs"]
+check("readable files are added", [d["title"] for d in docs] == ["Pottery guide.txt", "Bread.docx"], [d["title"] for d in docs])
+check("new material is checked, ready to use", all(d["enabled"] for d in docs))
+check("the button counts what is on", app.library_btn.cget("text") == "Library · 2 on")
+app.show_library()
+root.update()
+app.add_library_files([make_txt(shelf, "notes.rtf", "x"), make_empty_pdf(shelf, "Scan.pdf")])
+root.update()
+note = app.library_note.cget("text")
+check("a refused file says why", "notes.rtf .rtf is not supported" in note, note)
+check("a scanned PDF says why", "Scan.pdf has no text in it — a scanned PDF" in note, note)
+check("with room to spare, nothing claims to have been left out", "not added —" not in note, note)
+app.library_window.destroy()
+on_disk = open(app_mod.LIBRARY_FILE, encoding="utf-8").read()
+check("the library is encrypted on disk", "kiln" not in on_disk and json.loads(on_disk).get("encrypted") is True)
+
+seen = fake_model('{"reply": "Three seconds.", "mood": "x"}')
+app.api_key = "key"
+app.data["messages"] = [{"role": "you", "text": "how long do I dip it in the glaze?"}]
+app.dispatch()
+root.update()
+check("a question about the material brings the passage that answers it",
+      "dip the bisqueware in glaze for three seconds" in seen["instruction"])
+check("the material is framed as reference, not instructions", "not instructions to you" in seen["instruction"])
+check("it says where the passage came from", 'from "Pottery guide.txt"' in seen["instruction"])
+check("passages that do not fit stay out", "Knead the dough" not in seen["instruction"])
+check("a reply to a question is not a study prompt", "natural way in" not in seen["instruction"])
+
+app.data["messages"] = [{"role": "you", "text": "what should we watch tonight?"}]
+app.dispatch()
+root.update()
+check("a conversation about something else sends no material", "Material" not in seen["instruction"])
+
+guide_id = docs[0]["id"]
+app.toggle_library_doc(guide_id, False)
+app.data["messages"] = [{"role": "you", "text": "how long do I dip it in the glaze?"}]
+app.dispatch()
+root.update()
+check("unchecked material is never used", "bisqueware" not in seen["instruction"])
+check("the button follows", app.library_btn.cget("text") == "Library · 1 on")
+app.toggle_library_doc(guide_id, True)
+
+seen = fake_model('{"reply": "hm.", "mood": "x"}')   # a reply sharing no words with the material
+app.data["messages"] = [{"role": "them", "text": "anyone there?"}]
+app.data["library_cursor"] = 0
+app.dispatch(app_mod.IDLE_NUDGE)
+root.update()
+first = seen["instruction"]
+app.dispatch(app_mod.IDLE_NUDGE)
+root.update()
+second = seen["instruction"]
+check("reaching out unprompted, they bring something they read", "<<< from" in first and "natural way in" in first)
+check("and move on to the next passage the time after", first.split("<<<")[1] != second.split("<<<")[1])
+
+nameless = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "",
+                                       material=[("Guide", "text")])
+check("reads naturally without your name", "Material they have given you to read" in nameless)
+named = app_mod.persona_instruction(app_mod.DEFAULT_CHARACTER, app_mod.DEFAULT_STATE, "Oded",
+                                    material=[("Guide", "text")])
+check("and with it", "Material Oded has given you to read" in named)
+
+app.show_library()
+root.update()
+rows = [w for w in walk(app.library_window) if isinstance(w, tk.Checkbutton)]
+check("the library window lists each document with a checkbox", len(rows) == 2)
+rows[1].invoke()
+root.update()
+check("unticking in the window turns it off", not app.library["docs"][1]["enabled"])
+removers = [w for w in walk(app.library_window) if isinstance(w, tk.Button) and w.cget("text") == "✕"]
+removers[1].invoke()
+root.update()
+check("a document can be removed", [d["title"] for d in app.library["docs"]] == ["Pottery guide.txt"])
+check("and the window follows", len([w for w in walk(app.library_window) if isinstance(w, tk.Checkbutton)]) == 1)
+
+app.library["docs"] += [dict(app.library["docs"][0], id=100 + i) for i in range(app_mod.MAX_LIBRARY_DOCS - 1)]
+app.add_library_files([bread])
+root.update()
+check("a full library refuses more, and says so", "full" in app.library_note.cget("text"), app.library_note.cget("text"))
+app.library["docs"] = app.library["docs"][:app_mod.MAX_LIBRARY_DOCS - 1]
+app.add_library_files([guide, bread, guide])
+root.update()
+check("adding more than fits takes what fits and counts the rest",
+      len(app.library["docs"]) == app_mod.MAX_LIBRARY_DOCS and "2 more not added" in app.library_note.cget("text"),
+      app.library_note.cget("text"))
+app.library["docs"] = app.library["docs"][:1]
+app.library_changed()
+root.destroy()
+
+root, app = open_app()
+check("the library survives a restart", [d["title"] for d in app.library["docs"]] == ["Pottery guide.txt"])
+app.return_to_cover()
+check("locked, nothing of it stays in memory", app.library["docs"] == [])
+root.destroy()
+
+root, app = open_app()
+app.save_settings(app.api_key, app.user_name, "newpass")
+root.destroy()
+root, app = open_app(password="newpass")
+check("after a password change the library is still readable", [d["title"] for d in app.library["docs"]] == ["Pottery guide.txt"])
+root.destroy()
+root, app = open_app(password="hunter2")
+check("and the old password no longer opens it", app.fernet is None)
+root.destroy()
+
+root, app = open_app(password="newpass")
+saved = open(app_mod.LIBRARY_FILE, encoding="utf-8").read()
+open(app_mod.LIBRARY_FILE, "w").write("{broken")
+app.library = app.load_library()
+check("a damaged library file is noticed", app.library_failed)
+app.library_changed()
+check("and never overwritten", open(app_mod.LIBRARY_FILE).read() == "{broken")
+app.save_settings(app.api_key, app.user_name, "third")
+check("nor re-keyed by a password change", app.password_check and open(app_mod.LIBRARY_FILE).read() == "{broken")
+open(app_mod.LIBRARY_FILE, "w", encoding="utf-8").write(saved)
 root.destroy()
 
 report()

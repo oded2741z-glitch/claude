@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 # keep in step with requirements.txt
-PACKAGES = ["google-generativeai", "gTTS", "pygame", "pillow", "SpeechRecognition", "cryptography", "edge-tts"]
+PACKAGES = ["google-generativeai", "gTTS", "pygame", "pillow", "SpeechRecognition", "cryptography", "edge-tts", "pypdf"]
 OPTIONAL = ["pyaudio"]      # only dictation needs it, and it does not build on every Python
 
 

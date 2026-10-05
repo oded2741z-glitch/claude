@@ -7,6 +7,7 @@ pillow
 SpeechRecognition
 cryptography
 edge-tts
+pypdf
 
 # Microphone dictation and voice mode also need PyAudio. It is kept out of this file on purpose:
 # when no prebuilt wheel exists for your Python version it fails to build, and a single failure

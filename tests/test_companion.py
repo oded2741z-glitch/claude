@@ -209,6 +209,98 @@ app.read_aloud()
 check("Listen speaks the character's last line", tts_calls[-1] == "en", tts_calls)
 root.destroy()
 
+# ================= how they relate to you =================
+check("a preset relationship has its own starting closeness", app_mod.starting_closeness("Partner") == 75)
+check("a stranger starts at nothing", app_mod.starting_closeness("Stranger") == 0)
+check("a custom relationship starts at the default",
+      app_mod.starting_closeness("my old army buddy") == app_mod.DEFAULT_STATE["closeness"])
+
+prompt = app_mod.persona_instruction(
+    dict(app_mod.DEFAULT_CHARACTER, relationship="Close friend", treatment="teases you, but would fight for you"),
+    {"mood": "warm", "closeness": 65, "desire": "a laugh"}, "Oded")
+check("prompt says what you are to them", "What Oded is to you: Close friend" in prompt)
+check("prompt says how they treat you", "How you treat Oded: teases you, but would fight for you" in prompt)
+nameless = app_mod.persona_instruction(dict(app_mod.DEFAULT_CHARACTER, relationship="Sibling"),
+                                       app_mod.DEFAULT_STATE, "")
+check("still reads naturally without your name", "What they are to you: Sibling" in nameless,
+      nameless.split("\n")[2])
+
+
+def walk(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from walk(child)
+
+
+def open_editor(app):
+    app.show_character_editor()
+    root.update()
+    window = [w for w in app.root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+    widgets = list(walk(window))
+    combo = next(w for w in widgets if w.winfo_class() == "TCombobox")
+    texts = [w for w in widgets if isinstance(w, tk.Text)]
+    buttons = {w.cget("text"): w for w in widgets if isinstance(w, tk.Button)}
+    return window, combo, texts, buttons
+
+
+root, app = open_app()
+app.data["messages"] = []
+window, combo, texts, buttons = open_editor(app)
+check("the editor offers every preset", list(combo.cget("values")) == list(app_mod.RELATIONSHIPS))
+check("'how they treat you' comes first among the text boxes",
+      texts[0].get("1.0", "end").strip() == app.data["character"]["treatment"])
+combo.set("Partner")
+texts[0].delete("1.0", "end")
+texts[0].insert("1.0", "Openly affectionate, a little jealous.")
+buttons["Save Character"].invoke()
+root.update()
+check("relationship saved", app.data["character"]["relationship"] == "Partner")
+check("treatment saved", app.data["character"]["treatment"] == "Openly affectionate, a little jealous.")
+check("an empty conversation starts at the relationship's closeness", app.data["state"]["closeness"] == 75)
+check("the panel shows it", "Partner" in app.subtitle_lbl.cget("text"), app.subtitle_lbl.cget("text"))
+
+app.data["messages"] = [{"role": "you", "text": "hi"}]
+app.data["state"]["closeness"] = 31
+window, combo, texts, buttons = open_editor(app)
+combo.set("Stranger")
+buttons["Save Character"].invoke()
+root.update()
+check("mid-conversation, earned closeness is left alone", app.data["state"]["closeness"] == 31)
+
+window, combo, texts, buttons = open_editor(app)
+combo.set("the neighbour I keep running into")
+buttons["Save Character"].invoke()
+root.update()
+check("a typed-in relationship is accepted", app.data["character"]["relationship"] == "the neighbour I keep running into")
+root.update_idletasks()
+check("a long relationship wraps instead of being cut off",
+      app.subtitle_lbl.winfo_reqwidth() <= app.left_panel.winfo_width(),
+      f"needs {app.subtitle_lbl.winfo_reqwidth()} of {app.left_panel.winfo_width()}")
+
+app.data["character"]["relationship"] = "Sibling"
+window, combo, texts, buttons = open_editor(app)
+buttons["Start over"].invoke()
+root.update()
+check("starting over begins at the relationship's closeness", app.data["state"]["closeness"] == 60)
+check("and clears the conversation", app.data["messages"] == [])
+
+window, combo, texts, buttons = open_editor(app)
+combo.set("   ")
+buttons["Save Character"].invoke()
+root.update()
+check("a blank relationship falls back to the default",
+      app.data["character"]["relationship"] == app_mod.DEFAULT_CHARACTER["relationship"])
+
+legacy = {"character": {"name": "Old", "gender": "Male", "age": "40"}, "state": {"closeness": 50}, "messages": []}
+core.write_store(app_mod.COMPANION_FILE, legacy, app.fernet)
+reloaded = app.load_data()
+check("a character saved before this feature still loads",
+      reloaded["character"]["name"] == "Old"
+      and reloaded["character"]["relationship"] == app_mod.DEFAULT_CHARACTER["relationship"]
+      and reloaded["state"]["closeness"] == 50)
+app.save_data()
+root.destroy()
+
 # ================= speaking unprompted =================
 root, app = open_app()
 app.api_key = "key"

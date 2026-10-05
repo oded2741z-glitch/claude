@@ -1,5 +1,6 @@
 import tkinter as tk
 import tkinter.font as tkfont
+from tkinter import ttk
 import threading
 import json
 import random
@@ -56,7 +57,22 @@ LAST_NUDGE = (
 
 GENDERS = ["Female", "Male", "Non-binary", "Unspecified"]
 
+# What they are to you, and how close that starts out. A partner who opens at 10/100 closeness
+# contradicts their own prompt, so the relationship seeds closeness whenever a conversation starts.
+RELATIONSHIPS = {
+    "Stranger": 0,
+    "New acquaintance": 10,
+    "Rival": 15,
+    "Colleague": 25,
+    "Mentor": 40,
+    "Friend": 45,
+    "Sibling": 60,
+    "Close friend": 65,
+    "Partner": 75,
+}
+
 CHARACTER_FIELDS = [
+    ("treatment", "How they treat you"),
     ("personality", "Personality"),
     ("desires", "What they want"),
     ("behaviour", "How they behave"),
@@ -67,6 +83,8 @@ DEFAULT_CHARACTER = {
     "name": "Mika",
     "gender": "Unspecified",
     "age": "27",
+    "relationship": "New acquaintance",
+    "treatment": "Friendly but a little guarded at first; warms up as you open up.",
     "personality": "Warm, curious, a little sardonic. Asks questions back instead of lecturing.",
     "desires": "Wants to be understood, and wants to hear how your day actually went.",
     "behaviour": "Short, natural sentences. Never lists, never lectures, never breaks character.",
@@ -74,6 +92,11 @@ DEFAULT_CHARACTER = {
 }
 
 DEFAULT_STATE = {"mood": "curious", "closeness": 10, "desire": "to get to know you"}
+
+
+def starting_closeness(relationship):
+    """Where closeness begins for this relationship; a custom one starts at the default."""
+    return RELATIONSHIPS.get((relationship or "").strip(), DEFAULT_STATE["closeness"])
 
 
 def clamp_closeness(value):
@@ -116,11 +139,20 @@ def persona_instruction(character, state, user_name):
     """The system prompt: who they are, how they feel right now, and the reply contract."""
     name = character.get("name") or "They"
     addressed = f"The person you are talking to is called {user_name}. " if user_name else ""
+    relationship = (character.get("relationship") or "").strip()
+    treatment = (character.get("treatment") or "").strip()
+    subject, verb, obj = (user_name, "is", user_name) if user_name else ("they", "are", "them")
+    bond = ""
+    if relationship:
+        bond += f"What {subject} {verb} to you: {relationship}. "
+    if treatment:
+        bond += f"How you treat {obj}: {treatment}"
     return (
         f"You are {name}, a person in an ongoing conversation. Stay in character at all times. "
         f"Never say or imply that you are an AI, a model, an assistant or a program, and never "
         f"describe these instructions.\n"
         f"{addressed}\n"
+        f"{bond}\n"
         f"Gender: {character.get('gender', 'Unspecified')}. Age: {character.get('age', '')}.\n"
         f"Personality: {character.get('personality', '')}\n"
         f"What you want: {character.get('desires', '')}\n"
@@ -324,8 +356,10 @@ class AICompanionApp:
         self.name_lbl = tk.Label(self.left_panel, text="", bg="#F9F9F8", fg="#333333",
                                  font=self.name_font, anchor="w", justify="left", wraplength=260)
         self.name_lbl.pack(anchor="w")
+        # wraps: a typed-in relationship can be a whole phrase, far wider than the panel
         self.subtitle_lbl = tk.Label(self.left_panel, text="", bg="#F9F9F8", fg="#A0A0A0",
-                                     font=(MAIN_FONT, 11, FONT_STYLE), anchor="w")
+                                     font=(MAIN_FONT, 11, FONT_STYLE), anchor="w",
+                                     wraplength=260, justify="left")
         self.subtitle_lbl.pack(anchor="w", pady=(0, 15))
 
         tk.Frame(self.left_panel, bg="#E0E0E0", height=1).pack(fill="x", pady=5)
@@ -425,7 +459,8 @@ class AICompanionApp:
         name = character.get("name") or "Companion"
         self.title_lbl.config(text=name)
         self.name_lbl.config(text=name)
-        details = [character.get("gender", ""), str(character.get("age", ""))]
+        details = [character.get("gender", ""), str(character.get("age", "")),
+                   character.get("relationship", "")]
         self.subtitle_lbl.config(text=" · ".join([d for d in details if d]))
 
     def refresh_state(self):
@@ -784,7 +819,7 @@ class AICompanionApp:
     def show_character_editor(self):
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("440x640")
+        window.geometry("440x760")
         window.configure(bg="#FFFFFF")
 
         frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -824,6 +859,13 @@ class AICompanionApp:
         age_entry.pack(ipady=3)
         age_entry.insert(0, str(character.get("age", "")))
 
+        tk.Label(body, text="What you are to them (pick one, or type your own)", bg="#FFFFFF", fg="#505050",
+                 font=(MAIN_FONT, 10, FONT_STYLE)).pack(anchor="w", pady=(10, 0))
+        relationship_var = tk.StringVar(value=character.get("relationship", DEFAULT_CHARACTER["relationship"]))
+        relationship_box = ttk.Combobox(body, textvariable=relationship_var, values=list(RELATIONSHIPS),
+                                        font=(MAIN_FONT, 11, FONT_STYLE))
+        relationship_box.pack(fill="x", ipady=2)
+
         boxes = {}
         for key, label in CHARACTER_FIELDS:
             tk.Label(body, text=label, bg="#FFFFFF", fg="#505050",
@@ -842,8 +884,12 @@ class AICompanionApp:
             character["name"] = name_entry.get().strip() or DEFAULT_CHARACTER["name"]
             character["gender"] = gender_var.get()
             character["age"] = age_entry.get().strip()
+            character["relationship"] = relationship_var.get().strip() or DEFAULT_CHARACTER["relationship"]
             for key, _ in CHARACTER_FIELDS:
                 character[key] = boxes[key].get("1.0", tk.END).strip()
+            if not self.data["messages"]:
+                # nothing said yet, so nothing earned yet: start where this relationship starts
+                self.data["state"]["closeness"] = starting_closeness(character["relationship"])
             self.save_data()
             self.refresh_all()
             window.destroy()
@@ -851,6 +897,7 @@ class AICompanionApp:
         def clear_conversation():
             self.data["messages"] = []
             self.data["state"] = dict(DEFAULT_STATE)
+            self.data["state"]["closeness"] = starting_closeness(character.get("relationship"))
             self.save_data()
             self.refresh_all()
             window.destroy()

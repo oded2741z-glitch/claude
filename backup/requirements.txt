@@ -1,0 +1,13 @@
+# Install with:  python -m pip install -r requirements.txt
+# (python -m pip, not plain pip, so the packages land in the same Python that runs the apps)
+google-generativeai
+gTTS
+pygame
+pillow
+SpeechRecognition
+cryptography
+
+# Microphone dictation and voice mode also need PyAudio. It is kept out of this file on purpose:
+# when no prebuilt wheel exists for your Python version it fails to build, and a single failure
+# here would abort the whole install. The apps start without it; only dictation reports an error.
+#     python -m pip install pyaudio

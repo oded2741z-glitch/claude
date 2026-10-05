@@ -25,8 +25,11 @@ xvfb-run -a python3 tests/test_companion.py
 
 # Dependencies — use "python -m pip", not bare "pip", so they land in the Python that runs the app
 python -m pip install -r requirements.txt
+python install.py                    # same thing, for people who run .py files by double-click
 python -m pip install pyaudio        # optional: only dictation / voice mode need it
 ```
+
+`install.py` exists because "pip says it installed, the app still says No module named …" is the usual first-run failure on Windows, where several Pythons coexist: it installs through `sys.executable`, so whichever Python opens it is the one that gets the packages. Its `PACKAGES` list must stay in step with `requirements.txt`. It waits for Enter before closing, since a double-clicked console window otherwise vanishes before the result can be read.
 
 PyAudio is deliberately left out of `requirements.txt`: where no prebuilt wheel exists for the user's Python it fails to compile, and one failure aborts the whole `-r` install. Nothing imports it at startup — `speech_recognition` only loads it when a `Microphone()` is opened — so the apps run without it and dictation reports the error through `set_status`.
 

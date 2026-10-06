@@ -87,6 +87,47 @@ def run_threads_inline(module):
     module.threading = types.SimpleNamespace(Thread=InlineThread)
 
 
+def drag(widget, dx, dy):
+    """Press on a widget and move the mouse by (dx, dy), the way a real drag arrives."""
+    x, y = widget.winfo_rootx() + 5, widget.winfo_rooty() + 5
+    widget.event_generate("<Button-1>", x=5, y=5, rootx=x, rooty=y)
+    widget.event_generate("<B1-Motion>", x=5 + dx, y=5 + dy, rootx=x + dx, rooty=y + dy)
+    widget.update()
+
+
+def check_dialog(name, root, window):
+    """A borderless dialog opens over the app, moves when its title is dragged, and not when a field is."""
+    for _ in range(3):
+        root.update()
+        root.update_idletasks()
+    centre = lambda w: (w.winfo_x() + w.winfo_width() // 2, w.winfo_y() + w.winfo_height() // 2)
+    (wx, wy), (rx, ry) = centre(window), centre(root)
+    check(f"{name}: opens over the app, not in the corner", abs(wx - rx) <= 2 and abs(wy - ry) <= 2,
+          f"dialog centre {wx},{wy} vs app centre {rx},{ry}")
+    check(f"{name}: opens fully on screen", window.winfo_x() >= 0 and window.winfo_y() >= 0
+          and window.winfo_x() + window.winfo_width() <= window.winfo_screenwidth()
+          and window.winfo_y() + window.winfo_height() <= window.winfo_screenheight())
+
+    def everything(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from everything(child)
+
+    title = next(w for w in everything(window) if w.winfo_class() == "Label" and str(w.cget("cursor")) == "fleur")
+    before = (window.winfo_x(), window.winfo_y())
+    drag(title, 60, 40)
+    after = (window.winfo_x(), window.winfo_y())
+    check(f"{name}: dragging the title moves it", after == (before[0] + 60, before[1] + 40), f"{before} -> {after}")
+
+    # a text field where there is one, otherwise a checkbox or button: anything you interact with
+    controls = [w for w in everything(window) if w.winfo_class() in ("Entry", "Text")] or \
+               [w for w in everything(window) if w.winfo_class() in ("Checkbutton", "Button")]
+    drag(controls[0], 80, 0)
+    check(f"{name}: dragging on a {controls[0].winfo_class().lower()} inside it does not",
+          (window.winfo_x(), window.winfo_y()) == after)
+    window.destroy()
+
+
 def isolate_home():
     """Point the per-user data directory at a throwaway location."""
     home = tempfile.mkdtemp()

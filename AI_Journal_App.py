@@ -740,10 +740,34 @@ class AIJournalHardcoded:
         self.user_password = ""
         self.journal_data = {}
 
+    # ---------- borderless dialogs ----------
+    def place_over_main(self, window, width, height):
+        """Open over the app rather than in the corner of the screen, and never off it."""
+        self.root.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - width) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - height) // 2
+        x = max(0, min(x, self.root.winfo_screenwidth() - width))
+        y = max(0, min(y, self.root.winfo_screenheight() - height))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def make_draggable(self, window, *handles):
+        """Borderless windows have no title bar to grab, so these widgets move the window instead.
+        Only the given widgets: binding the window itself would catch clicks inside text fields too."""
+        def press(event):
+            window.drag_offset = (event.x_root - window.winfo_x(), event.y_root - window.winfo_y())
+
+        def move(event):
+            dx, dy = window.drag_offset
+            window.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+        for handle in handles:
+            handle.bind("<Button-1>", press, add="+")
+            handle.bind("<B1-Motion>", move, add="+")
+
     def show_help_settings(self):
         settings_win = tk.Toplevel(self.root)
         settings_win.overrideredirect(True)
-        settings_win.geometry("400x310")
+        self.place_over_main(settings_win, 400, 310)
         settings_win.configure(bg="#FFFFFF")
         
         frame = tk.Frame(settings_win, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -751,7 +775,10 @@ class AIJournalHardcoded:
         
         tk.Button(frame, text="X", bg="#cc0000", fg="#FFFFFF", relief="flat", borderwidth=0, font=(MAIN_FONT, 10, FONT_STYLE), command=settings_win.destroy).place(x=370, y=5, width=25, height=25)
         
-        tk.Label(frame, text="⚙ SETTINGS", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE)).place(x=20, y=20)
+        title = tk.Label(frame, text="⚙ SETTINGS", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE),
+                         cursor="fleur")
+        title.place(x=20, y=20)
+        self.make_draggable(settings_win, frame, title)
         
         tk.Label(frame, text="Your Name:", bg="#FFFFFF", fg="#505050", font=(MAIN_FONT, 11, FONT_STYLE)).place(x=20, y=55)
         name_entry = tk.Entry(frame, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, font=(MAIN_FONT, 11, FONT_STYLE))

@@ -3,7 +3,7 @@
 import json
 import os
 
-from _harness import check, install_stubs, isolate_home, report, tts_calls
+from _harness import check, check_dialog, install_stubs, isolate_home, report, tts_calls
 
 install_stubs()
 home = isolate_home()
@@ -159,6 +159,12 @@ root.update()
 app.save_config("key2", "יוסי", "")
 check("clearing the password decrypts the file",
       SECRET in open(app_mod.HISTORY_FILE, encoding="utf-8").read())
+root.destroy()
+
+# ---------- the settings dialog can be moved ----------
+root, app = open_app()      # the password was cleared by the section above
+app.show_help_settings()
+check_dialog("journal settings", root, [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1])
 root.destroy()
 
 report()

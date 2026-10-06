@@ -1168,10 +1168,34 @@ class AICompanionApp:
     # ==========================================
     # DIALOGS
     # ==========================================
+    # ---------- borderless dialogs ----------
+    def place_over_main(self, window, width, height):
+        """Open over the app rather than in the corner of the screen, and never off it."""
+        self.root.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - width) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - height) // 2
+        x = max(0, min(x, self.root.winfo_screenwidth() - width))
+        y = max(0, min(y, self.root.winfo_screenheight() - height))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+
+    def make_draggable(self, window, *handles):
+        """Borderless windows have no title bar to grab, so these widgets move the window instead.
+        Only the given widgets: binding the window itself would catch clicks inside text fields too."""
+        def press(event):
+            window.drag_offset = (event.x_root - window.winfo_x(), event.y_root - window.winfo_y())
+
+        def move(event):
+            dx, dy = window.drag_offset
+            window.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+        for handle in handles:
+            handle.bind("<Button-1>", press, add="+")
+            handle.bind("<B1-Motion>", move, add="+")
+
     def show_settings(self):
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("400x370")
+        self.place_over_main(window, 400, 370)
         window.configure(bg="#FFFFFF")
 
         frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -1179,7 +1203,10 @@ class AICompanionApp:
 
         tk.Button(frame, text="X", bg="#cc0000", fg="#FFFFFF", relief="flat", borderwidth=0,
                   font=(MAIN_FONT, 10, FONT_STYLE), command=window.destroy).place(x=370, y=5, width=25, height=25)
-        tk.Label(frame, text="⚙ SETTINGS", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE)).place(x=20, y=20)
+        title = tk.Label(frame, text="⚙ SETTINGS", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE),
+                         cursor="fleur")
+        title.place(x=20, y=20)
+        self.make_draggable(window, frame, title)
 
         tk.Label(frame, text="Your Name:", bg="#FFFFFF", fg="#505050", font=(MAIN_FONT, 11, FONT_STYLE)).place(x=20, y=55)
         name_entry = tk.Entry(frame, bg="#F9F9F9", fg="#333333", relief="solid", borderwidth=1, font=(MAIN_FONT, 11, FONT_STYLE))
@@ -1228,7 +1255,7 @@ class AICompanionApp:
     def show_character_editor(self):
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("440x810")
+        self.place_over_main(window, 440, 810)
         window.configure(bg="#FFFFFF")
 
         frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -1236,7 +1263,11 @@ class AICompanionApp:
 
         header = tk.Frame(frame, bg="#FFFFFF")
         header.pack(fill="x", padx=20, pady=(18, 10))
-        tk.Label(header, text="THE CHARACTER", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE)).pack(side="left")
+        title = tk.Label(header, text="THE CHARACTER", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE),
+                         cursor="fleur")
+        title.pack(side="left")
+        header.config(cursor="fleur")
+        self.make_draggable(window, frame, header, title)
         tk.Button(header, text="X", bg="#cc0000", fg="#FFFFFF", relief="flat", borderwidth=0,
                   font=(MAIN_FONT, 10, FONT_STYLE), width=2, command=window.destroy).pack(side="right")
 
@@ -1432,7 +1463,7 @@ class AICompanionApp:
     def show_library(self):
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("480x560")
+        self.place_over_main(window, 480, 560)
         window.configure(bg="#FFFFFF")
         self.library_window = window
 
@@ -1441,7 +1472,11 @@ class AICompanionApp:
 
         header = tk.Frame(frame, bg="#FFFFFF")
         header.pack(fill="x", padx=20, pady=(18, 6))
-        tk.Label(header, text="LIBRARY", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE)).pack(side="left")
+        title = tk.Label(header, text="LIBRARY", bg="#FFFFFF", fg="#333333", font=(MAIN_FONT, 12, FONT_STYLE),
+                         cursor="fleur")
+        title.pack(side="left")
+        header.config(cursor="fleur")
+        self.make_draggable(window, frame, header, title)
         tk.Button(header, text="X", bg="#cc0000", fg="#FFFFFF", relief="flat", borderwidth=0,
                   font=(MAIN_FONT, 10, FONT_STYLE), width=2, command=window.destroy).pack(side="right")
 
@@ -1492,7 +1527,7 @@ class AICompanionApp:
         """What the character knows about you, editable: a wrong memory should not be permanent."""
         window = tk.Toplevel(self.root)
         window.overrideredirect(True)
-        window.geometry("440x640")
+        self.place_over_main(window, 440, 640)
         window.configure(bg="#FFFFFF")
 
         frame = tk.Frame(window, bg="#FFFFFF", highlightbackground="#C8C8C8", highlightthickness=1)
@@ -1500,8 +1535,11 @@ class AICompanionApp:
 
         header = tk.Frame(frame, bg="#FFFFFF")
         header.pack(fill="x", padx=20, pady=(18, 10))
-        tk.Label(header, text="WHAT THEY REMEMBER", bg="#FFFFFF", fg="#333333",
-                 font=(MAIN_FONT, 12, FONT_STYLE)).pack(side="left")
+        title = tk.Label(header, text="WHAT THEY REMEMBER", bg="#FFFFFF", fg="#333333",
+                         font=(MAIN_FONT, 12, FONT_STYLE), cursor="fleur")
+        title.pack(side="left")
+        header.config(cursor="fleur")
+        self.make_draggable(window, frame, header, title)
         tk.Button(header, text="X", bg="#cc0000", fg="#FFFFFF", relief="flat", borderwidth=0,
                   font=(MAIN_FONT, 10, FONT_STYLE), width=2, command=window.destroy).pack(side="right")
 

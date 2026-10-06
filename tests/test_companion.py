@@ -5,7 +5,7 @@ import os
 import tempfile
 import types
 
-from _harness import (FakeCommunicate, check, edge_calls, install_stubs, isolate_home, report,
+from _harness import (FakeCommunicate, check, check_dialog, edge_calls, install_stubs, isolate_home, report,
                       run_threads_inline, tts_calls)
 
 install_stubs()
@@ -951,6 +951,14 @@ check("and never overwritten", open(app_mod.LIBRARY_FILE).read() == "{broken")
 app.save_settings(app.api_key, app.user_name, "third")
 check("nor re-keyed by a password change", app.password_check and open(app_mod.LIBRARY_FILE).read() == "{broken")
 open(app_mod.LIBRARY_FILE, "w", encoding="utf-8").write(saved)
+root.destroy()
+
+# ================= dialogs can be moved =================
+root, app = open_app()
+for name, opener in [("settings", app.show_settings), ("character editor", app.show_character_editor),
+                     ("memory", app.show_memory), ("library", app.show_library)]:
+    opener()
+    check_dialog(name, root, [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1])
 root.destroy()
 
 report()

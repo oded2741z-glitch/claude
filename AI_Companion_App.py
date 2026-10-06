@@ -22,8 +22,14 @@ try:
 except Exception:           # not just ImportError: a broken install must not stop the app starting
     edge_tts = None
 
-import core
-import library
+try:
+    import core
+    import library
+except ModuleNotFoundError as missing:
+    if missing.name not in ("core", "library"):
+        raise                           # a missing package, not a missing file of this app
+    sys.exit(f"\n{missing.name}.py is missing. All of the app's files must sit together in one folder — "
+             f"download the whole folder (the ZIP), not single files.\n")
 
 APP_DIR_NAME = "AI_Companion"
 DATA_DIR = core.user_data_dir(APP_DIR_NAME)

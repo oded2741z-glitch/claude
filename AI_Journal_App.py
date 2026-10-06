@@ -13,7 +13,13 @@ import speech_recognition as sr
 import calendar
 import shutil
 
-import core
+try:
+    import core
+except ModuleNotFoundError as missing:
+    if missing.name != "core":
+        raise                           # a missing package, not a missing file of this app
+    sys.exit("\ncore.py is missing. All of the app's files must sit together in one folder — "
+             "download the whole folder (the ZIP), not single files.\n")
 
 APP_DIR_NAME = "AI_Journal"
 MAX_TODO_ITEMS = 10

@@ -37,7 +37,7 @@ PyAudio is deliberately left out of `requirements.txt`: where no prebuilt wheel 
 
 `google-generativeai` is end-of-life (it prints a `FutureWarning` on import saying so; the replacement is `google-genai`). It still installs and works, but it is the first thing to suspect if Gemini calls start failing.
 
-Both apps `import core`, and the companion also `import library`, so they must sit next to those files. Copying a single app file somewhere else on its own fails at startup with `No module named 'core'`.
+Both apps `import core`, and the companion also `import library`, so they must sit next to those files. Copying a single app file somewhere else on its own used to fail with a bare `No module named 'core'` (and later `'library'`), twice, for a user downloading files one at a time; both apps now catch that at import and exit with a sentence saying to keep the files together and download the whole folder. The check is by module name, so a missing third-party package still surfaces as itself rather than being mislabelled as a missing file.
 
 Optional dependencies (`edge_tts`, and `pypdf` inside `library.py`) are imported under `except Exception`, not `except ImportError`: a package that is present but broken — or that trips over another package on import, as pypdf does over a Pillow without `__version__` — must cost only its own feature, never the app's startup.
 

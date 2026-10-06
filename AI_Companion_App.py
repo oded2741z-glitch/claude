@@ -14,7 +14,7 @@ import google.generativeai as genai
 from gtts import gTTS
 import pygame
 from datetime import datetime
-from PIL import Image, ImageTk
+from PIL import Image, ImageSequence, ImageTk
 import speech_recognition as sr
 
 try:
@@ -86,6 +86,11 @@ MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augus
 
 VOICE_RETRY_MS = 1500   # pause before listening again after silence or a misheard phrase
 MAX_VOICE_FAILURES = 3  # consecutive microphone errors before voice mode switches itself off
+
+PORTRAIT_TYPES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+MAX_PORTRAIT_SIDE = 1200          # frames are shrunk to this on reading; the tab is smaller still
+PORTRAIT_MEMORY = 256 * 2 ** 20   # an animation longer than this (decoded) plays its first part
+DEFAULT_FRAME_MS = 100            # what browsers use for a GIF frame with no usable duration
 
 OPENING_NUDGE = (
     "The conversation has not started yet. Open it yourself: say the first thing, "
@@ -427,6 +432,108 @@ def persona_instruction(character, state, user_name, memory=None, now=None, last
     )
 
 
+class PortraitError(Exception):
+    """A picture that cannot be shown, with the reason in words."""
+
+
+def read_portrait(path):
+    """The picture's frames as [(RGBA image, milliseconds)]: one for a still, several for a GIF."""
+    name = os.path.basename(path)
+    if os.path.splitext(path)[1].lower() not in PORTRAIT_TYPES:
+        raise PortraitError(f"{name} is not a picture — use " + ", ".join(PORTRAIT_TYPES))
+    if not os.path.isfile(path):
+        raise PortraitError(f"{name} is no longer where it was — load it again")
+    frames, used = [], 0
+    try:
+        with Image.open(path) as image:
+            for frame in ImageSequence.Iterator(image):
+                duration = frame.info.get("duration") or 0
+                picture = frame.convert("RGBA")
+                picture.thumbnail((MAX_PORTRAIT_SIDE, MAX_PORTRAIT_SIDE), Image.Resampling.LANCZOS)
+                used += picture.width * picture.height * 4
+                if frames and used > PORTRAIT_MEMORY:
+                    break
+                frames.append((picture, int(duration) if duration > 10 else DEFAULT_FRAME_MS))
+    except Exception:
+        raise PortraitError(f"{name} could not be opened as a picture")
+    if not frames:
+        raise PortraitError(f"{name} has nothing in it to show")
+    return frames
+
+
+class PortraitPlayer:
+    """Shows a picture fitted into a label, and plays an animated one on a loop while asked to."""
+
+    def __init__(self, label):
+        self.label = label
+        self.frames = []
+        self.fitted = {}        # frame index -> PhotoImage at the current size; Tk drops unreferenced ones
+        self.size = (0, 0)
+        self.index = 0
+        self.timer = None
+        self.playing = False
+        self.current = None     # the PhotoImage on screen, kept referenced
+        label.bind("<Configure>", self.resized)
+
+    def show(self, frames):
+        self.stop_timer()
+        self.frames, self.fitted, self.index = frames, {}, 0
+        self.render()
+        self.schedule()
+
+    def clear(self):
+        self.stop_timer()
+        self.frames, self.fitted, self.index = [], {}, 0
+        self.current = None
+        self.label.config(image="")
+
+    def play(self):
+        self.playing = True
+        self.schedule()
+
+    def pause(self):
+        self.playing = False
+        self.stop_timer()
+
+    def stop_timer(self):
+        if self.timer is not None:
+            self.label.after_cancel(self.timer)
+            self.timer = None
+
+    def schedule(self):
+        if self.playing and len(self.frames) > 1 and self.timer is None:
+            self.timer = self.label.after(self.frames[self.index][1], self.advance)
+
+    def advance(self):
+        self.timer = None
+        self.index = (self.index + 1) % len(self.frames)       # past the last frame, round again
+        self.render()
+        self.schedule()
+
+    def resized(self, event):
+        if (event.width, event.height) != self.size:
+            self.size = (event.width, event.height)
+            self.fitted = {}
+            self.render()
+
+    def render(self):
+        width, height = self.size
+        if not self.frames or width < 2 or height < 2:
+            return
+        photo = self.fitted.get(self.index)
+        if photo is None:
+            image = self.frames[self.index][0]
+            scale = min(width / image.width, height / image.height)
+            fitted = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+                                  Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(fitted)
+            # keep every fitted frame only while that stays small; otherwise fit each one as it comes
+            if len(self.frames) * fitted.width * fitted.height * 4 <= PORTRAIT_MEMORY:
+                self.fitted[self.index] = photo
+        self.current = photo
+        self.label.config(image=photo)
+
+
 class AICompanionApp:
     def __init__(self, root):
         self.root = root
@@ -474,6 +581,12 @@ class AICompanionApp:
         self.data = self.load_data()
         self.library = self.load_library()
         self.library_window = None
+
+        self.tab = "chat"               # which tab fills the centre: "chat" or "portrait"
+        self.unread = False             # a message arrived while the portrait was showing
+        self.in_chat = False            # past the cover screen, so the portrait may play
+        self.portrait_path = None       # what the player holds; None means "look again"
+        self.portrait_request = 0       # only the newest picture being read may land
 
         self.main_frame = tk.Frame(self.root, bg="#F9F9F8", highlightbackground="#E0E0E0", highlightthickness=1)
         self.build_main_app()
@@ -561,7 +674,9 @@ class AICompanionApp:
         self.main_frame.pack(fill="both", expand=True)
         self.unanswered = 0      # opening the app counts as coming back
         self.dormant = False
+        self.in_chat = True
         self.refresh_all()
+        self.update_portrait_playback()
         self.schedule_idle_turn()
         self.start_listening()
 
@@ -570,11 +685,17 @@ class AICompanionApp:
         self.voice_var.set(False)       # stop listening before the cover goes back up
         self.flush_delivery()           # a reply half-typed is still a reply; keep all of it
         self.save_data()
+        self.in_chat = False
+        self.update_portrait_playback()             # nothing plays behind the cover
         if self.password_enabled:
             self.fernet = None
             self.user_password = ""
             self.data = self.load_data()
             self.library = self.load_library()      # locked: nothing decrypted stays in memory
+            self.portrait_request += 1              # a picture still being read must not land now
+            self.portrait_path = None
+            self.player.clear()
+            self.refresh_portrait_controls()
 
         self.main_frame.pack_forget()
         self.build_cover_screen()
@@ -692,18 +813,34 @@ class AICompanionApp:
         self.idle_lbl.pack(fill="x", pady=(4, 0))
 
     def build_chat_panel(self):
-        self.transcript = tk.Text(self.center_panel, bg="#FFFFFF", fg="#333333", relief="flat",
+        # the input row must claim its space before the tabs expand into the rest, otherwise
+        # the expanding widget takes the whole panel and pushes it off-screen. It sits below
+        # both tabs, so you can talk to them while looking at their picture.
+        input_frame = tk.Frame(self.center_panel, bg="#F9F9F8")
+        input_frame.pack(side="bottom", fill="x", pady=(10, 0))
+
+        tab_bar = tk.Frame(self.center_panel, bg="#F9F9F8")
+        tab_bar.pack(side="top", fill="x")
+        self.tab_labels = {}
+        for key, text in (("chat", "Chat"), ("portrait", "Portrait")):
+            tab = tk.Label(tab_bar, text=text, padx=18, pady=5, cursor="hand2",
+                           font=(MAIN_FONT, 11, FONT_STYLE), highlightthickness=1)
+            tab.pack(side="left", padx=(0, 4))
+            tab.bind("<Button-1>", lambda event, k=key: self.show_tab(k))
+            self.tab_labels[key] = tab
+
+        self.tab_content = tk.Frame(self.center_panel, bg="#F9F9F8")
+        self.tab_content.pack(side="top", fill="both", expand=True)
+
+        self.transcript = tk.Text(self.tab_content, bg="#FFFFFF", fg="#333333", relief="flat",
                                   highlightbackground="#E0E0E0", highlightthickness=1, wrap="word",
                                   font=self.body_font, spacing1=4, spacing3=10, padx=14, pady=12)
         self.transcript.tag_config("them_name", foreground="#C5705D", font=self.speaker_font, spacing1=12)
         self.transcript.tag_config("you_name", foreground="#A0A0A0", font=self.speaker_font, spacing1=12)
         self.transcript.config(state="disabled")
 
-        # the input row must claim its space before the transcript expands into the rest,
-        # otherwise the expanding widget takes the whole panel and pushes it off-screen
-        input_frame = tk.Frame(self.center_panel, bg="#F9F9F8")
-        input_frame.pack(side="bottom", fill="x", pady=(10, 0))
-        self.transcript.pack(side="top", fill="both", expand=True)
+        self.build_portrait_view()
+        self.show_tab(self.tab)
 
         self.input_area = tk.Text(input_frame, bg="#FFFFFF", fg="#333333", relief="flat",
                                   highlightbackground="#E0E0E0", highlightthickness=1,
@@ -718,6 +855,31 @@ class AICompanionApp:
         self.send_btn.pack(side="right", fill="y", padx=(8, 0))
         self.input_area.pack(side="left", fill="both", expand=True)
 
+    def build_portrait_view(self):
+        self.portrait_view = tk.Frame(self.tab_content, bg="#FFFFFF", highlightbackground="#E0E0E0",
+                                      highlightthickness=1)
+        toolbar = tk.Frame(self.portrait_view, bg="#FFFFFF")
+        toolbar.pack(side="bottom", fill="x", padx=12, pady=10)
+        tk.Button(toolbar, text="Load a picture…", bg="#323232", fg="#FFFFFF", relief="flat",
+                  font=(MAIN_FONT, 10, FONT_STYLE), command=self.choose_portrait).pack(side="left", ipadx=10, ipady=2)
+        self.portrait_remove_btn = tk.Button(toolbar, text="Remove", bg="#E0E0E0", fg="#333333", relief="flat",
+                                             font=(MAIN_FONT, 10, FONT_STYLE), command=self.remove_portrait)
+        self.portrait_remove_btn.pack(side="left", padx=8, ipadx=10, ipady=2)
+        self.portrait_note = tk.Label(toolbar, text="", bg="#FFFFFF", fg="#cc6600", anchor="w",
+                                      font=(MAIN_FONT, 10, FONT_STYLE))
+        self.portrait_note.pack(side="left", fill="x", expand=True)
+
+        # placed, not packed, inside a frame that ignores its children's size: a large picture
+        # must not be able to grow the panel and squeeze the input row
+        area = tk.Frame(self.portrait_view, bg="#FFFFFF")
+        area.pack(side="top", fill="both", expand=True, padx=12, pady=(12, 0))
+        area.pack_propagate(False)
+        self.portrait_lbl = tk.Label(area, bg="#FFFFFF", fg="#A0A0A0", font=(MAIN_FONT, 12, FONT_STYLE),
+                                     text="No picture yet.\n\nLoad one below: a photo, or an animated GIF, "
+                                          "which plays on a loop.", justify="center")
+        self.portrait_lbl.place(x=0, y=0, relwidth=1, relheight=1)
+        self.player = PortraitPlayer(self.portrait_lbl)
+
     # ==========================================
     # RENDERING
     # ==========================================
@@ -725,6 +887,37 @@ class AICompanionApp:
         self.refresh_character()
         self.refresh_state()
         self.refresh_transcript()
+        self.refresh_portrait()
+
+    def show_tab(self, key):
+        self.tab = key
+        self.transcript.pack_forget()
+        self.portrait_view.pack_forget()
+        if key == "chat":
+            self.unread = False
+            self.transcript.pack(fill="both", expand=True)
+            self.transcript.see(tk.END)
+        else:
+            self.portrait_view.pack(fill="both", expand=True)
+        self.refresh_tabs()
+        self.update_portrait_playback()
+
+    def refresh_tabs(self):
+        for key, tab in self.tab_labels.items():
+            chosen = key == self.tab
+            tab.config(bg="#FFFFFF" if chosen else "#F9F9F8", fg="#333333" if chosen else "#A0A0A0",
+                       highlightbackground="#E0E0E0" if chosen else "#F9F9F8")
+        if self.unread:     # something was said while you were looking at the picture
+            self.tab_labels["chat"].config(text="Chat  ●", fg="#C5705D")
+        else:
+            self.tab_labels["chat"].config(text="Chat")
+
+    def update_portrait_playback(self):
+        """An animation plays only while its tab is showing and the app is open."""
+        if self.tab == "portrait" and self.in_chat:
+            self.player.play()
+        else:
+            self.player.pause()
 
     def refresh_character(self):
         character = self.data["character"]
@@ -1050,6 +1243,9 @@ class AICompanionApp:
         self.data["messages"].append(message)
         del self.data["messages"][:-MAX_MESSAGES]
         self.refresh_transcript()
+        if role == "them" and self.tab != "chat":
+            self.unread = True
+            self.refresh_tabs()
         self.save_data()
 
     def last_reply(self):
@@ -1458,19 +1654,86 @@ class AICompanionApp:
         self.library["docs"] = [doc for doc in self.library["docs"] if doc["id"] != doc_id]
         self.library_changed()
 
-    def choose_library_files(self, window):
-        # both windows stay on top otherwise, and the system file picker can open hidden behind them
+    def ask_for_files(self, window, ask, **options):
+        """Run a system file picker. The app — and the dialog asking, if any — stay on top
+        otherwise, and the picker can open hidden behind them."""
         self.root.attributes("-topmost", False)
-        window.attributes("-topmost", False)
+        if window is not None:
+            window.attributes("-topmost", False)
         try:
-            paths = filedialog.askopenfilenames(
-                parent=window, title="Add to the library",
-                filetypes=[("Guides and books", " ".join("*" + e for e in library.SUPPORTED)), ("All files", "*.*")])
+            return ask(parent=window or self.root, **options)
         finally:
             self.root.attributes("-topmost", True)
-            if window.winfo_exists():
+            if window is not None and window.winfo_exists():
                 self.keep_above_app(window)     # after the app, or the app lands on top of it again
+
+    def choose_library_files(self, window):
+        paths = self.ask_for_files(
+            window, filedialog.askopenfilenames, title="Add to the library",
+            filetypes=[("Guides and books", " ".join("*" + e for e in library.SUPPORTED)), ("All files", "*.*")])
         self.add_library_files(paths)
+
+    # ---------- the portrait ----------
+    def choose_portrait(self):
+        path = self.ask_for_files(
+            None, filedialog.askopenfilename, title="A picture of them",
+            filetypes=[("Pictures", " ".join("*" + e for e in PORTRAIT_TYPES)), ("All files", "*.*")])
+        if path:
+            self.load_portrait(path, chosen=True)
+
+    def remove_portrait(self):
+        self.data["character"].pop("portrait", None)
+        self.save_data()
+        self.refresh_portrait()
+
+    def refresh_portrait(self):
+        """Bring the player in line with the saved picture, reading it only when it changed."""
+        path = self.data["character"].get("portrait") or ""
+        if path != self.portrait_path:
+            self.portrait_path = path
+            if path:
+                self.load_portrait(path)
+            else:
+                self.portrait_request += 1
+                self.player.clear()
+                self.portrait_note.config(text="")
+        self.refresh_portrait_controls()
+
+    def refresh_portrait_controls(self):
+        self.portrait_remove_btn.config(state="normal" if self.data["character"].get("portrait") else "disabled")
+
+    def load_portrait(self, path, chosen=False):
+        """Read on a worker thread: an animated GIF can take a moment to decode."""
+        self.portrait_request += 1
+        self.portrait_note.config(text="opening…")
+        threading.Thread(target=self.portrait_worker, args=(path, chosen, self.portrait_request),
+                         daemon=True).start()
+
+    def portrait_worker(self, path, chosen, request):
+        try:
+            frames, error = read_portrait(path), ""
+        except PortraitError as e:
+            frames, error = None, str(e)
+        self.root.after(0, self.portrait_read, path, chosen, request, frames, error)
+
+    def portrait_read(self, path, chosen, request, frames, error):
+        if request != self.portrait_request:
+            return          # a newer picture was chosen, or the app was locked, while this one was read
+        if error:
+            # a refused new choice leaves the old picture alone; a saved one that is gone keeps
+            # its place, in case it is on a drive that is only unplugged
+            self.portrait_note.config(text="⚠ " + error)
+            if not chosen:
+                self.player.clear()
+            return
+        if chosen:
+            self.data["character"]["portrait"] = path
+            self.portrait_path = path
+            self.save_data()
+        self.player.show(frames)
+        self.portrait_note.config(text="")
+        self.refresh_portrait_controls()
+        self.update_portrait_playback()
 
     def show_library(self):
         window = tk.Toplevel(self.root)

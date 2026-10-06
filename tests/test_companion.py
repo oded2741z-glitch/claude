@@ -980,4 +980,174 @@ check("afterwards the app goes back on top first, and the library window after i
 check("and the library window still belongs to the app", str(library_window.transient()) == str(root))
 root.destroy()
 
+# ================= the portrait tab =================
+from PIL import Image
+
+pictures = tempfile.mkdtemp()
+def picture_path(name):
+    return os.path.join(pictures, name)
+
+Image.new("RGB", (400, 200), "#336699").save(picture_path("wide.png"))
+Image.new("RGB", (2000, 2000), "#993366").save(picture_path("huge.jpg"))
+colours = [Image.new("RGB", (60, 60), c) for c in ("red", "green", "blue")]
+colours[0].save(picture_path("loop.gif"), save_all=True, append_images=colours[1:], duration=[50, 50, 0], loop=0)
+with open(picture_path("broken.png"), "w") as f:
+    f.write("not really a picture")
+with open(picture_path("notes.txt"), "w") as f:
+    f.write("words")
+
+frames = app_mod.read_portrait(picture_path("loop.gif"))
+check("an animated GIF is read frame by frame", len(frames) == 3, len(frames))
+check("with each frame's own time, and a usable one where the file gives none",
+      [ms for _, ms in frames] == [50, 50, app_mod.DEFAULT_FRAME_MS], [ms for _, ms in frames])
+check("a still picture is one frame", len(app_mod.read_portrait(picture_path("wide.png"))) == 1)
+check("a huge picture is shrunk on reading",
+      max(app_mod.read_portrait(picture_path("huge.jpg"))[0][0].size) == app_mod.MAX_PORTRAIT_SIDE)
+saved_memory = app_mod.PORTRAIT_MEMORY
+app_mod.PORTRAIT_MEMORY = 60 * 60 * 4 * 2
+check("a long animation keeps only the part that fits in memory",
+      len(app_mod.read_portrait(picture_path("loop.gif"))) == 2)
+app_mod.PORTRAIT_MEMORY = 1
+check("but always at least its first frame", len(app_mod.read_portrait(picture_path("loop.gif"))) == 1)
+app_mod.PORTRAIT_MEMORY = saved_memory
+for name, words in [("notes.txt", "not a picture"), ("broken.png", "could not be opened"),
+                    ("gone.png", "no longer where it was")]:
+    try:
+        app_mod.read_portrait(picture_path(name))
+        check(f"{name} is refused", False)
+    except app_mod.PortraitError as e:
+        check(f"{name} is refused with a reason", words in str(e), str(e))
+
+root, app = open_app(password="newpass")
+check("the app opens on the chat tab", app.tab == "chat" and app.transcript.winfo_ismapped()
+      and not app.portrait_view.winfo_ismapped())
+
+def input_row_on_screen(where):
+    root.update()
+    bottom = app.input_area.winfo_rooty() - app.main_frame.winfo_rooty() + app.input_area.winfo_height()
+    check(f"{where}: the input box and Send are on screen",
+          app.input_area.winfo_ismapped() and app.send_btn.winfo_ismapped()
+          and bottom <= app.main_frame.winfo_height(), bottom)
+
+input_row_on_screen("chat tab")
+app.tab_labels["portrait"].event_generate("<Button-1>")
+root.update()
+check("clicking the Portrait tab shows it in place of the conversation",
+      app.tab == "portrait" and app.portrait_view.winfo_ismapped() and not app.transcript.winfo_ismapped())
+input_row_on_screen("portrait tab")
+check("with nothing loaded it says what to do", "No picture yet" in app.portrait_lbl.cget("text"))
+check("and there is nothing to remove", str(app.portrait_remove_btn.cget("state")) == "disabled")
+
+asked = {}
+def fake_open(**options):
+    asked["app on top"] = topmost_requested(app.root)
+    return asked["path"]
+real_open = app_mod.filedialog.askopenfilename
+app_mod.filedialog.askopenfilename = fake_open
+
+def choose(name):
+    asked["path"] = picture_path(name) if name else ""
+    app.choose_portrait()
+    root.update()
+
+choose("wide.png")
+check("while the picker is open the app does not cover it", asked["app on top"] is False)
+check("and afterwards the app is on top again", topmost_requested(app.root) is True)
+check("the picture is shown", len(app.player.frames) == 1 and app.portrait_lbl.cget("image") != "")
+area_w, area_h = app.portrait_lbl.winfo_width(), app.portrait_lbl.winfo_height()
+shown_w, shown_h = app.player.current.width(), app.player.current.height()
+check("fitted to the tab without stretching", (shown_w == area_w or shown_h == area_h)
+      and shown_w <= area_w and shown_h <= area_h and abs(shown_w / shown_h - 2) < 0.02,
+      f"{shown_w}x{shown_h} in {area_w}x{area_h}")
+check("it is remembered with the character", app.data["character"].get("portrait") == picture_path("wide.png"))
+stored, _ = core.read_store(app_mod.COMPANION_FILE, app.fernet)
+check("and saved — encrypted, like the rest", stored["character"].get("portrait") == picture_path("wide.png")
+      and "wide.png" not in open(app_mod.COMPANION_FILE, encoding="utf-8").read())
+check("now it can be removed", str(app.portrait_remove_btn.cget("state")) == "normal")
+
+choose("")
+check("cancelling the picker changes nothing", app.data["character"].get("portrait") == picture_path("wide.png"))
+choose("notes.txt")
+check("a file that is not a picture is refused, and says why", "not a picture" in app.portrait_note.cget("text"))
+check("and the picture already there stays", app.data["character"].get("portrait") == picture_path("wide.png")
+      and len(app.player.frames) == 1)
+choose("huge.jpg")
+input_row_on_screen("a huge picture")
+check("a huge picture is fitted too", app.player.current.height() <= app.portrait_lbl.winfo_height())
+check("a good picture clears the earlier complaint", app.portrait_note.cget("text") == "")
+
+choose("loop.gif")
+seen = []
+real_advance = app.player.advance
+def counting_advance():
+    real_advance()
+    seen.append(app.player.index)
+app.player.advance = counting_advance
+root.after(500, root.quit)
+root.mainloop()
+check("an animated GIF plays while its tab is showing", len(seen) >= 4, seen)
+check("and loops: after the last frame comes the first again",
+      any(a == 2 and b == 0 for a, b in zip(seen, seen[1:])), seen)
+
+app.show_tab("chat")
+before = list(seen)
+root.after(300, root.quit)
+root.mainloop()
+check("on the chat tab it pauses", seen == before and not app.player.playing and app.player.timer is None)
+app.show_tab("portrait")
+root.after(300, root.quit)
+root.mainloop()
+check("and carries on when you come back", len(seen) > len(before))
+
+fake_model('{"reply": "Did you see it?", "mood": "warm", "desire": "you", "closeness_delta": 0}')
+app.receive_reply('{"reply": "Did you see it?", "mood": "warm", "desire": "you", "closeness_delta": 0}')
+root.update()
+check("a message that comes while the picture is showing marks the chat tab",
+      "●" in app.tab_labels["chat"].cget("text"), app.tab_labels["chat"].cget("text"))
+check("the message itself is in the conversation", "Did you see it?" in app.transcript.get("1.0", "end"))
+check("and you stay where you were", app.tab == "portrait")
+app.tab_labels["chat"].event_generate("<Button-1>")
+root.update()
+check("opening the chat clears the mark", "●" not in app.tab_labels["chat"].cget("text"))
+app.receive_reply('{"reply": "Here now.", "mood": "warm", "desire": "you", "closeness_delta": 0}')
+root.update()
+check("a message read as it arrives marks nothing", "●" not in app.tab_labels["chat"].cget("text"))
+app.show_tab("portrait")
+app.append_message("you", "my own words")
+check("your own message marks nothing either", "●" not in app.tab_labels["chat"].cget("text"))
+
+app.return_to_cover()
+root.update()
+check("locking stops the animation", not app.player.playing and app.player.timer is None)
+check("and, with a password, lets go of the picture", app.player.frames == [] and app.portrait_path is None)
+app.pass_entry.insert(0, "newpass")
+app.verify_password()
+root.update()
+check("unlocking brings it back", len(app.player.frames) == 3)
+check("playing again, since its tab is the one showing", app.player.playing and app.player.timer is not None)
+app.player.pause()      # no frame timer left behind to fire into the next window
+root.destroy()
+
+root, app = open_app(password="newpass")
+root.update()
+check("after a restart the picture is still there", len(app.player.frames) == 3)
+check("but quiet until its tab is opened", app.tab == "chat" and not app.player.playing)
+root.destroy()
+
+os.rename(picture_path("loop.gif"), picture_path("moved.gif"))
+root, app = open_app(password="newpass")
+app.show_tab("portrait")
+root.update()
+check("a picture moved away says so", "no longer where it was" in app.portrait_note.cget("text"),
+      app.portrait_note.cget("text"))
+check("and keeps its place, in case the drive is only unplugged",
+      app.data["character"].get("portrait") == picture_path("loop.gif"))
+app.portrait_remove_btn.invoke()
+root.update()
+check("Remove forgets it", "portrait" not in app.data["character"] and app.portrait_note.cget("text") == ""
+      and "No picture yet" in app.portrait_lbl.cget("text"))
+check("and there is nothing left to remove", str(app.portrait_remove_btn.cget("state")) == "disabled")
+app_mod.filedialog.askopenfilename = real_open
+root.destroy()
+
 report()

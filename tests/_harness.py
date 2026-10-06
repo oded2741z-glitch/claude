@@ -64,6 +64,7 @@ def install_stubs():
     _stub("PIL", __version__="10.0.0", Image=types.SimpleNamespace(open=lambda p: None,
                                              Resampling=types.SimpleNamespace(LANCZOS=1)),
           ImageTk=types.SimpleNamespace(PhotoImage=lambda i: None))
+    record_topmost()
     _stub("speech_recognition", Recognizer=object, Microphone=object,
           WaitTimeoutError=type("W", (Exception,), {}), UnknownValueError=type("U", (Exception,), {}))
 
@@ -87,6 +88,29 @@ def run_threads_inline(module):
     module.threading = types.SimpleNamespace(Thread=InlineThread)
 
 
+topmost_log = []      # (window path, requested value), in the order the app asked
+
+
+def record_topmost():
+    """Record every "-topmost" request. Reading the attribute back is useless on X11 without a
+    window manager — Tk reports 1 after setting 0, and 0 after setting 1 — so tests check what
+    the app asked for, and in what order, instead."""
+    import tkinter as tk
+    original = tk.Wm.wm_attributes
+
+    def wm_attributes(self, *args, **kwargs):
+        if len(args) >= 2 and args[0] in ("-topmost", "topmost"):
+            topmost_log.append((str(self), bool(args[1])))
+        return original(self, *args, **kwargs)
+
+    tk.Wm.wm_attributes = tk.Wm.attributes = wm_attributes
+
+
+def topmost_requested(window):
+    asked = [value for path, value in topmost_log if path == str(window)]
+    return asked[-1] if asked else None
+
+
 def drag(widget, dx, dy):
     """Press on a widget and move the mouse by (dx, dy), the way a real drag arrives."""
     x, y = widget.winfo_rootx() + 5, widget.winfo_rooty() + 5
@@ -104,6 +128,8 @@ def check_dialog(name, root, window):
     (wx, wy), (rx, ry) = centre(window), centre(root)
     check(f"{name}: opens over the app, not in the corner", abs(wx - rx) <= 2 and abs(wy - ry) <= 2,
           f"dialog centre {wx},{wy} vs app centre {rx},{ry}")
+    check(f"{name}: is on top too, since the app is always on top", topmost_requested(window) is True)
+    check(f"{name}: belongs to the app, so clicking the app cannot bury it", str(window.transient()) == str(root))
     check(f"{name}: opens fully on screen", window.winfo_x() >= 0 and window.winfo_y() >= 0
           and window.winfo_x() + window.winfo_width() <= window.winfo_screenwidth()
           and window.winfo_y() + window.winfo_height() <= window.winfo_screenheight())

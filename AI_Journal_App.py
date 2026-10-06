@@ -749,6 +749,16 @@ class AIJournalHardcoded:
         x = max(0, min(x, self.root.winfo_screenwidth() - width))
         y = max(0, min(y, self.root.winfo_screenheight() - height))
         window.geometry(f"{width}x{height}+{x}+{y}")
+        self.keep_above_app(window)
+
+    def keep_above_app(self, window):
+        """The app is always-on-top, and an always-on-top window covers every ordinary one — its own
+        dialogs included. So a dialog must be on top too, and owned by the app (transient) so that
+        clicking the app does not raise it back over the dialog."""
+        window.transient(self.root)
+        window.attributes("-topmost", True)
+        window.lift()
+        window.focus_force()
 
     def make_draggable(self, window, *handles):
         """Borderless windows have no title bar to grab, so these widgets move the window instead.

@@ -6,7 +6,7 @@ import tempfile
 import types
 
 from _harness import (FakeCommunicate, check, check_dialog, edge_calls, install_stubs, isolate_home, report,
-                      run_threads_inline, tts_calls)
+                      run_threads_inline, topmost_log, topmost_requested, tts_calls)
 
 install_stubs()
 home = isolate_home()
@@ -959,6 +959,25 @@ for name, opener in [("settings", app.show_settings), ("character editor", app.s
                      ("memory", app.show_memory), ("library", app.show_library)]:
     opener()
     check_dialog(name, root, [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1])
+
+app.show_library()
+library_window = app.library_window
+during = {}
+def fake_picker(**options):
+    during["app on top"] = topmost_requested(app.root)
+    during["library on top"] = topmost_requested(library_window)
+    return ()
+real_picker = app_mod.filedialog.askopenfilenames
+app_mod.filedialog.askopenfilenames = fake_picker
+mark = len(topmost_log)
+app.choose_library_files(library_window)
+app_mod.filedialog.askopenfilenames = real_picker
+check("while the file picker is open, nothing is forced over it",
+      during == {"app on top": False, "library on top": False}, during)
+restored = [entry for entry in topmost_log[mark:] if entry[1]]
+check("afterwards the app goes back on top first, and the library window after it — so it ends up above",
+      restored == [(str(root), True), (str(library_window), True)], restored)
+check("and the library window still belongs to the app", str(library_window.transient()) == str(root))
 root.destroy()
 
 report()

@@ -24,10 +24,10 @@ try:
 except ImportError:
     GPU_AVAILABLE = False
 
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QGridLayout, QPushButton, QLabel,
-                             QLineEdit, QComboBox, QFrame, QFileDialog, QSizePolicy, QScrollArea,
-                             QStackedLayout, QCheckBox)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QGridLayout, QPushButton, QLabel, QLineEdit, QComboBox, QFrame,
+                             QFileDialog, QSizePolicy, QScrollArea, QStackedLayout, QCheckBox,
+                             QMessageBox)
 from PyQt5.QtCore import Qt, QUrl, QTimer, QPoint, pyqtSignal, QThread, QCoreApplication, QEvent
 from PyQt5.QtGui import QKeySequence, QFont, QColor, QPainter, QPen, QImage, QCursor
 from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -142,7 +142,7 @@ QCheckBox::indicator:checked {{ background: {C_ACCENT}; border: 1px solid {C_ACC
 def dc_default_state():
     return {
         "urls": [], "screens": ["", "", "", ""], "ratios": ["Free", "Free", "Free", "Free"],
-        "layout": "2x2", "window_w": 1280, "window_h": 800
+        "layout": "2x2", "window_w": 1280, "window_h": 800, "groups": []
     }
 
 def dc_load_state():
@@ -168,6 +168,11 @@ def dc_load_state():
                         while len(state["screens"]) <= idx: state["screens"].append("")
                         while len(state["ratios"]) <= idx: state["ratios"].append("Free")
                         state["screens"][idx], state["ratios"][idx] = url.strip(), ratio.strip()
+                elif line.startswith("GROUP:"):
+                    try:
+                        g = json.loads(line.split(":", 1)[1].strip())
+                        if isinstance(g, dict) and g.get("name"): state["groups"].append(g)
+                    except ValueError: pass
                 elif line.startswith("URL:"):
                     val = line.split(":", 1)[1].strip()
                     if "|" in val:
@@ -186,6 +191,7 @@ def dc_save_state(state):
                 ratio = state['ratios'][i] if i < len(state.get('ratios', [])) else "Free"
                 f.write(f"SCREEN_{i}: {url} | {ratio}\n")
             for u in state.get("urls", []): f.write(f"URL: {u['label']} | {u['url']}\n")
+            for g in state.get("groups", []): f.write("GROUP: " + json.dumps(g, ensure_ascii=False) + "\n")
     except Exception: pass
 
 def dc_normalize_url(raw):
@@ -591,6 +597,144 @@ class ConfigWindow(QWidget):
 
 
 # ==========================================
+# SAVED GROUPS POPUP WINDOW
+# ==========================================
+class GroupsWindow(QWidget):
+    def __init__(self, parent_app):
+        super().__init__()
+        self.parent_app = parent_app
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
+        self.setStyleSheet(STYLESHEET)
+        self.resize(420, 340)
+
+        if self.parent_app:
+            x = self.parent_app.x() + (self.parent_app.width() // 2) - (self.width() // 2)
+            y = self.parent_app.y() + (self.parent_app.height() // 2) - (self.height() // 2)
+            self.move(x, y)
+
+        self.container = QFrame(self)
+        self.container.setObjectName("Container")
+
+        main_vbox = QVBoxLayout(self)
+        main_vbox.setContentsMargins(0, 0, 0, 0)
+        main_vbox.addWidget(self.container)
+
+        layout = QVBoxLayout(self.container)
+        layout.setContentsMargins(1, 1, 1, 1)
+
+        title_bar = QFrame()
+        title_bar.setStyleSheet(f"background-color: {C_BG};")
+        t_layout = QHBoxLayout(title_bar)
+        t_layout.setContentsMargins(10, 5, 5, 5)
+
+        lbl = QLabel("SAVED GROUPS")
+        lbl.setStyleSheet(f"color: {C_ACCENT}; font-weight: bold; font-size: 11pt;")
+        t_layout.addWidget(lbl)
+        t_layout.addStretch()
+
+        q_btn = QPushButton("Quit")
+        q_btn.setObjectName("QuitButton")
+        q_btn.clicked.connect(self.close)
+        t_layout.addWidget(q_btn)
+        layout.addWidget(title_bar)
+
+        self.old_pos = None
+        title_bar.mousePressEvent = self.title_press
+        title_bar.mouseMoveEvent = self.title_move
+
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(15, 10, 15, 15)
+        content_layout.setSpacing(10)
+
+        save_layout = QHBoxLayout()
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Group name")
+        self.name_input.returnPressed.connect(self.save_current)
+        save_btn = QPushButton("SAVE CURRENT")
+        save_btn.setObjectName("AccentButton")
+        save_btn.clicked.connect(self.save_current)
+        save_layout.addWidget(self.name_input)
+        save_layout.addWidget(save_btn)
+        content_layout.addLayout(save_layout)
+
+        self.list_widget = QWidget()
+        self.list_layout = QVBoxLayout(self.list_widget)
+        self.list_layout.setContentsMargins(0, 0, 0, 0)
+        self.list_layout.setSpacing(4)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.list_widget)
+        content_layout.addWidget(scroll, stretch=1)
+
+        layout.addLayout(content_layout, stretch=1)
+        self.refresh()
+
+    def title_press(self, event):
+        if event.button() == Qt.LeftButton: self.old_pos = event.globalPos()
+
+    def title_move(self, event):
+        if self.old_pos:
+            delta = QPoint(event.globalPos() - self.old_pos)
+            self.move(self.x() + delta.x(), self.y() + delta.y())
+            self.old_pos = event.globalPos()
+
+    def refresh(self):
+        while self.list_layout.count():
+            w = self.list_layout.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        groups = self.parent_app.state_data.get("groups", [])
+        if not groups:
+            empty = QLabel("No saved groups yet.\nArrange the screens, type a name and press SAVE CURRENT.")
+            empty.setWordWrap(True)
+            empty.setStyleSheet("color: #777777;")
+            self.list_layout.addWidget(empty)
+        for i, g in enumerate(groups):
+            card = QFrame(); card.setObjectName("Card")
+            row = QHBoxLayout(card); row.setContentsMargins(4, 4, 4, 4)
+            text_col = QVBoxLayout(); text_col.setSpacing(2)
+            load_btn = QPushButton(g.get("name", f"Group {i + 1}"))
+            load_btn.setObjectName("AccentButton" if self.parent_app.is_current_group(g) else "")
+            load_btn.setToolTip("Load this group")
+            load_btn.clicked.connect(lambda checked, idx=i: self.load(idx))
+            info = QLabel(self.parent_app.group_summary(g))
+            info.setStyleSheet("color: #888888; font-size: 8pt;")
+            text_col.addWidget(load_btn)
+            text_col.addWidget(info)
+            row.addLayout(text_col, stretch=1)
+            del_btn = QPushButton("X")
+            del_btn.setObjectName("QuitButton")
+            del_btn.setFixedWidth(28)
+            del_btn.setToolTip("Delete this group")
+            del_btn.clicked.connect(lambda checked, idx=i: self.delete(idx))
+            row.addWidget(del_btn, alignment=Qt.AlignTop)
+            self.list_layout.addWidget(card)
+        self.list_layout.addStretch()
+
+    def save_current(self):
+        name = self.name_input.text().strip()
+        if not name:
+            name = f"Group {len(self.parent_app.state_data.get('groups', [])) + 1}"
+        self.parent_app.save_group(name)
+        self.name_input.clear()
+        self.refresh()
+
+    def load(self, idx):
+        self.parent_app.load_group(idx)
+        self.close()
+
+    def delete(self, idx):
+        groups = self.parent_app.state_data.get("groups", [])
+        if not 0 <= idx < len(groups): return
+        answer = QMessageBox.question(self, "Delete group", f"Delete group '{groups[idx].get('name', '')}'?",
+                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            self.parent_app.delete_group(idx)
+            self.refresh()
+
+
+# ==========================================
 # MAIN APPLICATION
 # ==========================================
 class CombinedSystemApp(QMainWindow):
@@ -604,6 +748,8 @@ class CombinedSystemApp(QMainWindow):
         self.previous_state = None
         self.focused_screen_idx = None
         self.config_window = None
+        self.groups_window = None
+        self.state_data.setdefault("groups", [])
         self.detection_enabled = False
         self.detect_person = True
         self.detect_drone = True
@@ -757,10 +903,19 @@ class CombinedSystemApp(QMainWindow):
         l_btn_layout.addStretch()
         layout_vbox.addWidget(l_btn_frame)
         
+        cfg_row = QHBoxLayout()
+        cfg_row.setContentsMargins(0, 0, 0, 0)
+        cfg_row.setSpacing(4)
         config_btn = QPushButton("[ CONFIGURATION ]")
         config_btn.setObjectName("AccentButton")
         config_btn.clicked.connect(self.show_config_popup)
-        layout_vbox.addWidget(config_btn)
+        cfg_row.addWidget(config_btn, stretch=1)
+        groups_btn = QPushButton("GROUPS")
+        groups_btn.setObjectName("AccentButton")
+        groups_btn.setToolTip("Show saved groups")
+        groups_btn.clicked.connect(self.show_groups_popup)
+        cfg_row.addWidget(groups_btn)
+        layout_vbox.addLayout(cfg_row)
 
         detect_status = "ON" if self.detection_enabled else "OFF"
         self._detect_btn = QPushButton(f"DETECTION: {detect_status}")
@@ -801,6 +956,10 @@ class CombinedSystemApp(QMainWindow):
 
         layout_vbox.addStretch()
         self.dashboard_layout.addWidget(layout_widget)
+        # Let the dashboard grow to fit the left-column controls instead of
+        # squashing the buttons; stays at 110px when they already fit.
+        left_h = layout_widget.sizeHint().height() + 10
+        self.dashboard_frame.setMaximumHeight(max(110, left_h))
         
         routing_widget = QWidget()
         self.routing_main_layout = QVBoxLayout(routing_widget)
@@ -810,6 +969,65 @@ class CombinedSystemApp(QMainWindow):
         self.routing_main_layout.addLayout(self.routing_grid)
         self.routing_main_layout.addStretch()
         self.dashboard_layout.addWidget(routing_widget, stretch=1)
+
+    # ================= SAVED GROUPS =================
+    def _current_arrangement(self):
+        # In 1x1 focus mode, save the arrangement the user will return to.
+        src = self.previous_state if self.previous_state is not None else self.state_data
+        return {"layout": src["layout"], "screens": list(src["screens"]), "ratios": list(src["ratios"])}
+
+    def save_group(self, name):
+        groups = self.state_data.setdefault("groups", [])
+        group = {"name": name}
+        group.update(self._current_arrangement())
+        for i, g in enumerate(groups):
+            if g.get("name") == name:
+                groups[i] = group
+                break
+        else:
+            groups.append(group)
+        dc_save_state(self.state_data)
+
+    def load_group(self, idx):
+        groups = self.state_data.get("groups", [])
+        if not 0 <= idx < len(groups): return
+        g = groups[idx]
+        screens = list(g.get("screens", []))[:4]
+        screens += [""] * (4 - len(screens))
+        ratios = list(g.get("ratios", []))[:4]
+        ratios += ["Free"] * (4 - len(ratios))
+        layout = g.get("layout") if g.get("layout") in DC_LAYOUT_COUNTS else "2x2"
+        self.previous_state = None
+        self.focused_screen_idx = None
+        self.state_data["screens"], self.state_data["ratios"] = screens, ratios
+        self.set_layout(layout)
+
+    def delete_group(self, idx):
+        groups = self.state_data.get("groups", [])
+        if 0 <= idx < len(groups):
+            groups.pop(idx)
+            dc_save_state(self.state_data)
+
+    def group_summary(self, g):
+        label_of = {u["url"]: u["label"] for u in self.state_data.get("urls", [])}
+        count = DC_LAYOUT_COUNTS.get(g.get("layout"), 4)
+        names = [label_of.get(u, u) if u else "-" for u in list(g.get("screens", []))[:count]]
+        return f"{g.get('layout', '?')}  |  " + ", ".join(names)
+
+    def is_current_group(self, g):
+        cur = self._current_arrangement()
+        count = DC_LAYOUT_COUNTS.get(cur["layout"], 4)
+        return (g.get("layout") == cur["layout"]
+                and list(g.get("screens", []))[:count] == cur["screens"][:count]
+                and list(g.get("ratios", []))[:count] == cur["ratios"][:count])
+
+    def show_groups_popup(self):
+        if self.groups_window is None or not self.groups_window.isVisible():
+            self.groups_window = GroupsWindow(self)
+            self.groups_window.show()
+        else:
+            self.groups_window.raise_()
+            self.groups_window.activateWindow()
 
     def show_config_popup(self):
         if self.config_window is None or not self.config_window.isVisible():
@@ -970,7 +1188,7 @@ class CombinedSystemApp(QMainWindow):
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if not line or line.startswith("#") or line.startswith("LAYOUT:") or line.startswith("SCREEN_"): continue
+                if not line or line.startswith(("#", "LAYOUT:", "SCREEN_", "WINDOW_SIZE:", "GROUP:")): continue
                 label, raw_url = "", line
                 sep = re.search(r"\s*[|,]\s*", line)
                 if sep:

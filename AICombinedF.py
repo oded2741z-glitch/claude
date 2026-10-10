@@ -28,8 +28,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QPushButton, QLabel,
                              QLineEdit, QComboBox, QFrame, QFileDialog, QSizePolicy, QScrollArea,
                              QStackedLayout, QCheckBox)
-from PyQt5.QtCore import Qt, QUrl, QTimer, QPoint, pyqtSignal, QThread, QCoreApplication
-from PyQt5.QtGui import QKeySequence, QFont, QColor, QPainter, QPen, QImage
+from PyQt5.QtCore import Qt, QUrl, QTimer, QPoint, pyqtSignal, QThread, QCoreApplication, QEvent
+from PyQt5.QtGui import QKeySequence, QFont, QColor, QPainter, QPen, QImage, QCursor
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
 # --- PATHS & CONFIG ---
@@ -52,6 +52,10 @@ C_QUIT_HOVER = "#ff0000"
 DC_LAYOUTS = ["1x1", "2x1", "2x2", "3x1"]
 DC_LAYOUT_COUNTS = {"1x1": 1, "2x1": 2, "2x2": 4, "3x1": 3}
 DC_RATIOS = ["Free", "16:9", "4:3"]
+
+# Frameless-window resize: grab zone width (px) and minimum size
+RESIZE_MARGIN = 6
+MIN_WIN_W, MIN_WIN_H = 480, 320
 
 DRONE_MODEL_PATH = os.path.join(BASE_DIR, "drone.pt")
 
@@ -633,6 +637,18 @@ class CombinedSystemApp(QMainWindow):
             keyboard.add_hotkey("f4", self.toggle_visibility)
         except ImportError: pass
 
+        self.setMinimumSize(MIN_WIN_W, MIN_WIN_H)
+        self._resize_start = None
+        self._resize_edges = None
+        self._cursor_overridden = False
+        self._edge_timer = QTimer(self)
+        self._edge_timer.timeout.connect(self._update_edge_cursor)
+        self._edge_timer.start(50)
+        self._save_size_timer = QTimer(self)
+        self._save_size_timer.setSingleShot(True)
+        self._save_size_timer.timeout.connect(self._save_window_size)
+        QApplication.instance().installEventFilter(self)
+
     # ================= UI BUILDING =================
     def _build_ui(self):
         self.container = QFrame()
@@ -706,11 +722,12 @@ class CombinedSystemApp(QMainWindow):
         self.old_pos = None
         self.title_bar.mousePressEvent = self.title_press
         self.title_bar.mouseMoveEvent = self.title_move
+        self.title_bar.mouseDoubleClickEvent = self.title_double_click
 
     def title_press(self, event):
         if event.button() == Qt.LeftButton: self.old_pos = event.globalPos()
     def title_move(self, event):
-        if self.old_pos:
+        if self.old_pos and not self.isMaximized():
             delta = QPoint(event.globalPos() - self.old_pos)
             self.move(self.x() + delta.x(), self.y() + delta.y())
             self.old_pos = event.globalPos()
@@ -1091,6 +1108,119 @@ class CombinedSystemApp(QMainWindow):
         else:
             self.hide()
             self.is_hidden = True
+
+    # ================= WINDOW RESIZE =================
+    # The window is frameless, so the OS gives it no resize border.
+    # Edges/corners are detected manually and handed to the OS resize
+    # (startSystemResize), with a manual drag fallback.
+    def _edges_at(self, gpos):
+        if not self.isVisible() or self.isMaximized() or self.isFullScreen():
+            return None
+        r = self.frameGeometry()
+        if not r.contains(gpos):
+            return None
+        m = RESIZE_MARGIN
+        left = gpos.x() <= r.left() + m
+        right = gpos.x() >= r.right() - m
+        top = gpos.y() <= r.top() + m
+        bottom = gpos.y() >= r.bottom() - m
+        if not (left or right or top or bottom):
+            return None
+        return (left, right, top, bottom)
+
+    @staticmethod
+    def _qt_edges(e):
+        left, right, top, bottom = e
+        edges = Qt.Edges()
+        if left: edges |= Qt.LeftEdge
+        if right: edges |= Qt.RightEdge
+        if top: edges |= Qt.TopEdge
+        if bottom: edges |= Qt.BottomEdge
+        return edges
+
+    @staticmethod
+    def _cursor_for(e):
+        left, right, top, bottom = e
+        if (left and top) or (right and bottom): return Qt.SizeFDiagCursor
+        if (right and top) or (left and bottom): return Qt.SizeBDiagCursor
+        if left or right: return Qt.SizeHorCursor
+        return Qt.SizeVerCursor
+
+    def _update_edge_cursor(self):
+        if self._resize_start is not None or QApplication.mouseButtons() != Qt.NoButton:
+            return
+        gpos = QCursor.pos()
+        e = self._edges_at(gpos)
+        under = QApplication.widgetAt(gpos)
+        if e and (under is None or under.window() is not self):
+            e = None
+        if e:
+            cursor = QCursor(self._cursor_for(e))
+            if self._cursor_overridden:
+                QApplication.changeOverrideCursor(cursor)
+            else:
+                QApplication.setOverrideCursor(cursor)
+                self._cursor_overridden = True
+        elif self._cursor_overridden:
+            QApplication.restoreOverrideCursor()
+            self._cursor_overridden = False
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if et == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            if isinstance(obj, QWidget) and obj.window() is self:
+                e = self._edges_at(event.globalPos())
+                if e:
+                    handle = self.windowHandle()
+                    if handle is not None and handle.startSystemResize(self._qt_edges(e)):
+                        return True
+                    self._resize_edges = e
+                    self._resize_start = (event.globalPos(), self.geometry())
+                    return True
+        elif et == QEvent.MouseMove and self._resize_start is not None:
+            self._manual_resize(event.globalPos())
+            return True
+        elif et == QEvent.MouseButtonRelease and self._resize_start is not None:
+            self._resize_start = None
+            self._resize_edges = None
+            return True
+        return super().eventFilter(obj, event)
+
+    def _manual_resize(self, gpos):
+        start_pos, g = self._resize_start
+        left, right, top, bottom = self._resize_edges
+        dx, dy = gpos.x() - start_pos.x(), gpos.y() - start_pos.y()
+        min_w, min_h = self.minimumWidth(), self.minimumHeight()
+        x, y, w, h = g.x(), g.y(), g.width(), g.height()
+        if right: w = max(min_w, g.width() + dx)
+        if bottom: h = max(min_h, g.height() + dy)
+        if left:
+            w = max(min_w, g.width() - dx)
+            x = g.x() + g.width() - w
+        if top:
+            h = max(min_h, g.height() - dy)
+            y = g.y() + g.height() - h
+        self.setGeometry(x, y, w, h)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_save_size_timer"):
+            self._save_size_timer.start(400)
+
+    def _save_window_size(self):
+        if self.isMaximized() or self.isFullScreen():
+            return
+        w, h = self.width(), self.height()
+        self.state_data["window_w"], self.state_data["window_h"] = w, h
+        dc_save_state(self.state_data)
+        if self.config_window is not None and self.config_window.isVisible():
+            self.config_window.w_input.setText(str(w))
+            self.config_window.h_input.setText(str(h))
+
+    def title_double_click(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.isMaximized(): self.showNormal()
+            else: self.showMaximized()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_F4: self.toggle_visibility()

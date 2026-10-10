@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QGridLayout, QPushButton, QLabel,
                              QLineEdit, QComboBox, QFrame, QFileDialog, QSizePolicy, QScrollArea,
                              QStackedLayout, QCheckBox)
-from PyQt5.QtCore import Qt, QUrl, QTimer, QPoint, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, QUrl, QTimer, QPoint, pyqtSignal, QThread, QCoreApplication
 from PyQt5.QtGui import QKeySequence, QFont, QColor, QPainter, QPen, QImage
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 
@@ -594,8 +594,6 @@ class CombinedSystemApp(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        qt_plugin_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), 'Lib', 'site-packages', 'PyQt5', 'Qt5', 'plugins')
-        if os.path.exists(qt_plugin_path): os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = qt_plugin_path
             
         self.state_data = dc_load_state()
         self.is_hidden = False
@@ -1118,7 +1116,27 @@ class CombinedSystemApp(QMainWindow):
         self.close()
         os._exit(0)
 
+def configure_qt_plugin_path():
+    # Must run before QApplication is created. Qt5 often fails to locate
+    # the "windows" platform plugin when Python lives under a non-ASCII
+    # path (e.g. a Hebrew user name), so point Qt at it explicitly.
+    import PyQt5
+    roots = [os.path.dirname(os.path.abspath(PyQt5.__file__))]
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        roots.insert(0, os.path.join(sys._MEIPASS, "PyQt5"))
+    for root in roots:
+        for sub in (("Qt5", "plugins"), ("Qt", "plugins"), ("plugins",)):
+            plugins_dir = os.path.join(root, *sub)
+            platforms_dir = os.path.join(plugins_dir, "platforms")
+            if os.path.isdir(platforms_dir):
+                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = platforms_dir
+                QCoreApplication.addLibraryPath(plugins_dir)
+                return platforms_dir
+    print("[WARN] Qt platform plugins folder not found under:", roots)
+    return None
+
 if __name__ == "__main__":
+    configure_qt_plugin_path()
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)

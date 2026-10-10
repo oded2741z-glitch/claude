@@ -35,6 +35,9 @@ DC_RATIOS = ["Free", "16:9", "4:3"]
 RESIZE_MARGIN = 6
 MIN_WIN_W, MIN_WIN_H = 480, 320
 
+# Quick-load group buttons per row in the dashboard
+GROUP_BAR_COLS = 3
+
 # --- GLOBAL STYLESHEET ---
 STYLESHEET = f"""
 QWidget {{
@@ -471,7 +474,7 @@ class CombinedSystemApp(QMainWindow):
             keyboard.add_hotkey("f4", self.toggle_visibility)
         except ImportError: pass
 
-        self.setMinimumSize(MIN_WIN_W, MIN_WIN_H)
+        self.setMinimumSize(max(MIN_WIN_W, self.title_bar.minimumSizeHint().width() + 2), MIN_WIN_H)
         self._resize_start = None
         self._resize_edges = None
         self._cursor_overridden = False
@@ -542,6 +545,34 @@ class CombinedSystemApp(QMainWindow):
         lbl.setStyleSheet(f"color: {C_ACCENT}; font-weight: bold; font-size: 11pt;")
         title_layout.addWidget(lbl)
         title_layout.addStretch()
+
+        # The title bar's background rule would also flatten these buttons,
+        # so they sit in a box that re-applies the normal button styles.
+        nav = QWidget()
+        nav.setStyleSheet(STYLESHEET)
+        nav_layout = QHBoxLayout(nav)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(4)
+        self.layout_btns = {}
+        for lay in DC_LAYOUTS:
+            btn = QPushButton(lay)
+            btn.setObjectName("AccentButton" if lay == self.state_data["layout"] else "")
+            btn.clicked.connect(lambda checked, l=lay: self.set_layout_user(l))
+            nav_layout.addWidget(btn)
+            self.layout_btns[lay] = btn
+        nav_layout.addSpacing(12)
+
+        config_btn = QPushButton("[ CONFIGURATION ]")
+        config_btn.setObjectName("AccentButton")
+        config_btn.clicked.connect(self.show_config_popup)
+        nav_layout.addWidget(config_btn)
+        groups_btn = QPushButton("GROUPS")
+        groups_btn.setObjectName("AccentButton")
+        groups_btn.setToolTip("Save, load and delete groups")
+        groups_btn.clicked.connect(self.show_groups_popup)
+        nav_layout.addWidget(groups_btn)
+        title_layout.addWidget(nav)
+        title_layout.addStretch()
         
         help_btn = QPushButton("Help")
         help_btn.clicked.connect(self.show_help)
@@ -573,45 +604,8 @@ class CombinedSystemApp(QMainWindow):
 
     # ================= COMMANDER LOGIC =================
     def build_dashboard(self):
-        layout_widget = QWidget()
-        layout_widget.setFixedWidth(240) 
-        layout_vbox = QVBoxLayout(layout_widget)
-        layout_vbox.setContentsMargins(0, 0, 0, 0)
-        
-        l_btn_frame = QFrame()
-        l_btn_layout = QHBoxLayout(l_btn_frame)
-        l_btn_layout.setContentsMargins(0, 0, 0, 0)
-        self.layout_btns = {}
-        for lay in DC_LAYOUTS:
-            btn = QPushButton(lay)
-            btn.setObjectName("AccentButton" if lay == self.state_data["layout"] else "")
-            btn.clicked.connect(lambda checked, l=lay: self.set_layout_user(l))
-            l_btn_layout.addWidget(btn)
-            self.layout_btns[lay] = btn
-        l_btn_layout.addStretch()
-        layout_vbox.addWidget(l_btn_frame)
-        
-        cfg_row = QHBoxLayout()
-        cfg_row.setContentsMargins(0, 0, 0, 0)
-        cfg_row.setSpacing(4)
-        config_btn = QPushButton("[ CONFIGURATION ]")
-        config_btn.setObjectName("AccentButton")
-        config_btn.clicked.connect(self.show_config_popup)
-        cfg_row.addWidget(config_btn, stretch=1)
-        groups_btn = QPushButton("GROUPS")
-        groups_btn.setObjectName("AccentButton")
-        groups_btn.setToolTip("Show saved groups")
-        groups_btn.clicked.connect(self.show_groups_popup)
-        cfg_row.addWidget(groups_btn)
-        layout_vbox.addLayout(cfg_row)
+        self.dashboard_layout.addWidget(self._build_group_bar(), stretch=1)
 
-        layout_vbox.addStretch()
-        self.dashboard_layout.addWidget(layout_widget)
-        # Let the dashboard grow to fit the left-column controls instead of
-        # squashing the buttons; stays at 110px when they already fit.
-        left_h = layout_widget.sizeHint().height() + 10
-        self.dashboard_frame.setMaximumHeight(max(110, left_h))
-        
         routing_widget = QWidget()
         self.routing_main_layout = QVBoxLayout(routing_widget)
         self.routing_main_layout.setContentsMargins(15, 0, 0, 0)
@@ -619,7 +613,7 @@ class CombinedSystemApp(QMainWindow):
         self.routing_grid.setSpacing(4) 
         self.routing_main_layout.addLayout(self.routing_grid)
         self.routing_main_layout.addStretch()
-        self.dashboard_layout.addWidget(routing_widget, stretch=1)
+        self.dashboard_layout.addWidget(routing_widget, stretch=2)
 
     # ================= SAVED GROUPS =================
     def _current_arrangement(self):
@@ -638,6 +632,7 @@ class CombinedSystemApp(QMainWindow):
         else:
             groups.append(group)
         dc_save_state(self.state_data)
+        self.refresh_group_bar()
 
     def load_group(self, idx):
         groups = self.state_data.get("groups", [])
@@ -658,6 +653,7 @@ class CombinedSystemApp(QMainWindow):
         if 0 <= idx < len(groups):
             groups.pop(idx)
             dc_save_state(self.state_data)
+            self.refresh_group_bar()
 
     def group_summary(self, g):
         label_of = {u["url"]: u["label"] for u in self.state_data.get("urls", [])}
@@ -679,6 +675,54 @@ class CombinedSystemApp(QMainWindow):
         else:
             self.groups_window.raise_()
             self.groups_window.activateWindow()
+
+    def _build_group_bar(self):
+        panel = QWidget()
+        panel.setMinimumWidth(200)
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(2)
+        hdr = QLabel("GROUPS")
+        hdr.setStyleSheet(f"color: {C_ACCENT}; font-size: 8pt; font-weight: bold;")
+        v.addWidget(hdr)
+        inner = QWidget()
+        inner_v = QVBoxLayout(inner)
+        inner_v.setContentsMargins(0, 0, 0, 0)
+        self.group_bar_grid = QGridLayout()
+        self.group_bar_grid.setSpacing(4)
+        for c in range(GROUP_BAR_COLS):
+            self.group_bar_grid.setColumnStretch(c, 1)
+        inner_v.addLayout(self.group_bar_grid)
+        inner_v.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(inner)
+        v.addWidget(scroll, stretch=1)
+        return panel
+
+    def refresh_group_bar(self):
+        if not hasattr(self, "group_bar_grid"): return
+        grid = self.group_bar_grid
+        while grid.count():
+            w = grid.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        groups = self.state_data.get("groups", [])
+        if not groups:
+            hint = QLabel("No saved groups.\nSave one with GROUPS above.")
+            hint.setStyleSheet("color: #555555; font-size: 8pt;")
+            grid.addWidget(hint, 0, 0, 1, GROUP_BAR_COLS)
+            return
+        for i, g in enumerate(groups):
+            name = g.get("name", f"Group {i + 1}")
+            btn = QPushButton(name)
+            btn.setObjectName("AccentButton" if self.is_current_group(g) else "")
+            btn.setToolTip(f"{name}\n{self.group_summary(g)}")
+            btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            btn.clicked.connect(lambda checked, idx=i: self.load_group(idx))
+            grid.addWidget(btn, i // GROUP_BAR_COLS, i % GROUP_BAR_COLS)
 
     def show_config_popup(self):
         if self.config_window is None or not self.config_window.isVisible():
@@ -770,6 +814,7 @@ class CombinedSystemApp(QMainWindow):
                 
             ratio_layout.addWidget(focus_btn); card_layout.addWidget(ratio_frame)
             self.routing_grid.addWidget(card, i // 2, i % 2)
+        self.refresh_group_bar()
 
     def focus_screen(self, idx):
         self.previous_state = {"layout": self.state_data["layout"], "screens": list(self.state_data["screens"]), "ratios": list(self.state_data["ratios"])}
@@ -789,7 +834,7 @@ class CombinedSystemApp(QMainWindow):
 
     def on_routing_change(self, screen_i, label, map_dict):
         self.state_data["screens"][screen_i] = map_dict.get(label, "")
-        dc_save_state(self.state_data); self.refresh_screens()
+        dc_save_state(self.state_data); self.refresh_screens(); self.refresh_group_bar()
 
     def set_layout(self, layout):
         self.state_data["layout"] = layout

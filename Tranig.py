@@ -1224,6 +1224,14 @@ class SegmentationDataset(Dataset):
         return to_input(img, IMG_SIZE), torch.from_numpy(mask)
 
 
+def freeze_batchnorm(model):
+    for m in model.modules():
+        if isinstance(m, torch.nn.BatchNorm2d):
+            m.eval()
+            for p in m.parameters():
+                p.requires_grad = False
+
+
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device, flush=True)
@@ -1233,26 +1241,23 @@ def main():
         sys.exit(1)
     samples = list_samples()
     print("Found", len(samples), "images with masks", flush=True)
-    if len(samples) < 2:
-        print("Error: need at least 2 images with masks in", MASK_DIR)
+    if not samples:
+        print("Error: no images with masks found in", MASK_DIR)
         sys.exit(1)
 
     num_classes = len(classes) + 1
     print("Classes:", ["background"] + classes, flush=True)
 
-    batch = max(2, min(BATCH, len(samples)))
-    if batch != BATCH:
-        print("Batch size set to", batch, "(DeepLabV3 needs at least 2 images per batch)", flush=True)
-
     ds = SegmentationDataset(samples, num_classes)
-    loader = DataLoader(ds, batch_size=batch, shuffle=True, drop_last=True)
+    loader = DataLoader(ds, batch_size=BATCH, shuffle=True)
 
     model = build_model(ARCH, num_classes, True).to(device)
+    model.train()
+    freeze_batchnorm(model)
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=LR, momentum=0.9, weight_decay=0.0001)
     criterion = torch.nn.CrossEntropyLoss(ignore_index=255)
 
-    model.train()
     for epoch in range(EPOCHS):
         running = 0.0
         for images, masks in loader:

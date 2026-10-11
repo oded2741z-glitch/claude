@@ -71,15 +71,18 @@ class MaskEditor:
         for combo in self.tag_combos:
             combo['values'] = self.tags
 
-    def load_tags(self):
-        loaded = []
+    def _read_tags(self):
         path = os.path.join(self.folder, "classes.txt") if self.folder else None
         if path and os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    loaded = [line.strip() for line in f if line.strip()]
-            except OSError:
-                loaded = []
+                with open(path, "r", encoding="utf-8-sig") as f:
+                    return [line.strip() for line in f if line.strip()]
+            except (OSError, UnicodeError):
+                pass
+        return []
+
+    def load_tags(self):
+        loaded = self._read_tags()
         self.tags = loaded or list(self.default_tags)
         self.refresh_tag_combos()
         if self.tag_var.get().strip() not in self.tags:
@@ -101,6 +104,10 @@ class MaskEditor:
         if not tag:
             tag = "object"
             self.tag_var.set(tag)
+        disk = self._read_tags()
+        if disk and disk != self.tags:
+            self.tags = disk
+            self.refresh_tag_combos()
         if tag not in self.tags:
             self.tags.append(tag)
             self.refresh_tag_combos()
@@ -303,8 +310,6 @@ class MaskEditor:
         if self.tool_var.get() == "Polygon":
             if view is self.poly_view and len(self.poly_pts) >= 3:
                 self.close_polygon()
-            else:
-                self._polygon_click(view, event)
             return
         self.on_press(view, event)
 
@@ -319,20 +324,23 @@ class MaskEditor:
         if self.poly_view is not view:
             self.cancel_polygon()
             self.poly_view = view
+        sx, sy = view["scale"]
         if len(self.poly_pts) >= 3:
             fx, fy = self.poly_pts[0]
-            if abs(event.x - fx) <= 8 and abs(event.y - fy) <= 8:
+            if abs(event.x - fx * sx) <= 8 and abs(event.y - fy * sy) <= 8:
                 self.close_polygon()
                 return
-        self.poly_pts.append((event.x, event.y))
+        self.poly_pts.append(self._to_image(view, event.x, event.y, clamp=True))
         self._draw_poly_preview()
 
     def _draw_poly_preview(self):
         canvas = self.poly_view["canvas"]
         canvas.delete("poly")
-        if len(self.poly_pts) >= 2:
-            canvas.create_line(*[c for p in self.poly_pts for c in p], fill="#FFFFFF", width=2, tags="poly")
-        for x, y in self.poly_pts:
+        sx, sy = self.poly_view["scale"]
+        pts = [(x * sx, y * sy) for x, y in self.poly_pts]
+        if len(pts) >= 2:
+            canvas.create_line(*[c for p in pts for c in p], fill="#FFFFFF", width=2, tags="poly")
+        for x, y in pts:
             canvas.create_oval(x - 3, y - 3, x + 3, y + 3, outline="#FFFFFF", fill="#E07A5F", tags="poly")
 
     def close_polygon(self):
@@ -340,7 +348,7 @@ class MaskEditor:
         if view is None or len(self.poly_pts) < 3 or self.mask is None:
             self.cancel_polygon()
             return
-        pts = [self._to_image(view, x, y, clamp=True) for x, y in self.poly_pts]
+        pts = list(self.poly_pts)
         value = self.current_value()
         self.cancel_polygon()
         ImageDraw.Draw(self.mask).polygon(pts, fill=value)
@@ -521,7 +529,8 @@ class TranigStudioApp:
         return True
 
     def stream_subprocess(self, cmd):
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', env=env)
         self.active_process = process
         try:
             for line in iter(process.stdout.readline, ''):
@@ -995,8 +1004,11 @@ class TranigStudioApp:
     def _read_dataset_classes(self, folder):
         classes_path = os.path.join(folder, "classes.txt")
         if os.path.exists(classes_path):
-            with open(classes_path, "r", encoding="utf-8") as f:
-                names = [line.strip() for line in f if line.strip()]
+            try:
+                with open(classes_path, "r", encoding="utf-8-sig") as f:
+                    names = [line.strip() for line in f if line.strip()]
+            except (OSError, UnicodeError):
+                names = []
             if names:
                 return names
         # Fall back to inferring class count from the mask files themselves.
@@ -1022,6 +1034,7 @@ class TranigStudioApp:
         if not self.train_dataset_dir:
             self.update_status("Status: Error - Please select a dataset folder first")
             return
+        self.train_set_dataset(self.train_dataset_dir)
         if not self.train_classes:
             self.update_status("Status: Error - No classes found in dataset")
             return
@@ -1187,7 +1200,7 @@ def load_classes():
         return list(CLASSES)
     path = os.path.join(DATASET_DIR, "classes.txt")
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return [line.strip() for line in f if line.strip()]
     return []
 
@@ -1332,7 +1345,7 @@ try:
 
     tags = []
     if os.path.exists(CLASSES_PATH):
-        with open(CLASSES_PATH, "r", encoding="utf-8") as f:
+        with open(CLASSES_PATH, "r", encoding="utf-8-sig") as f:
             tags = [line.strip() for line in f if line.strip()]
     lut = np.zeros(256, dtype=np.uint8)
     for i, name in enumerate(model_classes, start=1):
@@ -1451,8 +1464,12 @@ except Exception as e:
                 mask_path = os.path.join(mask_dir, mask)
                 if os.path.exists(mask_path):
                     shutil.copy(mask_path, os.path.join(part_mask_dir, mask))
-            with open(os.path.join(split_base, part, "classes.txt"), "w", encoding="utf-8") as f:
-                f.write("\n".join(self.ds_editor.tags) + "\n")
+            classes_src = os.path.join("my_dataset", "classes.txt")
+            if os.path.exists(classes_src):
+                shutil.copy(classes_src, os.path.join(split_base, part, "classes.txt"))
+            else:
+                with open(os.path.join(split_base, part, "classes.txt"), "w", encoding="utf-8") as f:
+                    f.write("\n".join(self.ds_editor.tags) + "\n")
 
         self.update_status(f"Status: Split {len(train_imgs)} Train / {len(val_imgs)} Val into my_dataset/split")
 

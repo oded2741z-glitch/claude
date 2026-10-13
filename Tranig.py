@@ -432,6 +432,8 @@ class TranigStudioApp:
         self.env_path = "venv"
         self.is_hidden = False
 
+        self.auto_model_path = None
+
         self.active_process = None
         self.is_running = False
         self.restore_win = None
@@ -600,12 +602,17 @@ class TranigStudioApp:
         self.tab_main = tk.Frame(self.notebook, bg="#121212")
         self.notebook.add(self.tab_main, text=" Vision Studio ")
 
-        # TAB 2: Video Studio
+        # TAB 2: Auto-Labeling Studio
+        self.tab_auto = tk.Frame(self.notebook, bg="#121212")
+        self.notebook.add(self.tab_auto, text=" Auto-Labeling Studio ")
+        self.setup_auto_tab()
+
+        # TAB 3: Video Studio
         self.tab_video = tk.Frame(self.notebook, bg="#121212")
         self.notebook.add(self.tab_video, text=" Video Studio ")
         self.setup_video_tab()
 
-        # TAB 3: Training Studio
+        # TAB 4: Training Studio
         self.tab_train = tk.Frame(self.notebook, bg="#121212")
         self.notebook.add(self.tab_train, text=" Training Studio ")
         self.setup_training_tab()
@@ -720,6 +727,60 @@ class TranigStudioApp:
 
         watermark = tk.Label(self.root, text="oT", bg="#121212", fg="#555555", font=("Arial", 9, "bold"))
         watermark.place(relx=1.0, rely=1.0, anchor=tk.SE, x=-6, y=-2)
+
+    def setup_auto_tab(self):
+        lbl = tk.Label(self.tab_auto, text="Auto-Labeling Studio", bg="#121212", fg="#E07A5F", font=("Arial", 16, "bold"))
+        lbl.pack(pady=(15, 5))
+
+        controls_frame = tk.Frame(self.tab_auto, bg="#121212")
+        controls_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        auto_settings_lf = ttk.LabelFrame(controls_frame, text=" 1. Run Auto-Labeling ")
+        auto_settings_lf.pack(side=tk.TOP, fill=tk.X, pady=5)
+
+        btn_args = {"bg": "#333333", "fg": "#FFFFFF", "relief": "flat", "borderwidth": 0, "padx": 10, "pady": 5}
+
+        self.auto_model_btn = tk.Button(auto_settings_lf, text="Select Trained Model", command=self.select_auto_model, **btn_args)
+        self.auto_model_btn.pack(side=tk.LEFT, padx=10, pady=10)
+
+        tk.Label(auto_settings_lf, text="Min Conf %:", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=5)
+        self.conf_pct_var = tk.StringVar(value="50")
+        tk.Entry(auto_settings_lf, textvariable=self.conf_pct_var, width=5, bg="#333333", fg="#FFFFFF", relief="flat", insertbackground="#FFFFFF", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+
+        self.auto_label_btn = tk.Button(auto_settings_lf, text="Start Auto-Labeling", command=self.auto_label_images, bg="#81B29A", fg="#121212", font=("Arial", 10, "bold"), relief="flat", borderwidth=0, padx=15, pady=5)
+        self.auto_label_btn.pack(side=tk.LEFT, padx=20, pady=10)
+
+        review_lf = ttk.LabelFrame(controls_frame, text=" 2. Review & Edit Masks ")
+        review_lf.pack(side=tk.TOP, fill=tk.X, pady=5)
+
+        review_top = tk.Frame(review_lf, bg="#121212")
+        review_top.pack(fill=tk.X, pady=5, padx=5)
+        tk.Button(review_top, text="Load Dataset Images", command=self.load_dataset_images, **btn_args).pack(side=tk.LEFT, padx=5)
+        tk.Button(review_top, text="Open Images Folder", command=self.open_images_folder, **btn_args).pack(side=tk.LEFT, padx=5)
+
+        tk.Label(review_top, text="Tag:", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=15)
+        self.auto_tag_cb = ttk.Combobox(review_top, textvariable=self.tag_var, font=("Arial", 10))
+        self.ds_editor.add_tag_combo(self.auto_tag_cb)
+        self.auto_tag_cb.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+
+        review_tool = tk.Frame(review_lf, bg="#121212")
+        review_tool.pack(fill=tk.X, pady=5, padx=5)
+        self._add_tool_controls(review_tool, self.ds_editor)
+
+        review_bot = tk.Frame(review_lf, bg="#121212")
+        review_bot.pack(fill=tk.X, pady=5, padx=5)
+        tk.Button(review_bot, text="Prev", command=self.ds_editor.prev_image, **btn_args).pack(side=tk.LEFT, padx=5)
+        tk.Button(review_bot, text="Next", command=self.ds_editor.next_image, **btn_args).pack(side=tk.LEFT, padx=5)
+
+        tk.Button(review_bot, text="Delete Image", command=self.ds_editor.delete_image, bg="#E04A3F", fg="#FFFFFF", relief="flat", borderwidth=0, padx=10, pady=5, font=("Arial", 9, "bold")).pack(side=tk.RIGHT, padx=5)
+        tk.Button(review_bot, text="Clear Current Image Mask", command=self.ds_editor.clear_mask, **btn_args).pack(side=tk.RIGHT, padx=5)
+
+        self.auto_img_counter_lbl = tk.Label(review_bot, text="0 / 0", bg="#121212", fg="#FFFFFF", font=("Arial", 10, "bold"))
+        self.auto_img_counter_lbl.pack(expand=True)
+
+        self.auto_img_canvas = tk.Canvas(self.tab_auto, bg="#000000", highlightthickness=1, highlightbackground="#333333")
+        self.auto_img_canvas.pack(fill=tk.BOTH, expand=True, padx=20, pady=(5, 20))
+        self.ds_editor.add_view(self.auto_img_canvas, self.auto_img_counter_lbl, (800, 500))
 
     def setup_video_tab(self):
         btn_args = {"bg": "#333333", "fg": "#FFFFFF", "relief": "flat", "borderwidth": 0, "padx": 10, "pady": 5}
@@ -1267,6 +1328,60 @@ print("Saved:", OUT_PATH, flush=True)
 '''
         return header + self._TORCH_MODEL_BODY + body
 
+    def _build_autolabel_script(self, model_path, dataset_dir, conf):
+        header = (
+            "MODEL_PATH = %r\n"
+            "DATASET_DIR = %r\n"
+            "CONF = %r\n"
+        ) % (model_path, dataset_dir, conf)
+        body = '''
+IMG_DIR = os.path.join(DATASET_DIR, "images")
+MASK_DIR = os.path.join(DATASET_DIR, "masks")
+CLASSES_PATH = os.path.join(DATASET_DIR, "classes.txt")
+
+try:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, model_classes, size = load_trained(MODEL_PATH, device)
+
+    tags = []
+    if os.path.exists(CLASSES_PATH):
+        with open(CLASSES_PATH, "r", encoding="utf-8-sig") as f:
+            tags = [line.strip() for line in f if line.strip()]
+    lut = np.zeros(256, dtype=np.uint8)
+    for i, name in enumerate(model_classes, start=1):
+        if name not in tags:
+            tags.append(name)
+        lut[i] = tags.index(name) + 1
+    with open(CLASSES_PATH, "w", encoding="utf-8") as f:
+        f.write("\\n".join(tags) + "\\n")
+
+    os.makedirs(MASK_DIR, exist_ok=True)
+    labeled_count = 0
+    skipped_count = 0
+
+    for img_name in sorted(os.listdir(IMG_DIR)):
+        if not img_name.lower().endswith((".png", ".jpg", ".jpeg")):
+            continue
+        mask_path = os.path.join(MASK_DIR, os.path.splitext(img_name)[0] + ".png")
+        if os.path.exists(mask_path):
+            skipped_count += 1
+            continue
+        with Image.open(os.path.join(IMG_DIR, img_name)) as im:
+            img = im.convert("RGB")
+        mask = lut[predict(model, img, size, device, CONF)]
+        if mask.any():
+            Image.fromarray(mask).save(mask_path)
+            labeled_count += 1
+            print("Auto-labeled:", img_name, flush=True)
+
+    print("\\n--- Auto-Labeling Complete ---")
+    print("Added %d new masks." % labeled_count)
+    print("Skipped %d existing masks." % skipped_count)
+except Exception as e:
+    print("Error during auto-labeling:", e)
+'''
+        return header + self._TORCH_MODEL_BODY + body
+
     # --- File Execution Methods ---
     def load_file(self, filename):
         if os.path.exists(filename):
@@ -1357,6 +1472,53 @@ print("Saved:", OUT_PATH, flush=True)
                     f.write("\n".join(self.ds_editor.tags) + "\n")
 
         self.update_status(f"Status: Split {len(train_imgs)} Train / {len(val_imgs)} Val into my_dataset/split")
+
+    # --- Auto-Labeling Methods ---
+    def select_auto_model(self):
+        filepath = filedialog.askopenfilename(title="Select Trained Model (.pth)", filetypes=[("PyTorch Model", "*.pth")])
+        if filepath:
+            self.auto_model_path = filepath
+            model_name = os.path.basename(filepath)
+            self.update_status(f"Status: Selected auto-label model: {model_name}")
+            short_name = model_name if len(model_name) <= 12 else model_name[:10] + "..."
+            self.auto_model_btn.config(text=f"Model: {short_name}", bg="#E07A5F", fg="#121212", font=("Arial", 9, "bold"))
+
+    def auto_label_images(self):
+        if not self.venv_python:
+            self.update_status("Status: Error - Activate environment first")
+            return
+        if not self.auto_model_path or not os.path.exists(self.auto_model_path):
+            self.update_status("Status: Error - Please select a trained model (.pth) first")
+            return
+
+        try:
+            float(self.conf_pct_var.get())
+        except ValueError:
+            self.update_status("Status: Error - Invalid confidence percentage")
+            return
+
+        if self.is_running:
+            self.update_status("Status: Error - Another process is already running")
+            return
+
+        self.notebook.select(self.tab_main)
+        self.update_status("Status: Starting Auto-Labeling...")
+        self.console.delete("1.0", tk.END)
+        self.append_console("--- Starting Auto-Labeling on Remaining Images ---\n")
+        self.start_task(self._auto_label_thread)
+
+    def _auto_label_thread(self):
+        script = self._build_autolabel_script(self.auto_model_path, "my_dataset", float(self.conf_pct_var.get()) / 100.0)
+        with open("auto_label_script.py", "w", encoding="utf-8") as f:
+            f.write(script)
+
+        self.stream_subprocess([self.venv_python, "auto_label_script.py"])
+
+        if os.path.exists("auto_label_script.py"):
+            os.remove("auto_label_script.py")
+
+        self.root.after(0, self.load_dataset_images)
+        self.root.after(0, lambda: self.update_status("Status: Auto-Labeling Complete!"))
 
     # --- General Utilities ---
     def start_move(self, event):

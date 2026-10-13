@@ -247,6 +247,79 @@ does. The drawing is to scale in both directions, the equipment (built-in
 shape or STL model) shows as its silhouette on that plane, and the
 ground is marked on the planes that have `z`.
 
+#### Measuring a lidar from its own data
+
+**📐 Measure from sensor...**, under Edit in the SELECTED SENSOR panel (Ouster
+lidars only), works out three of the six real values from what the lidar
+itself sees:
+
+| Value | From |
+| --- | --- |
+| **Height above the ground** (`z`) | the ground plane, found in the point cloud |
+| **Roll and pitch** | the ground plane's tilt, and the built-in IMU's gravity reading |
+
+Park on flat, open ground and keep the vehicle still. Pick **Live sensor**
+(its address) or a **Recording** of it (PCAP / OSF), and how many scans to
+use, then **Measure**. The reading runs in the background and fills a
+table - ground plane, IMU, and the real pose as it is now - with what each
+figure is based on (points used and the plane's RMS, IMU samples).
+
+How the ground is found: RANSAC on the points 1-40 m away, keeping only
+planes below the sensor and within 35° of its own z axis - so a wall or
+the side of a truck is never taken for the road - then a least-squares
+refit on the points within 3 cm. A plane has to gather at least 5% of the
+points to count. Height is measured to the origin of Ouster's sensor
+frame, at the base of the housing. Accelerations are read through the
+IMU-to-sensor transform in the sensor's metadata.
+
+Warnings appear under the table when:
+
+* little of the scan is ground (park with more open ground around);
+* the ground is rough (the RMS is shown - the height is off by about as
+  much);
+* the IMU is not steady (|a| far from 1 g, or the tilt wandering) - the
+  vehicle is moving or the engine is shaking it;
+* ground and IMU disagree by more than 0.5° - the road is probably
+  sloped. The ground plane gives the tilt against the road, the IMU
+  against gravity; choose with **Tilt from**: *Ground plane* (default),
+  *IMU (gravity)* or *Average*.
+
+Tick which values to keep (**Height / Roll / Pitch**) and **Apply to real
+pose**. They go into the real, measured pose with the date and
+`(from sensor)` beside it - never into the display position. **Yaw, x and
+y are left as they are**: a lidar cannot tell where it sits along the
+vehicle or which way the vehicle points from the ground alone. Measure
+them by hand, or with targets.
+
+If the dashboard is streaming the same sensor, the stream is stopped
+first: the measurement needs the sensor's UDP ports.
+
+#### Reference point and distances
+
+Each equipment item has a **reference point** - the point distances are
+measured from. Set it in **Config** (x / y / z in metres, or **Set to**
+ground centre, body centre, roof centre, front or rear at ground level);
+it starts at the origin, on the ground at the centre of the footprint.
+It is drawn as a yellow ✕ marked `ref`, in 3D and in 2D, with a dashed
+line to the selected sensor labelled with its distance.
+
+**📏 Distances...**, beside Config, opens two tables:
+
+* **From the reference point** - per sensor: dx / dy / dz, height above
+  the ground, and the straight-line distance.
+* **Between sensors** - per pair: dx / dy / dz and the distance. Select a
+  pair to see the second sensor **as seen from the first**: the
+  translation in the first sensor's own frame and the relative roll /
+  pitch / yaw - the transform that maps the second lidar's points into
+  the first one's frame.
+
+Positions come from the **real, measured pose** wherever a value was
+measured, and from the display position otherwise; the **Position from**
+column says which (`real`, `display`, or e.g. `real z` after measuring a
+height). **Lidars only** narrows both tables to the Ouster sensors, and
+**Copy tables** puts them on the clipboard as tab-separated text, ready
+for a spreadsheet. The window follows changes as they are made.
+
 #### Using your own model (STL)
 
 **3D model...** replaces the built-in shape with an **STL** file - binary
@@ -689,13 +762,16 @@ stream first rather than fighting the reader for the device.
 Each sensor also carries a `calibration` block - `{"x", "y", "z", "roll",
 "pitch", "yaw"}`, empty strings where nothing was measured - and a
 `calibrated` date: the real, surveyed pose, separate from the `mount`
-that only positions it in the 3D view. Records written before this get an
-empty calibration on load.
+that only positions it in the 3D view. `calibration_method` says how it
+was last set - `manual`, or `sensor: ground plane` / `sensor: IMU` /
+`sensor: ground + IMU` when measured from the lidar. Records written
+before this get an empty calibration on load.
 
 Each equipment item carries a `body` block - `{"length", "width",
 "height"}` in metres - and a `model` block - `{"path", "fit", "scale",
-"roll", "pitch", "yaw", "dx", "dy", "dz"}` for an optional STL - and each
-sensor a `mount` block - `{"x", "y", "z",
+"roll", "pitch", "yaw", "dx", "dy", "dz"}` for an optional STL - and a
+`reference` block - `{"x", "y", "z"}`, the point distances are measured
+from, the origin unless set - and each sensor a `mount` block - `{"x", "y", "z",
 "roll", "pitch", "yaw"}` - giving its place on that equipment.
 
 Each sensor also carries a `legacy` block - `{"kind", "created", "note",

@@ -84,7 +84,7 @@ import warnings
 from collections import deque
 from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 
-__version__ = "2.16.0"
+__version__ = "2.17.0"
 # this edition reads, configures, views and replays sensors, but does not
 # record them - the recording edition is kept in backup/V4-record
 EDITION = "lean"
@@ -350,6 +350,8 @@ MOUNT_KEYS = ("x", "y", "z", "roll", "pitch", "yaw")
 DEFAULT_CALIBRATION = {key: "" for key in MOUNT_KEYS}
 # length (x) x width (y) x height (z), in metres
 DEFAULT_BODY = {"length": "2.0", "width": "1.0", "height": "1.0"}
+# the point distances are measured from, in the equipment frame
+DEFAULT_REFERENCE = {"x": "0", "y": "0", "z": "0"}
 # an optional STL standing in for the built-in shape
 DEFAULT_MODEL = {"path": "", "fit": True, "scale": "1",
                  "roll": "0", "pitch": "0", "yaw": "0",
@@ -687,6 +689,7 @@ class Store:
         sensor["calibration"] = {**copy.deepcopy(DEFAULT_CALIBRATION),
                                  **calibration}
         sensor.setdefault("calibrated", "")
+        sensor.setdefault("calibration_method", "")
         # the baseline a sensor can always be taken back to. Records written
         # before baselines existed adopt their current settings as one.
         legacy = sensor.get("legacy")
@@ -717,6 +720,11 @@ class Store:
         if not isinstance(model, dict):
             model = {}
         equipment["model"] = {**copy.deepcopy(DEFAULT_MODEL), **model}
+        reference = equipment.get("reference")
+        if not isinstance(reference, dict):
+            reference = {}
+        equipment["reference"] = {**copy.deepcopy(DEFAULT_REFERENCE),
+                                  **reference}
         return equipment
 
     @staticmethod
@@ -2723,6 +2731,322 @@ def icon_polygons(parts: list, color: str):
     return faces, colors
 
 
+# --- measuring a lidar's pose from its own data ----------------------------
+# With the vehicle standing on flat ground, an Ouster can tell its own height
+# and tilt: the road is the biggest plane in its point cloud, and its IMU
+# feels gravity. Neither says anything about yaw or where the sensor sits
+# along the vehicle - those need targets, or a tape measure.
+GROUND_RANGE = (1.0, 40.0)      # metres; nearer is the vehicle, farther noise
+GROUND_TOLERANCE = 0.03         # metres from the plane that count as ground
+GROUND_MAX_TILT = 35.0          # degrees between the sensor's z and "up"
+POSE_DISAGREE_DEG = 0.5         # ground vs IMU, beyond which we warn
+GROUND_MIN_FRACTION = 0.05      # of the points in range, to accept a plane
+
+
+def tilt_from_up(up) -> tuple:
+    """Roll and pitch, in degrees, of a sensor that sees "up" along `up`.
+
+    `up` is the world's up direction in the sensor's own frame (the ground
+    normal, or the accelerometer at rest). Uses the same convention as
+    rotation_matrix: the sensor's up is R^T z = (-sin p, cos p sin r,
+    cos p cos r). Yaw cannot be seen this way.
+    """
+    up = np.asarray(up, dtype=float)
+    up = up / np.linalg.norm(up)
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, -up[0]))))
+    roll = math.degrees(math.atan2(up[1], up[2]))
+    return roll, pitch
+
+
+def fit_ground_plane(points, rng=None, iterations: int = 300,
+                     tolerance: float = GROUND_TOLERANCE,
+                     max_tilt: float = GROUND_MAX_TILT) -> dict:
+    """Find the ground under a lidar: RANSAC, then a least-squares refit.
+
+    `points` is (N, 3) in the sensor frame, metres. Only planes below the
+    sensor whose normal is within `max_tilt` of the sensor's own z are
+    considered, so a wall or the side of a truck is never taken for the
+    road. Returns {"height", "normal", "inliers", "fraction", "rms"}, or
+    {"error": why} when no ground could be found.
+    """
+    rng = rng if rng is not None else np.random.default_rng(0)
+    points = np.asarray(points, dtype=float).reshape(-1, 3)
+    points = points[np.all(np.isfinite(points), axis=1)]
+    distance = np.linalg.norm(points, axis=1)
+    points = points[(distance > GROUND_RANGE[0])
+                    & (distance < GROUND_RANGE[1])]
+    if len(points) < 50:
+        return {"error": "too few points in range to look for the ground"}
+    # the ground is below the sensor: draw candidates from the low half
+    low = points[points[:, 2] < np.median(points[:, 2])]
+    if len(low) < 3:
+        low = points
+    min_up = math.cos(math.radians(max_tilt))
+    best, best_count = None, 0
+    for _ in range(iterations):
+        a, b, c = low[rng.choice(len(low), 3, replace=False)]
+        normal = np.cross(b - a, c - a)
+        size = np.linalg.norm(normal)
+        if size < 1e-9:
+            continue
+        normal /= size
+        if normal[2] < 0:
+            normal = -normal
+        if normal[2] < min_up:
+            continue                       # too steep to be the road
+        offset = -normal @ a               # plane: n.p + offset = 0
+        if offset <= 0.05:
+            continue                       # not below the sensor
+        count = int(np.count_nonzero(
+            np.abs(points @ normal + offset) < tolerance))
+        if count > best_count:
+            best, best_count = (normal, offset), count
+    # a plane slicing diagonally through walls also gathers a strip of
+    # points; real ground is a good share of any outdoor scan
+    if best is None or best_count < max(200, GROUND_MIN_FRACTION
+                                        * len(points)):
+        return {"error": "no flat ground found below the sensor"}
+    normal, offset = best
+    for _ in range(3):                     # refit on the inliers
+        inliers = points[np.abs(points @ normal + offset) < tolerance]
+        centre = inliers.mean(axis=0)
+        _, _, vt = np.linalg.svd(inliers - centre, full_matrices=False)
+        normal = vt[2] if vt[2][2] > 0 else -vt[2]
+        offset = -normal @ centre
+    residual = inliers @ normal + offset
+    return {"height": float(offset), "normal": normal,
+            "inliers": int(len(inliers)),
+            "fraction": float(len(inliers) / len(points)),
+            "rms": float(np.sqrt(np.mean(residual ** 2)))}
+
+
+def imu_tilt(accels) -> dict:
+    """Roll and pitch from accelerometer samples taken at rest.
+
+    `accels` is (N, 3) in the sensor frame, in g. At rest the reading is
+    the reaction to gravity, so it points up. Also reports how far the
+    magnitude is from 1 g and how much the tilt wanders between samples -
+    both large when the vehicle is moving or the engine shakes it.
+    """
+    accels = np.asarray(accels, dtype=float).reshape(-1, 3)
+    accels = accels[np.all(np.isfinite(accels), axis=1)]
+    norms = np.linalg.norm(accels, axis=1)
+    accels = accels[norms > 0.2]
+    if len(accels) < 5:
+        return {"error": "too few IMU samples"}
+    mean = accels.mean(axis=0)
+    roll, pitch = tilt_from_up(mean)
+    unit = accels / np.linalg.norm(accels, axis=1)[:, None]
+    spread = np.degrees(np.arccos(np.clip(
+        unit @ (mean / np.linalg.norm(mean)), -1.0, 1.0)))
+    return {"roll": roll, "pitch": pitch, "up": mean / np.linalg.norm(mean),
+            "samples": int(len(accels)),
+            "g": float(np.linalg.norm(accels, axis=1).mean()),
+            "spread": float(np.std(spread) + np.mean(spread))}
+
+
+def analyse_pose(points, accels) -> dict:
+    """Height, roll and pitch from a cloud and IMU samples, with warnings.
+
+    Either input may be empty. The result holds "ground" and "imu" (each a
+    dict, or one with an "error"), and "warnings", a list of sentences.
+    """
+    out = {"ground": {"error": "no point cloud"},
+           "imu": {"error": "no IMU samples"}, "warnings": []}
+    if points is not None and len(points):
+        out["ground"] = fit_ground_plane(points)
+    if accels is not None and len(accels):
+        out["imu"] = imu_tilt(accels)
+    ground, imu = out["ground"], out["imu"]
+    if "error" not in ground:
+        ground["roll"], ground["pitch"] = tilt_from_up(ground["normal"])
+        if ground["fraction"] < 0.15:
+            out["warnings"].append(
+                f"Only {ground['fraction']:.0%} of the points are ground - "
+                "park with more open, flat ground around the vehicle.")
+        if ground["rms"] > 0.02:
+            out["warnings"].append(
+                f"The ground is rough or uneven ({ground['rms'] * 100:.1f} cm "
+                "RMS) - the height may be off by about as much.")
+    if "error" not in imu:
+        if "error" not in ground and imu["up"] @ ground["normal"] < 0:
+            # a unit reporting gravity rather than its reaction: flip it
+            imu["up"] = -imu["up"]
+            imu["roll"], imu["pitch"] = tilt_from_up(imu["up"])
+        if abs(imu["g"] - 1.0) > 0.05 or imu["spread"] > 0.5:
+            out["warnings"].append(
+                "The IMU is not steady (|a| = "
+                f"{imu['g']:.3f} g, wander {imu['spread']:.2f}°) - the "
+                "vehicle may be moving or the engine shaking it.")
+    if "error" not in ground and "error" not in imu:
+        d_roll = imu["roll"] - ground["roll"]
+        d_pitch = imu["pitch"] - ground["pitch"]
+        out["difference"] = (d_roll, d_pitch)
+        if max(abs(d_roll), abs(d_pitch)) > POSE_DISAGREE_DEG:
+            out["warnings"].append(
+                f"Ground and IMU disagree by {d_roll:+.2f}° roll, "
+                f"{d_pitch:+.2f}° pitch - the ground is probably sloped. "
+                "The ground plane gives the tilt against the road, the IMU "
+                "against gravity.")
+    return out
+
+
+def imu_packet_accels(packet) -> np.ndarray:
+    """An IMU packet's accelerations as (N, 3), in g, for any SDK.
+
+    ouster-sdk >= 1.0 has `accel()`, a method returning (N, 3) in m/s^2;
+    older releases have an `accel` attribute of three values in g.
+    """
+    accel = packet.accel
+    if callable(accel):
+        accel = accel()
+    values = np.asarray(accel, dtype=float).reshape(-1, 3)
+    if len(values) and np.linalg.norm(values, axis=1).mean() > 3.0:
+        values = values / 9.80665              # m/s^2 -> g
+    return values
+
+
+def read_ouster_samples(source: str, scans: int = 10, imu_seconds: float = 2.0,
+                        log=print, stop=None) -> tuple:
+    """Points and IMU samples from a live Ouster or a PCAP / OSF recording.
+
+    Returns (points (N, 3) m, accels (M, 3) g), both in the sensor frame -
+    the frame Ouster defines at the base of the housing - with the user
+    extrinsics left out on purpose. Runs on a worker thread: no Tk here.
+    """
+    if not HAVE_OUSTER:
+        raise RuntimeError(f"ouster-sdk is not installed "
+                           f"({OUSTER_IMPORT_ERROR})")
+    stop = stop or threading.Event()
+    accels = []
+    try:
+        from ouster.sdk import open_packet_source
+    except Exception:
+        open_packet_source = None
+    if open_packet_source is not None:
+        log(f"Reading IMU from {source} ...")
+        packets = None
+        try:
+            packets = open_packet_source(source)
+            info = source_metadata(packets)
+            rotation = np.eye(3)
+            transform = getattr(info, "imu_to_sensor_transform", None)
+            if transform is not None:
+                rotation = np.asarray(transform, dtype=float)[:3, :3]
+            started = time.monotonic()
+            for item in packets:
+                packet = item[1] if isinstance(item, tuple) else item
+                if isinstance(packet, ouster_core.ImuPacket):
+                    for sample in imu_packet_accels(packet):
+                        accels.append(rotation @ sample)
+                if stop.is_set() or len(accels) >= 2000 or (
+                        time.monotonic() - started > imu_seconds
+                        and len(accels) >= 20):
+                    break
+        except Exception as e:
+            log(f"No IMU data ({e}); measuring from the ground only.")
+        finally:
+            if packets is not None:
+                try:
+                    packets.close()
+                except Exception:
+                    pass
+    log(f"Got {len(accels)} IMU sample(s). Reading {scans} scan(s) ...")
+    points = []
+    source_obj = open_source(source, sensor_idx=0)
+    try:
+        info = source_metadata(source_obj)
+        lut = None
+        for item in source_obj:
+            for frame in frames_from_item(item):
+                frame_info = getattr(frame, "sensor_info", None) or info
+                if lut is None:
+                    try:
+                        lut = ouster_core.XYZLut(frame_info,
+                                                 use_extrinsics=False)
+                    except TypeError:          # older SDKs: no extrinsics
+                        lut = ouster_core.XYZLut(frame_info)
+                xyz = np.asarray(lut(frame), dtype=float).reshape(-1, 3)
+                ranges = np.asarray(frame.field("RANGE")).reshape(-1)
+                points.append(xyz[ranges > 0])
+            if stop.is_set() or len(points) >= scans:
+                break
+    finally:
+        try:
+            source_obj.close()
+        except Exception:
+            pass
+    if not points:
+        raise RuntimeError("no scans came from the source")
+    cloud = np.vstack(points)
+    log(f"Got {len(points)} scan(s), {len(cloud)} points.")
+    return cloud, (np.vstack(accels) if accels else np.zeros((0, 3)))
+
+
+# --- distances between sensors and from a reference point ------------------
+
+
+def effective_pose(sensor: dict) -> tuple:
+    """A sensor's pose for measuring: each value from the real, measured
+    pose when it was measured, otherwise from the display position.
+
+    Returns (values: {key: float}, real: set of keys taken from the
+    measurement).
+    """
+    values, real = {}, set()
+    calibration = sensor.get("calibration") or {}
+    mount = sensor.get("mount") or {}
+    for key in MOUNT_KEYS:
+        text = str(calibration.get(key, "")).strip()
+        try:
+            values[key] = float(text)
+            real.add(key)
+            continue
+        except ValueError:
+            pass
+        try:
+            values[key] = float(mount.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            values[key] = 0.0
+    return values, real
+
+
+def pose_source(real: set, keys=("x", "y", "z")) -> str:
+    """'real', 'display', or which of `keys` are real, for a table cell."""
+    measured = [key for key in keys if key in real]
+    if len(measured) == len(keys):
+        return "real"
+    if not measured:
+        return "display"
+    return "real " + "/".join(measured)
+
+
+def reference_point(equipment: dict) -> np.ndarray:
+    reference = equipment.get("reference") or {}
+    out = []
+    for key in ("x", "y", "z"):
+        try:
+            out.append(float(reference.get(key, 0) or 0))
+        except (TypeError, ValueError):
+            out.append(0.0)
+    return np.array(out)
+
+
+def relative_pose(a: dict, b: dict) -> dict:
+    """Where sensor b sits as seen from sensor a: the extrinsic that maps
+    b's points into a's frame. Both are effective_pose() value dicts."""
+    ra = rotation_matrix(a["roll"], a["pitch"], a["yaw"])
+    rb = rotation_matrix(b["roll"], b["pitch"], b["yaw"])
+    offset = np.array([b[k] - a[k] for k in ("x", "y", "z")])
+    translation = ra.T @ offset
+    relative = ra.T @ rb
+    pitch = math.degrees(math.asin(max(-1.0, min(1.0, -relative[2, 0]))))
+    roll = math.degrees(math.atan2(relative[2, 1], relative[2, 2]))
+    yaw = math.degrees(math.atan2(relative[1, 0], relative[0, 0]))
+    return {"translation": translation, "roll": roll, "pitch": pitch,
+            "yaw": yaw, "distance": float(np.linalg.norm(offset))}
+
+
 def mount_presets(length: float, width: float, height: float) -> dict:
     """Common mounting spots, worked out from the body's size."""
     return {
@@ -2882,7 +3206,7 @@ class LayoutConfigDialog(tk.Toplevel):
         super().__init__(parent)
         self.layout = layout
         self.title(f"Config  ·  {layout.equipment.get('name', '')}")
-        self.geometry("420x560")
+        self.geometry("420x700")
         self.configure(bg=Theme.BG)
         self.transient(parent)
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -2951,6 +3275,39 @@ class LayoutConfigDialog(tk.Toplevel):
                                 command=layout.on_apply_mount)
         self.apply.pack(fill=tk.X, pady=(6, 0))
 
+        reference = ttk.LabelFrame(self, text="  REFERENCE POINT  ",
+                                   padding=10)
+        reference.pack(fill=tk.X, padx=12, pady=6)
+        ttk.Label(reference, text="The point distances are measured from "
+                                  "(the Distances window, and the dashed "
+                                  "line to the selected sensor).",
+                  style="Hint.TLabel", wraplength=360,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 6))
+        grid = ttk.Frame(reference, style="Panel.TFrame")
+        grid.pack(fill=tk.X)
+        for column, key in enumerate(("x", "y", "z")):
+            ttk.Label(grid, text=f"{key} [m]",
+                      style="Muted.TLabel").grid(row=0, column=column * 2,
+                                                 sticky=tk.W)
+            entry = ttk.Entry(grid, textvariable=layout.reference_vars[key],
+                              width=7)
+            entry.grid(row=0, column=column * 2 + 1, padx=(4, 10))
+            entry.bind("<Return>", lambda e: layout.on_apply_reference())
+        row = ttk.Frame(reference, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(row, text="Set to:", style="Muted.TLabel").pack(
+            side=tk.LEFT, padx=(0, 6))
+        presets = ttk.Combobox(row, textvariable=layout.reference_preset,
+                               values=["ground centre", "body centre",
+                                       "roof centre", "front, ground",
+                                       "rear, ground"],
+                               state="readonly", width=14)
+        presets.pack(side=tk.LEFT)
+        presets.bind("<<ComboboxSelected>>",
+                     lambda e: layout.on_reference_preset())
+        ttk.Button(row, text="Apply reference",
+                   command=layout.on_apply_reference).pack(side=tk.RIGHT)
+
         ttk.Button(self, text="Close",
                    command=self.close).pack(side=tk.BOTTOM, padx=12,
                                             pady=(0, 12), fill=tk.X)
@@ -2975,6 +3332,487 @@ class LayoutConfigDialog(tk.Toplevel):
         self.destroy()
 
 
+class MeasurePoseDialog(tk.Toplevel):
+    """Measure a lidar's height, roll and pitch from its own data.
+
+    The work happens on a thread (reading scans and IMU packets can take a
+    few seconds); results come back through a queue polled from Tk. The
+    values only reach the sensor's *real* pose when Apply is pressed -
+    never the display position.
+    """
+
+    ROWS = (("height", "Height above ground", " m", "{:.3f}"),
+            ("roll", "Roll", "°", "{:+.2f}"),
+            ("pitch", "Pitch", "°", "{:+.2f}"))
+    SOURCES = ("Ground plane", "IMU (gravity)", "Average")
+
+    def __init__(self, parent, layout, sensor, acquire=None):
+        super().__init__(parent)
+        self.layout = layout
+        self.app = layout.app
+        self.sensor = sensor
+        self.acquire = acquire or read_ouster_samples
+        self.result = None
+        self.events = queue.Queue()
+        self.stop_event = threading.Event()
+        self.worker = None
+        self.title(f"Measure from sensor  ·  {sensor.get('name', '')}")
+        self.configure(bg=Theme.BG)
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+
+        box = ttk.Frame(self, style="Panel.TFrame", padding=12)
+        box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 6))
+        ttk.Label(box, text=f"{sensor.get('name', '')}  ·  "
+                            f"{sensor.get('host', '') or 'no address'}",
+                  style="TLabel").pack(anchor=tk.W)
+        ttk.Label(box, text="Fits the ground plane in the point cloud and "
+                            "reads the built-in IMU, to measure the "
+                            "sensor's height above the ground, roll and "
+                            "pitch. Park on flat, open ground and keep the "
+                            "vehicle still. Yaw, x and y cannot be seen "
+                            "this way and are left as they are.",
+                  style="Hint.TLabel", wraplength=470,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(4, 8))
+
+        self.source_var = tk.StringVar(value="live")
+        self.file_var = tk.StringVar()
+        row = ttk.Frame(box, style="Panel.TFrame")
+        row.pack(fill=tk.X)
+        ttk.Radiobutton(row, text=f"Live sensor "
+                                  f"({sensor.get('host', '') or '-'})",
+                        value="live", variable=self.source_var).pack(
+            side=tk.LEFT)
+        row = ttk.Frame(box, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=(2, 0))
+        ttk.Radiobutton(row, text="Recording:", value="file",
+                        variable=self.source_var).pack(side=tk.LEFT)
+        ttk.Entry(row, textvariable=self.file_var, width=34).pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        ttk.Button(row, text="Browse...",
+                   command=self.on_browse).pack(side=tk.LEFT)
+        row = ttk.Frame(box, style="Panel.TFrame")
+        row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(row, text="Scans:", style="Muted.TLabel").pack(
+            side=tk.LEFT, padx=(0, 6))
+        self.scans_var = tk.StringVar(value="10")
+        ttk.Combobox(row, textvariable=self.scans_var,
+                     values=["5", "10", "20", "50"], state="readonly",
+                     width=5).pack(side=tk.LEFT)
+        self.measure_button = ttk.Button(row, text="📐  Measure",
+                                         style="Accent.TButton",
+                                         command=self.on_measure)
+        self.measure_button.pack(side=tk.RIGHT)
+        self.status = tk.StringVar(value="Not measured yet.")
+        ttk.Label(box, textvariable=self.status, style="Muted.TLabel",
+                  wraplength=470, justify=tk.LEFT).pack(anchor=tk.W,
+                                                        pady=(6, 4))
+
+        self.tree = ttk.Treeview(box, columns=("ground", "imu", "current"),
+                                 show="tree headings", height=4,
+                                 selectmode="none")
+        self.tree.heading("#0", text="", anchor=tk.W)
+        self.tree.column("#0", width=150, anchor=tk.W)
+        for key, heading in (("ground", "Ground plane"), ("imu", "IMU"),
+                             ("current", "Real pose now")):
+            self.tree.heading(key, text=heading, anchor=tk.W)
+            self.tree.column(key, width=105, anchor=tk.W)
+        self.tree.pack(fill=tk.X)
+        self.warning = tk.StringVar()
+        ttk.Label(box, textvariable=self.warning, style="Muted.TLabel",
+                  foreground=Theme.ORANGE, wraplength=470,
+                  justify=tk.LEFT).pack(anchor=tk.W, pady=(6, 0))
+
+        use = ttk.Frame(box, style="Panel.TFrame")
+        use.pack(fill=tk.X, pady=(8, 0))
+        self.use_vars = {key: tk.BooleanVar(value=True)
+                         for key, *_ in self.ROWS}
+        for key, label, _unit, _fmt in self.ROWS:
+            ttk.Checkbutton(use, text=label.split(" ")[0],
+                            variable=self.use_vars[key]).pack(
+                side=tk.LEFT, padx=(0, 10))
+        ttk.Label(use, text="Tilt from:", style="Muted.TLabel").pack(
+            side=tk.LEFT, padx=(6, 6))
+        self.tilt_var = tk.StringVar(value=self.SOURCES[0])
+        ttk.Combobox(use, textvariable=self.tilt_var,
+                     values=list(self.SOURCES), state="readonly",
+                     width=13).pack(side=tk.LEFT)
+
+        buttons = ttk.Frame(self, style="TFrame")
+        buttons.pack(fill=tk.X, padx=12, pady=(0, 12))
+        ttk.Button(buttons, text="Close",
+                   command=self.close).pack(side=tk.RIGHT)
+        self.apply_button = ttk.Button(buttons, text="Apply to real pose",
+                                       style="Accent.TButton",
+                                       command=self.on_apply)
+        self.apply_button.pack(side=tk.RIGHT, padx=6)
+        self.apply_button.state(["disabled"])
+        self._show()
+        self.after(100, self._poll)
+
+    # -- measuring ------------------------------------------------------------
+    def on_browse(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="Recording of this sensor (PCAP / OSF)",
+            filetypes=[("Lidar recordings", "*.pcap *.osf"),
+                       ("All files", "*")])
+        if path:
+            self.file_var.set(path)
+            self.source_var.set("file")
+
+    def _source(self) -> str:
+        if self.source_var.get() == "file":
+            return self.file_var.get().strip()
+        return str(self.sensor.get("host", "")).strip()
+
+    def on_measure(self):
+        source = self._source()
+        if not source:
+            messagebox.showerror("Measure", "Enter the sensor's address in "
+                                 "the sensors list, or pick a recording.",
+                                 parent=self)
+            return
+        if self.worker is not None and self.worker.is_alive():
+            return
+        if self.source_var.get() == "live" and self.app.reader is not None:
+            # the dashboard's stream holds the sensor's UDP ports
+            self.app.on_stop_stream()
+            self.app.log("Stopped the live stream to measure the sensor.")
+        scans = int(self.scans_var.get() or 10)
+        self.measure_button.state(["disabled"])
+        self.apply_button.state(["disabled"])
+        self.status.set(f"Measuring from {source} ...")
+        self.app.log(f"Measuring '{self.sensor.get('name')}' from {source} "
+                     f"({scans} scans + IMU) ...")
+        self.worker = threading.Thread(
+            target=self._work, args=(source, scans), daemon=True)
+        self.worker.start()
+
+    def _work(self, source, scans):
+        """Worker thread: read, analyse, hand the result to Tk."""
+        try:
+            points, accels = self.acquire(source, scans=scans,
+                                          log=self.app.log,
+                                          stop=self.stop_event)
+            self.events.put(("done", analyse_pose(points, accels)))
+        except Exception as e:
+            self.events.put(("error", str(e)))
+
+    def _poll(self):
+        try:
+            while True:
+                kind, payload = self.events.get_nowait()
+                self.measure_button.state(["!disabled"])
+                if kind == "error":
+                    self.status.set(f"Could not measure: {payload}")
+                    self.app.log(f"ERROR measuring "
+                                 f"'{self.sensor.get('name')}': {payload}")
+                else:
+                    self.result = payload
+                    self._show()
+        except queue.Empty:
+            pass
+        try:
+            self.after(100, self._poll)
+        except tk.TclError:
+            pass
+
+    # -- results --------------------------------------------------------------
+    def _current(self, key):
+        field = "z" if key == "height" else key
+        text = str(self.sensor["calibration"].get(field, "")).strip()
+        return float(text) if text else None
+
+    def proposed(self) -> dict:
+        """The values Apply would write: {"height", "roll", "pitch"}."""
+        if self.result is None:
+            return {}
+        ground, imu = self.result["ground"], self.result["imu"]
+        out = {}
+        if "error" not in ground:
+            out["height"] = ground["height"]
+        sources = []
+        choice = self.tilt_var.get()
+        if choice in ("Ground plane", "Average") and "error" not in ground:
+            sources.append(ground)
+        if choice in ("IMU (gravity)", "Average") and "error" not in imu:
+            sources.append(imu)
+        if not sources:                  # fall back to whichever there is
+            sources = [d for d in (ground, imu) if "error" not in d][:1]
+        if sources:
+            out["roll"] = sum(d["roll"] for d in sources) / len(sources)
+            out["pitch"] = sum(d["pitch"] for d in sources) / len(sources)
+        return out
+
+    def _show(self):
+        self.tree.delete(*self.tree.get_children())
+        ground = imu = {}
+        if self.result is not None:
+            ground, imu = self.result["ground"], self.result["imu"]
+        for key, label, unit, fmt in self.ROWS:
+            def cell(source):
+                if not source or "error" in source or key not in source:
+                    return "-"
+                return fmt.format(source[key]) + unit
+            current = self._current(key)
+            self.tree.insert("", tk.END, iid=key, text=label, values=(
+                cell(ground), cell(imu),
+                "-" if current is None else fmt.format(current) + unit))
+        self.tree.insert("", tk.END, iid="quality", text="Based on", values=(
+            (f"{ground['inliers']} pts, {ground['rms'] * 1000:.0f} mm"
+             if ground and "error" not in ground else
+             ground.get("error", "-") if ground else "-"),
+            (f"{imu['samples']} samples"
+             if imu and "error" not in imu else
+             imu.get("error", "-") if imu else "-"), ""))
+        if self.result is None:
+            return
+        proposed = self.proposed()
+        if proposed:
+            self.apply_button.state(["!disabled"])
+            self.status.set("Measured. Pick what to keep and press Apply - "
+                            "it goes to the real pose, not the display.")
+        else:
+            self.status.set("Nothing could be measured: "
+                            + ground.get("error", "") + "; "
+                            + imu.get("error", ""))
+        self.warning.set("\n".join("⚠ " + warning
+                                    for warning in self.result["warnings"]))
+
+    def on_apply(self):
+        proposed = self.proposed()
+        chosen = {key: value for key, value in proposed.items()
+                  if self.use_vars[key].get()}
+        if not chosen:
+            messagebox.showinfo("Measure", "Tick at least one value to "
+                                "apply.", parent=self)
+            return
+        if self.layout.editing:
+            self.layout.on_cancel_info()       # the fields would be stale
+        calibration = self.sensor["calibration"]
+        if "height" in chosen:
+            calibration["z"] = f"{chosen['height']:.3f}"
+        for key in ("roll", "pitch"):
+            if key in chosen:
+                calibration[key] = f"{chosen[key]:.2f}"
+        self.sensor["calibrated"] = now_stamp()
+        method = ["ground plane"] if "height" in chosen else []
+        if "roll" in chosen or "pitch" in chosen:
+            method.append({"Ground plane": "ground plane",
+                           "IMU (gravity)": "IMU",
+                           "Average": "ground + IMU"}[self.tilt_var.get()])
+        self.sensor["calibration_method"] = "sensor: " + " / ".join(
+            dict.fromkeys(method))
+        self.app.store.save()
+        self.app.log(f"'{self.sensor.get('name')}' measured from the sensor: "
+                     + ", ".join(f"{'z' if k == 'height' else k}="
+                                 f"{v:.3f}" for k, v in chosen.items())
+                     + " (real pose; the display is unchanged).")
+        self.layout.on_pose_measured(self.sensor)
+        self._show()
+        self.status.set("Applied to the real pose.")
+
+    def close(self):
+        self.stop_event.set()
+        if self.layout.measure_dialog is self:
+            self.layout.measure_dialog = None
+        self.destroy()
+
+
+class DistancesWindow(tk.Toplevel):
+    """Where each sensor is from the reference point, and from each other.
+
+    Positions come from the real, measured pose wherever it was measured,
+    otherwise from the display position; the Source column says which.
+    Refreshes itself when anything it shows changes.
+    """
+
+    def __init__(self, parent, layout):
+        super().__init__(parent)
+        self.layout = layout
+        self.title(f"Distances  ·  {layout.equipment.get('name', '')}")
+        self.geometry("820x600")
+        self.configure(bg=Theme.BG)
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+        self._signature = None
+
+        top = ttk.Frame(self, style="TFrame", padding=(12, 10, 12, 0))
+        top.pack(fill=tk.X)
+        self.reference_label = tk.StringVar()
+        ttk.Label(top, textvariable=self.reference_label,
+                  style="TLabel").pack(side=tk.LEFT)
+        self.lidars_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(top, text="Lidars only", variable=self.lidars_only,
+                        command=self.refresh).pack(side=tk.RIGHT)
+
+        def table(title, columns):
+            box = ttk.LabelFrame(self, text=f"  {title}  ", padding=6)
+            box.pack(fill=tk.BOTH, expand=True, padx=12, pady=(8, 0))
+            tree = ttk.Treeview(box, columns=[c[0] for c in columns],
+                                show="headings", height=5,
+                                selectmode="browse")
+            for key, heading, width in columns:
+                tree.heading(key, text=heading, anchor=tk.W)
+                tree.column(key, width=width, anchor=tk.W)
+            tree.pack(fill=tk.BOTH, expand=True)
+            return tree
+
+        self.from_ref = table("FROM THE REFERENCE POINT", (
+            ("name", "Sensor", 160), ("source", "Position from", 110),
+            ("dx", "dx [m]", 70), ("dy", "dy [m]", 70), ("dz", "dz [m]", 70),
+            ("ground", "Above ground [m]", 130),
+            ("distance", "Distance [m]", 95)))
+        self.pairs = table("BETWEEN SENSORS", (
+            ("a", "From", 140), ("b", "To", 140), ("dx", "dx [m]", 75),
+            ("dy", "dy [m]", 75), ("dz", "dz [m]", 75),
+            ("distance", "Distance [m]", 95), ("source", "Positions", 130)))
+        self.pairs.bind("<<TreeviewSelect>>", lambda e: self._show_pair())
+
+        detail = ttk.LabelFrame(self, text="  'TO' AS SEEN FROM 'FROM'  ",
+                                padding=8)
+        detail.pack(fill=tk.X, padx=12, pady=(8, 0))
+        self.detail = tk.StringVar()
+        ttk.Label(detail, textvariable=self.detail, style="Info.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+
+        buttons = ttk.Frame(self, style="TFrame", padding=(12, 8))
+        buttons.pack(fill=tk.X)
+        ttk.Button(buttons, text="Close",
+                   command=self.close).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Copy tables",
+                   command=self.on_copy).pack(side=tk.RIGHT, padx=6)
+        ttk.Label(buttons, text="dx / dy / dz in the equipment frame: x "
+                                "forward, y left, z up.",
+                  style="Hint.TLabel").pack(side=tk.LEFT)
+        self.refresh()
+        self.after(1000, self._watch)
+
+    def _sensors(self):
+        sensors = self.layout.sensors
+        if self.lidars_only.get():
+            sensors = [s for s in sensors if s.get("kind") == KIND_OUSTER]
+        return sensors
+
+    def rows(self) -> tuple:
+        """(from-reference rows, pair rows), as plain values for testing
+        and copying."""
+        reference = reference_point(self.layout.equipment)
+        poses = [(s, *effective_pose(s)) for s in self._sensors()]
+        ref_rows = []
+        for sensor, values, real in poses:
+            offset = np.array([values[k] for k in ("x", "y", "z")]) - \
+                reference
+            ref_rows.append({
+                "name": sensor.get("name", ""), "source": pose_source(real),
+                "dx": offset[0], "dy": offset[1], "dz": offset[2],
+                "ground": values["z"],
+                "distance": float(np.linalg.norm(offset))})
+        pair_rows = []
+        for i, (a, va, ra) in enumerate(poses):
+            for b, vb, rb in poses[i + 1:]:
+                relative = relative_pose(va, vb)
+                offset = [vb[k] - va[k] for k in ("x", "y", "z")]
+                pair_rows.append({
+                    "a": a.get("name", ""), "b": b.get("name", ""),
+                    "dx": offset[0], "dy": offset[1], "dz": offset[2],
+                    "distance": relative["distance"],
+                    "source": f"{pose_source(ra)} / {pose_source(rb)}",
+                    "relative": relative,
+                    "source_rotation": (
+                        f"{pose_source(ra, ('roll', 'pitch', 'yaw'))} / "
+                        f"{pose_source(rb, ('roll', 'pitch', 'yaw'))}")})
+        return ref_rows, pair_rows
+
+    def refresh(self):
+        reference = reference_point(self.layout.equipment)
+        self.reference_label.set(
+            "Reference point: x {:+.3f}  y {:+.3f}  z {:+.3f} m   "
+            "(set it in Config)".format(*reference))
+        ref_rows, pair_rows = self.rows()
+        self._pair_rows = pair_rows
+        keep = self.pairs.selection()
+        for tree in (self.from_ref, self.pairs):
+            tree.delete(*tree.get_children())
+        for index, row in enumerate(ref_rows):
+            self.from_ref.insert("", tk.END, iid=str(index), values=(
+                row["name"], row["source"], f"{row['dx']:+.3f}",
+                f"{row['dy']:+.3f}", f"{row['dz']:+.3f}",
+                f"{row['ground']:.3f}", f"{row['distance']:.3f}"))
+        for index, row in enumerate(pair_rows):
+            self.pairs.insert("", tk.END, iid=str(index), values=(
+                row["a"], row["b"], f"{row['dx']:+.3f}", f"{row['dy']:+.3f}",
+                f"{row['dz']:+.3f}", f"{row['distance']:.3f}",
+                row["source"]))
+        if pair_rows:
+            self.pairs.selection_set(keep[0] if keep and int(keep[0])
+                                     < len(pair_rows) else "0")
+        self._show_pair()
+
+    def _show_pair(self):
+        selection = self.pairs.selection()
+        if not selection or not getattr(self, "_pair_rows", None):
+            self.detail.set("Add a second sensor to see how they sit "
+                            "relative to each other.")
+            return
+        row = self._pair_rows[int(selection[0])]
+        rel = row["relative"]
+        tx, ty, tz = rel["translation"]
+        self.detail.set(
+            f"'{row['b']}' from '{row['a']}', in '{row['a']}''s own frame:\n"
+            f"  translation  x {tx:+.3f}  y {ty:+.3f}  z {tz:+.3f} m   "
+            f"(distance {rel['distance']:.3f} m)\n"
+            f"  rotation     roll {rel['roll']:+.2f}°  pitch "
+            f"{rel['pitch']:+.2f}°  yaw {rel['yaw']:+.2f}°   "
+            f"(angles from: {row['source_rotation']})\n"
+            "The transform that maps the second sensor's points into the "
+            "first one's frame.")
+
+    def _signature_now(self):
+        equipment = self.layout.equipment
+        return json.dumps([equipment.get("reference"),
+                           [(s.get("name"), s.get("kind"), s.get("mount"),
+                             s.get("calibration"))
+                            for s in self.layout.sensors]], sort_keys=True)
+
+    def _watch(self):
+        signature = self._signature_now()
+        if signature != self._signature:
+            self._signature = signature
+            self.refresh()
+        try:
+            self.after(1000, self._watch)
+        except tk.TclError:
+            pass
+
+    def as_text(self) -> str:
+        ref_rows, pair_rows = self.rows()
+        lines = ["From the reference point (x {:+.3f} y {:+.3f} z {:+.3f} m)"
+                 .format(*reference_point(self.layout.equipment)),
+                 "Sensor\tPosition from\tdx\tdy\tdz\tAbove ground\tDistance"]
+        lines += [f"{r['name']}\t{r['source']}\t{r['dx']:.3f}\t{r['dy']:.3f}"
+                  f"\t{r['dz']:.3f}\t{r['ground']:.3f}\t{r['distance']:.3f}"
+                  for r in ref_rows]
+        lines += ["", "Between sensors",
+                  "From\tTo\tdx\tdy\tdz\tDistance\tPositions"]
+        lines += [f"{r['a']}\t{r['b']}\t{r['dx']:.3f}\t{r['dy']:.3f}\t"
+                  f"{r['dz']:.3f}\t{r['distance']:.3f}\t{r['source']}"
+                  for r in pair_rows]
+        return "\n".join(lines)
+
+    def on_copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.as_text())
+        self.layout.app.log("Distance tables copied to the clipboard.")
+
+    def close(self):
+        if self.layout.distances_window is self:
+            self.layout.distances_window = None
+        self.destroy()
+
+
 class MountLayoutWindow:
     """Where each sensor sits on its equipment, drawn in 3D.
 
@@ -2996,6 +3834,8 @@ class MountLayoutWindow:
         self.markers = {}          # sensor id -> (x, y, z) for picking
         self.model_bounds = None   # bounding box of a loaded STL, if any
         self.config_dialog = None  # the editing window, when it is open
+        self.measure_dialog = None    # measuring a lidar from its own data
+        self.distances_window = None  # the distance tables
         # the editing fields live in the config dialog, but their values
         # belong to the layout, so they survive it being closed
         self.body_vars = {key: tk.StringVar(
@@ -3003,6 +3843,10 @@ class MountLayoutWindow:
             for key in ("length", "width", "height")}
         self.mount_vars = {key: tk.StringVar(value="0")
                            for key in MOUNT_KEYS}
+        self.reference_vars = {key: tk.StringVar(
+            value=str(self.equipment["reference"].get(key, "0")))
+            for key in ("x", "y", "z")}
+        self.reference_preset = tk.StringVar()
         self.preset_var = tk.StringVar()
         self.view_var = tk.StringVar(value="Isometric")
         # 3D to look around; 2D to drag sensors in one plane of the frame
@@ -3119,6 +3963,9 @@ class MountLayoutWindow:
                                       command=self.on_save_info)
         self.cancel_button = ttk.Button(buttons, text="Cancel",
                                         command=self.on_cancel_info)
+        self.measure_button = ttk.Button(
+            box, text="📐  Measure from sensor...",
+            command=self.on_measure)
         self._show_view_mode()
 
     def _make_editor(self, key):
@@ -3150,13 +3997,20 @@ class MountLayoutWindow:
         self.save_button.pack_forget()
         self.cancel_button.pack_forget()
         self.edit_button.pack(fill=tk.X)
+        self.measure_button.pack(fill=tk.X, pady=(4, 0))
         self.info_hint.set("Real, measured pose for calibration - it "
                            "does not move the 3D view (Config does). "
                            "Identity is managed from the sensors list.")
-        if self.selected is None:
-            self.edit_button.state(["disabled"])
-        else:
-            self.edit_button.state(["!disabled"])
+        self._update_buttons()
+
+    def _update_buttons(self):
+        """Edit needs a sensor; Measure needs a lidar, the only kind that
+        sees the ground and carries an IMU to read."""
+        self.edit_button.state(["disabled" if self.selected is None
+                                else "!disabled"])
+        lidar = (self.selected is not None
+                 and self.selected.get("kind") == KIND_OUSTER)
+        self.measure_button.state(["!disabled" if lidar else "disabled"])
 
     def _show_edit_mode(self):
         self.editing = True
@@ -3167,6 +4021,7 @@ class MountLayoutWindow:
             self.info_editors[key].grid(row=row, column=1, sticky=tk.W,
                                         pady=1)
         self.edit_button.pack_forget()
+        self.measure_button.pack_forget()
         self.save_button.pack(side=tk.LEFT, expand=True, fill=tk.X,
                               padx=(0, 3))
         self.cancel_button.pack(side=tk.LEFT, expand=True, fill=tk.X,
@@ -3256,6 +4111,7 @@ class MountLayoutWindow:
         sensor["calibration"] = measured
         if changed:
             sensor["calibrated"] = now_stamp()
+            sensor["calibration_method"] = "manual"
         self.app.store.save()
         self._show_view_mode()
         self._refresh_info()
@@ -3269,8 +4125,14 @@ class MountLayoutWindow:
     def _build_footer(self, parent):
         box = ttk.Frame(parent, style="TFrame")
         box.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
-        ttk.Button(box, text="⚙  Config...", style="Accent.TButton",
-                   command=self.on_config).pack(fill=tk.X)
+        top = ttk.Frame(box, style="TFrame")
+        top.pack(fill=tk.X)
+        ttk.Button(top, text="⚙  Config...", style="Accent.TButton",
+                   command=self.on_config).pack(side=tk.LEFT, expand=True,
+                                                fill=tk.X, padx=(0, 3))
+        ttk.Button(top, text="📏  Distances...",
+                   command=self.on_distances).pack(side=tk.LEFT, expand=True,
+                                                   fill=tk.X, padx=(3, 0))
         row = ttk.Frame(box, style="TFrame")
         row.pack(fill=tk.X, pady=(6, 0))
         ttk.Label(row, text="View:",
@@ -3489,6 +4351,7 @@ class MountLayoutWindow:
             return
         self.info_empty.pack_forget()
         self.info_rows.pack(fill=tk.X, before=self.info_hint_label)
+        self._update_buttons()
         calibration = sensor["calibration"]
 
         def measured(key, fmt):
@@ -3520,7 +4383,11 @@ class MountLayoutWindow:
                             if any_measured else "not measured"),
             "height": (f"{measured('z', '{:.3f}')} m above the ground"
                        if str(calibration.get("z", "")).strip() else "-"),
-            "calibrated": sensor.get("calibrated") or "never",
+            "calibrated": ((sensor.get("calibrated") or "never")
+                           + {"": "", "manual": "  (manual)"}.get(
+                               sensor.get("calibration_method", "")
+                               if sensor.get("calibrated") else "",
+                               "  (from sensor)")),
         }
         for key, value in shown.items():
             self.info_values[key].set(value)
@@ -3818,6 +4685,10 @@ class MountLayoutWindow:
                 "arrow_delta": delta, "lift": lift, "color": color,
             }
 
+        reference = reference_point(self.equipment)
+        hs.append(reference[hi])
+        vs.append(reference[vi])
+        self._reference_artists(ax, project=lambda p: (p[hi], p[vi]))
         pad = max(max(hs) - min(hs), max(vs) - min(vs)) * 0.15 + 0.3
         h_low, h_high = min(hs) - pad, max(hs) + pad
         v_low, v_high = min(vs) - pad, max(vs) + pad
@@ -3892,7 +4763,9 @@ class MountLayoutWindow:
                     sensor.get("name", ""), color=Theme.FG if chosen
                     else Theme.MUTED, fontsize=8 if chosen else 7, zorder=7)
 
-        extent = max(length / 2.0, width / 2.0, height)
+        self._reference_artists(ax)
+        extent = max(length / 2.0, width / 2.0, height,
+                     *np.abs(reference_point(self.equipment)))
         if self.model_bounds is not None:
             low, high = self.model_bounds
             extent = max(extent, abs(low[0]), abs(high[0]), abs(low[1]),
@@ -3931,6 +4804,103 @@ class MountLayoutWindow:
             except tk.TclError:
                 self.config_dialog = None
         self.config_dialog = LayoutConfigDialog(self.win, self)
+
+    def on_measure(self):
+        """Measure the selected lidar's height and tilt from its data."""
+        sensor = self.selected
+        if sensor is None or sensor.get("kind") != KIND_OUSTER:
+            return
+        if self.measure_dialog is not None:
+            try:
+                if self.measure_dialog.sensor is sensor:
+                    self.measure_dialog.lift()
+                    return
+                self.measure_dialog.close()
+            except tk.TclError:
+                pass
+        self.measure_dialog = MeasurePoseDialog(self.win, self, sensor)
+
+    def on_pose_measured(self, sensor):
+        """A measurement was applied: show it everywhere it appears."""
+        if self.selected is sensor:
+            self._refresh_info()
+        if self.distances_window is not None:
+            self.distances_window.refresh()
+        self.redraw()
+
+    def on_distances(self):
+        if self.distances_window is not None:
+            try:
+                self.distances_window.lift()
+                self.distances_window.refresh()
+                return
+            except tk.TclError:
+                self.distances_window = None
+        self.distances_window = DistancesWindow(self.win, self)
+
+    def on_reference_preset(self):
+        length, width, height = self._dimensions()
+        preset = {"ground centre": (0, 0, 0),
+                  "body centre": (0, 0, height / 2),
+                  "roof centre": (0, 0, height),
+                  "front, ground": (length / 2, 0, 0),
+                  "rear, ground": (-length / 2, 0, 0)}.get(
+            self.reference_preset.get())
+        if preset is None:
+            return
+        for key, value in zip(("x", "y", "z"), preset):
+            self.reference_vars[key].set(f"{value:g}")
+        self.on_apply_reference()
+
+    def on_apply_reference(self):
+        values = {}
+        for key, var in self.reference_vars.items():
+            try:
+                values[key] = f"{float(var.get()):g}"
+            except ValueError:
+                messagebox.showerror("Reference point",
+                                     f"'{key}' must be a number, in metres.",
+                                     parent=self.config_dialog or self.win)
+                return
+        self.equipment["reference"] = values
+        self.app.store.save()
+        self.app.log(f"Reference point of '{self.equipment.get('name')}' set "
+                     f"to x={values['x']} y={values['y']} z={values['z']} m.")
+        if self.distances_window is not None:
+            self.distances_window.refresh()
+        self.redraw()
+
+    def _reference_artists(self, ax, project=None):
+        """The reference point, and a dashed line to the selected sensor
+        labelled with its distance. `project` maps a 3D point to the axes'
+        coordinates (None in 3D)."""
+        reference = reference_point(self.equipment)
+        reach = max(self._dimensions())
+
+        def at(point):
+            return project(point) if project else tuple(point)
+
+        ax.scatter(*([[c] for c in at(reference)]), marker="X", s=90,
+                   c=Theme.PY_YELLOW, edgecolors="#000000", linewidths=0.6,
+                   zorder=9, **({} if project else {"depthshade": False}))
+        label_at = list(at(reference))
+        label_at[-1] += reach * 0.04
+        ax.text(*label_at, "ref", color=Theme.PY_YELLOW, fontsize=7,
+                zorder=9)
+        sensor = self.selected
+        if sensor is None:
+            return
+        drawn = np.array([float(sensor["mount"].get(k, 0) or 0)
+                          for k in ("x", "y", "z")])
+        values, _real = effective_pose(sensor)
+        distance = float(np.linalg.norm(
+            np.array([values[k] for k in ("x", "y", "z")]) - reference))
+        line = list(zip(at(reference), at(drawn)))
+        ax.plot(*line, linestyle="--", linewidth=1.0, color=Theme.PY_YELLOW,
+                zorder=8)
+        middle = [(a + b) / 2 for a, b in line]
+        ax.text(*middle, f"{distance:.2f} m", color=Theme.PY_YELLOW,
+                fontsize=8, zorder=9)
 
     def on_model(self):
         parent = self.config_dialog or self.win
@@ -3982,12 +4952,16 @@ class MountLayoutWindow:
     def close(self):
         if self.win is None:
             return
-        if self.config_dialog is not None:
-            try:
-                self.config_dialog.destroy()
-            except tk.TclError:
-                pass
-            self.config_dialog = None
+        for name in ("config_dialog", "measure_dialog", "distances_window"):
+            dialog = getattr(self, name)
+            if dialog is not None:
+                if name == "measure_dialog":
+                    dialog.stop_event.set()
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    pass
+                setattr(self, name, None)
         window, self.win = self.win, None
         try:
             self.app.layout_windows.remove(self)

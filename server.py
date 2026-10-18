@@ -980,14 +980,13 @@ PAGE_HTML: str = """<!DOCTYPE html>
   --border-color:   #e2e8f0;
 }
 * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden; }
-.site-header { padding:1.5rem 6%; background:#ffffff; border-bottom:1px solid var(--border-color); display:flex; align-items:center; justify-content:space-between; gap:1rem; }
-.logo-text { font-weight:800; font-size:1.5rem; letter-spacing:-0.5px; color:var(--text-dark); text-decoration:none; }
-.logo-accent { color:var(--primary-accent); }
-.header-actions { display:flex; gap:0.5rem; }
+html, body { overflow-x:hidden; }
+body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; }
+.title-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.title-actions { display:flex; gap:0.5rem; }
 .btn-outline { background:none; border:1px solid var(--border-color); border-radius:8px; padding:0.5rem 1rem; font-size:0.85rem; font-weight:600; color:var(--text-gray); cursor:pointer; }
 .btn-outline:hover { border-color:var(--primary-accent); color:var(--primary-accent); }
-.work-wrap { max-width:760px; margin:3rem auto; padding:0 6%; width:100%; flex:1; }
+.work-wrap { max-width:760px; margin:0 auto; padding:3rem 1.5rem; }
 h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); }
 .subtitle { font-size:1.05rem; color:var(--text-gray); line-height:1.6; margin-bottom:1rem; }
 .section-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); margin:2rem 0 1rem; }
@@ -1008,7 +1007,7 @@ input[type="checkbox"], input[type="radio"] { accent-color:var(--primary-accent)
 .btn-secondary:hover { border-color:var(--primary-accent); }
 .btn-danger { background:#fee2e2; color:#991b1b; border:1px solid #fee2e2; border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:0.95rem; cursor:pointer; }
 .btn-danger:hover { border-color:#991b1b; }
-.site-header .btn-danger { padding:0.5rem 1rem; font-size:0.85rem; font-weight:600; }
+.title-actions .btn-danger { padding:0.5rem 1rem; font-size:0.85rem; font-weight:600; }
 button:disabled { opacity:0.5; cursor:not-allowed; }
 [hidden] { display:none !important; }
 .status { display:flex; align-items:center; justify-content:center; gap:8px; font-weight:700; font-size:0.95rem; color:var(--text-gray); }
@@ -1029,7 +1028,6 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
 .row-detail[data-text="muted"] { color:var(--text-gray); }
 .row-detail[data-text="err"] { color:#991b1b; }
 .row.ringing { border-color:#bfdbfe; cursor:pointer; }
-.site-footer { padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; background:transparent; }
 .acc-btn { position:fixed; bottom:30px; left:30px; width:50px; height:50px; border-radius:50%; background:var(--primary-accent); display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:1000; }
 .acc-menu { position:fixed; bottom:90px; left:30px; width:260px; display:none; flex-direction:column; gap:0.8rem; padding:1.5rem; background:white; border:1px solid var(--border-color); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:1000; }
 .acc-toggle { width:100%; padding:0.6rem; border:1px solid var(--border-color); border-radius:6px; background:white; font-weight:700; text-align:left; cursor:pointer; }
@@ -1039,20 +1037,18 @@ body.acc-high-contrast * { background:#000 !important; color:#fff !important; bo
 body.acc-large-text * { font-size:120% !important; }
 body.acc-highlight-links a { background:yellow !important; color:black !important; padding:2px !important; }
 @media (max-width:768px) { h1 { font-size:1.8rem; } }
-@media (max-width:600px) { .grid { grid-template-columns:1fr; } .site-header { padding:1rem 6%; } .panel { padding:1.5rem; } }
+@media (max-width:600px) { .grid { grid-template-columns:1fr; } .work-wrap { padding:2rem 1rem; } .panel { padding:1.5rem; } }
 </style>
 </head>
 <body>
-<header class="site-header">
-  <a href="/" class="logo-text">Intercom<span class="logo-accent">Server</span></a>
-  <div class="header-actions">
-    <button class="btn-outline" id="help-btn">Help</button>
-    <button class="btn-danger" id="quit-btn">Quit</button>
-  </div>
-</header>
-
 <div class="work-wrap">
-  <h1>Intercom Server</h1>
+  <div class="title-row">
+    <h1>Intercom Server</h1>
+    <div class="title-actions">
+      <button class="btn-outline" id="help-btn">Help</button>
+      <button class="btn-danger" id="quit-btn">Quit</button>
+    </div>
+  </div>
   <p class="subtitle">Signalling server, live call and client status on this computer.</p>
 
   <div class="panel" id="help-panel" hidden><div class="help-text" id="help-text"></div></div>
@@ -1084,8 +1080,6 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     <div class="row" id="row-HEADPHONES" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT HEADPHONES</span></div><div class="row-detail" data-text="muted">-</div></div>
   </div>
 </div>
-
-<footer class="site-footer">&copy; <span id="year"></span> oT. All rights reserved.</footer>
 
 <button class="acc-btn" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')">
   <svg viewBox="0 0 24 24" fill="white" width="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
@@ -1223,7 +1217,6 @@ for (const pair of RATES) {
 }
 
 $("help-text").textContent = HELP;
-$("year").textContent = String(new Date().getFullYear());
 for (const k of LOCKED) $(k).addEventListener("change", function () { act("settings"); });
 $("local_mode").addEventListener("change", function () { act("settings"); });
 $("help-btn").addEventListener("click", function () { $("help-panel").hidden = !$("help-panel").hidden; });

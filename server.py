@@ -69,21 +69,6 @@ RING_FREQ: int = 1000             # Hz
 RING_MS: int = 200                # אורך הביפ. Beep חוסם, אז קצר = השתקה מיידית
 
 
-HELP_TEXT: str = (
-    "P2P Intercom\n\n"
-    "1. Start the internal signalling server on one machine (or point both\n"
-    "   clients at an external one).\n"
-    "2. Set Server IP / Port / My ID on both sides - the two IDs must differ.\n"
-    "3. Press START INTERCOM on both. The server matches the first two\n"
-    "   clients it sees and hands each one the other's address.\n\n"
-    "External IP: only relevant when the signalling server is NOT on the\n"
-    "public internet. The port is never translated, so this requires a\n"
-    "static port forward on the router. On a single LAN, tick Local Mode.\n\n"
-    "Hole punching works with cone NAT. Symmetric NAT needs a relay (TURN).\n\n"
-    "(c) oT - All rights reserved."
-)
-
-
 class IntercomServer:
     def __init__(self) -> None:
         # Threading & Concurrency Flags
@@ -931,9 +916,6 @@ class IntercomServer:
         if action == "silence":
             self._silence_ring()
             return {}
-        if action == "quit":
-            threading.Thread(target=self.quit, daemon=True).start()
-            return {}
         return {"message": "Unknown action."}
 
     def shutdown_all(self) -> None:
@@ -946,11 +928,6 @@ class IntercomServer:
         with self._server_lock:
             if self.server_thread is not None and self.server_thread.is_alive():
                 self.stop_local_server()
-
-    def quit(self) -> None:
-        self.shutdown_all()
-        if self.httpd is not None:
-            self.httpd.shutdown()
 
 
 # ----------------------------------------------------------------------
@@ -982,16 +959,10 @@ PAGE_HTML: str = """<!DOCTYPE html>
 * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 html, body { overflow-x:hidden; }
 body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; }
-.title-row { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
-.title-actions { display:flex; gap:0.5rem; }
-.btn-outline { background:none; border:1px solid var(--border-color); border-radius:8px; padding:0.5rem 1rem; font-size:0.85rem; font-weight:600; color:var(--text-gray); cursor:pointer; }
-.btn-outline:hover { border-color:var(--primary-accent); color:var(--primary-accent); }
 .work-wrap { max-width:760px; margin:0 auto; padding:3rem 1.5rem; }
 h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); }
-.subtitle { font-size:1.05rem; color:var(--text-gray); line-height:1.6; margin-bottom:1rem; }
 .section-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); margin:2rem 0 1rem; }
 .panel { background:#ffffff; border:1px solid var(--border-color); border-radius:12px; padding:2rem; display:flex; flex-direction:column; gap:1.25rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }
-.help-text { white-space:pre-line; color:#475569; font-size:0.95rem; line-height:1.6; }
 .grid { display:grid; grid-template-columns:2fr 1fr; gap:1rem; }
 .field { display:flex; flex-direction:column; gap:0.4rem; }
 .field label, .field .label { font-size:0.85rem; font-weight:700; color:var(--text-gray); }
@@ -1007,7 +978,6 @@ input[type="checkbox"], input[type="radio"] { accent-color:var(--primary-accent)
 .btn-secondary:hover { border-color:var(--primary-accent); }
 .btn-danger { background:#fee2e2; color:#991b1b; border:1px solid #fee2e2; border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:0.95rem; cursor:pointer; }
 .btn-danger:hover { border-color:#991b1b; }
-.title-actions .btn-danger { padding:0.5rem 1rem; font-size:0.85rem; font-weight:600; }
 button:disabled { opacity:0.5; cursor:not-allowed; }
 [hidden] { display:none !important; }
 .status { display:flex; align-items:center; justify-content:center; gap:8px; font-weight:700; font-size:0.95rem; color:var(--text-gray); }
@@ -1028,30 +998,13 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
 .row-detail[data-text="muted"] { color:var(--text-gray); }
 .row-detail[data-text="err"] { color:#991b1b; }
 .row.ringing { border-color:#bfdbfe; cursor:pointer; }
-.acc-btn { position:fixed; bottom:30px; left:30px; width:50px; height:50px; border-radius:50%; background:var(--primary-accent); display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:1000; }
-.acc-menu { position:fixed; bottom:90px; left:30px; width:260px; display:none; flex-direction:column; gap:0.8rem; padding:1.5rem; background:white; border:1px solid var(--border-color); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:1000; }
-.acc-toggle { width:100%; padding:0.6rem; border:1px solid var(--border-color); border-radius:6px; background:white; font-weight:700; text-align:left; cursor:pointer; }
-.acc-toggle:hover { border-color:var(--primary-accent); }
-body.acc-high-contrast { background:#000; color:#fff; }
-body.acc-high-contrast * { background:#000 !important; color:#fff !important; border-color:#fff !important; }
-body.acc-large-text * { font-size:120% !important; }
-body.acc-highlight-links a { background:yellow !important; color:black !important; padding:2px !important; }
 @media (max-width:768px) { h1 { font-size:1.8rem; } }
 @media (max-width:600px) { .grid { grid-template-columns:1fr; } .work-wrap { padding:2rem 1rem; } .panel { padding:1.5rem; } }
 </style>
 </head>
 <body>
 <div class="work-wrap">
-  <div class="title-row">
-    <h1>Intercom Server</h1>
-    <div class="title-actions">
-      <button class="btn-outline" id="help-btn">Help</button>
-      <button class="btn-danger" id="quit-btn">Quit</button>
-    </div>
-  </div>
-  <p class="subtitle">Signalling server, live call and client status on this computer.</p>
-
-  <div class="panel" id="help-panel" hidden><div class="help-text" id="help-text"></div></div>
+  <h1>Intercom Server</h1>
 
   <div class="section-label">Integrated Signalling Server</div>
   <div class="panel">
@@ -1081,24 +1034,11 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   </div>
 </div>
 
-<button class="acc-btn" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')">
-  <svg viewBox="0 0 24 24" fill="white" width="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
-</button>
-<div class="acc-menu" id="acc-menu">
-  <h4 style="margin-bottom:0.5rem;">Accessibility Options</h4>
-  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-high-contrast')">High Contrast Mode</button>
-  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-large-text')">Increase Font Size</button>
-  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-highlight-links')">Highlight Links</button>
-  <button class="acc-toggle" onclick="location.reload()" style="color:red;border-color:red;margin-top:10px;">Reset All</button>
-</div>
-
 <script>
 const RATES = __RATES__;
-const HELP = __HELP__;
 const POLL_MS = __POLL__;
 const LOCKED = ["ext_ip", "ip", "port", "my_id"];
 let loaded = false;
-let stopped = false;
 
 function $(id) { return document.getElementById(id); }
 
@@ -1183,7 +1123,7 @@ function render(s) {
 }
 
 function renderStopped() {
-  document.querySelectorAll(".work-wrap button, .work-wrap input, #help-btn, #quit-btn").forEach(function (el) { el.disabled = true; });
+  document.querySelectorAll(".work-wrap button, .work-wrap input").forEach(function (el) { el.disabled = true; });
   $("status").dataset.kind = "err";
   $("status-text").textContent = "STATUS: INTERCOM SERVER IS NOT RUNNING";
   for (const key of ["SERVER", "CLIENT", "HEADPHONES"]) setRow(key, { kind: "off", text: "-", text_kind: "muted" });
@@ -1199,7 +1139,6 @@ async function refresh() {
 }
 
 function loop() {
-  if (stopped) return;
   refresh().finally(function () { setTimeout(loop, POLL_MS); });
 }
 
@@ -1216,19 +1155,12 @@ for (const pair of RATES) {
   $("rates").appendChild(label);
 }
 
-$("help-text").textContent = HELP;
 for (const k of LOCKED) $(k).addEventListener("change", function () { act("settings"); });
 $("local_mode").addEventListener("change", function () { act("settings"); });
-$("help-btn").addEventListener("click", function () { $("help-panel").hidden = !$("help-panel").hidden; });
 $("server-btn").addEventListener("click", function () { run("toggle_server"); });
 $("intercom-btn").addEventListener("click", function () { run("toggle_intercom"); });
 $("shutdown-btn").addEventListener("click", shutdownClient);
 $("row-HEADPHONES").addEventListener("click", function () { act("silence"); });
-$("quit-btn").addEventListener("click", async function () {
-  stopped = true;
-  await act("quit");
-  renderStopped();
-});
 
 loop();
 </script>
@@ -1244,7 +1176,6 @@ PAGE_BYTES: bytes = (PAGE_HTML
                      .replace("__FAVICON__", FAVICON)
                      .replace("__URL__", PAGE_URL)
                      .replace("__RATES__", json.dumps([[r, RATE_LABELS[r]] for r in ALLOWED_RATES]))
-                     .replace("__HELP__", json.dumps(HELP_TEXT))
                      .replace("__POLL__", str(UI_TICK_MS))
                      .encode("utf-8"))
 
@@ -1314,7 +1245,7 @@ def main() -> None:
     app.httpd = httpd
 
     app.log(f"Intercom Server control page: {PAGE_URL}")
-    app.log("Press Ctrl+C or the Quit button to exit.")
+    app.log("Press Ctrl+C to exit.")
     webbrowser.open(PAGE_URL)
 
     try:

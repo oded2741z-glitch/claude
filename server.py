@@ -1006,11 +1006,11 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
 <div class="work-wrap">
   <h1>Intercom Server</h1>
 
-  <div class="section-label">Integrated Signalling Server</div>
-  <div class="panel">
-    <div class="field"><label for="ext_ip">External IP</label><input type="text" id="ext_ip" autocomplete="off"></div>
-    <label class="check"><input type="checkbox" id="local_mode"> Use Local Mode (Ignore External IP)</label>
-    <button class="btn-secondary" id="server-btn">START INTERNAL SERVER</button>
+  <div class="section-label">Live Status</div>
+  <div class="rows">
+    <div class="row" id="row-SERVER" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">SERVER CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
+    <div class="row" id="row-CLIENT" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
+    <div class="row" id="row-HEADPHONES" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT HEADPHONES</span></div><div class="row-detail" data-text="muted">-</div></div>
   </div>
 
   <div class="section-label">Connection Settings</div>
@@ -1026,11 +1026,11 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
     <button class="btn-danger" id="shutdown-btn">SHUTDOWN CLIENT</button>
   </div>
 
-  <div class="section-label">Live Status</div>
-  <div class="rows">
-    <div class="row" id="row-SERVER" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">SERVER CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
-    <div class="row" id="row-CLIENT" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
-    <div class="row" id="row-HEADPHONES" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT HEADPHONES</span></div><div class="row-detail" data-text="muted">-</div></div>
+  <div class="section-label">Integrated Signalling Server</div>
+  <div class="panel">
+    <div class="field"><label for="ext_ip">External IP</label><input type="text" id="ext_ip" autocomplete="off"></div>
+    <label class="check"><input type="checkbox" id="local_mode"> Use Local Mode (Ignore External IP)</label>
+    <button class="btn-secondary" id="server-btn">START INTERNAL SERVER</button>
   </div>
 </div>
 

@@ -226,7 +226,7 @@ class IntercomServer:
     def _server_row(self) -> Dict[str, str]:
         server_up = self.server_thread is not None and self.server_thread.is_alive()
         if server_up:
-            return self._row("on", f"internal server listening on port {self._server_port}")
+            return self._row("on", f"listening on port {self._server_port}")
         if self._server_error:
             return self._row("err", self._server_error, "err")
         if self.is_running and self.signalling_addr:
@@ -299,11 +299,11 @@ class IntercomServer:
         now = time.time()
         alive = self.server_thread is not None and self.server_thread.is_alive()
         if not alive:
-            server_button = {"text": "START INTERNAL SERVER", "style": "secondary", "busy": False}
+            server_button = {"text": "START SERVER", "style": "secondary", "busy": False}
         elif self._server_sock is None:
-            server_button = {"text": "STARTING SERVER...", "style": "secondary", "busy": True}
+            server_button = {"text": "STARTING...", "style": "secondary", "busy": True}
         else:
-            server_button = {"text": "STOP INTERNAL SERVER", "style": "primary", "busy": False}
+            server_button = {"text": "STOP SERVER", "style": "primary", "busy": False}
         return {
             "settings": {"ext_ip": self.ext_ip, "local_mode": self.local_mode,
                          "ip": self.server_ip, "port": self.server_port_text,
@@ -997,6 +997,12 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
 .row-detail { margin:0.4rem 0 0 18px; font-size:0.95rem; color:var(--text-dark); white-space:pre-wrap; word-break:break-word; }
 .row-detail[data-text="muted"] { color:var(--text-gray); }
 .row-detail[data-text="err"] { color:#991b1b; }
+.row-server { display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.row-main { flex:1 1 220px; min-width:0; }
+.row-controls { display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap; }
+.row-controls input[type="text"] { width:130px; padding:0.45rem 0.7rem; font-size:0.9rem; }
+.row-controls .check { font-size:0.85rem; }
+.btn-small { padding:0.5rem 0.9rem; font-size:0.8rem; }
 .row.ringing { border-color:#bfdbfe; cursor:pointer; }
 @media (max-width:768px) { h1 { font-size:1.8rem; } }
 @media (max-width:600px) { .grid { grid-template-columns:1fr; } .work-wrap { padding:2rem 1rem; } .panel { padding:1.5rem; } }
@@ -1008,7 +1014,14 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
 
   <div class="section-label">Live Status</div>
   <div class="rows">
-    <div class="row" id="row-SERVER" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">SERVER CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
+    <div class="row row-server" id="row-SERVER" data-kind="off">
+      <div class="row-main"><div class="row-head"><span class="dot"></span><span class="row-title">SERVER CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
+      <div class="row-controls">
+        <label class="check" title="Use Local Mode (Ignore External IP)"><input type="checkbox" id="local_mode"> Local Mode</label>
+        <input type="text" id="ext_ip" autocomplete="off" placeholder="External IP" aria-label="External IP" title="External IP">
+        <button class="btn-secondary btn-small" id="server-btn">START SERVER</button>
+      </div>
+    </div>
     <div class="row" id="row-CLIENT" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
     <div class="row" id="row-HEADPHONES" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT HEADPHONES</span></div><div class="row-detail" data-text="muted">-</div></div>
   </div>
@@ -1024,13 +1037,6 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
     <div class="status" id="status" data-kind="off"><span class="dot"></span><span id="status-text">STATUS: DISCONNECTED</span></div>
     <button class="btn-primary" id="intercom-btn">START INTERCOM</button>
     <button class="btn-danger" id="shutdown-btn">SHUTDOWN CLIENT</button>
-  </div>
-
-  <div class="section-label">Integrated Signalling Server</div>
-  <div class="panel">
-    <div class="field"><label for="ext_ip">External IP</label><input type="text" id="ext_ip" autocomplete="off"></div>
-    <label class="check"><input type="checkbox" id="local_mode"> Use Local Mode (Ignore External IP)</label>
-    <button class="btn-secondary" id="server-btn">START INTERNAL SERVER</button>
   </div>
 </div>
 
@@ -1108,7 +1114,7 @@ function render(s) {
 
   const sb = $("server-btn");
   sb.textContent = s.server_button.text;
-  sb.className = s.server_button.style === "primary" ? "btn-primary" : "btn-secondary";
+  sb.className = (s.server_button.style === "primary" ? "btn-primary" : "btn-secondary") + " btn-small";
   sb.disabled = s.server_button.busy;
 
   const ib = $("intercom-btn");

@@ -963,6 +963,12 @@ body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; }
 h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); }
 .section-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); margin:2rem 0 1rem; }
 .panel { background:#ffffff; border:1px solid var(--border-color); border-radius:12px; padding:2rem; display:flex; flex-direction:column; gap:1.25rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }
+.settings summary { list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px; font-size:0.85rem; font-weight:700; color:var(--text-gray); width:fit-content; }
+.settings summary::-webkit-details-marker { display:none; }
+.settings summary::before { content:""; width:6px; height:6px; border-right:2px solid var(--text-gray); border-bottom:2px solid var(--text-gray); transform:rotate(-45deg); transition:transform 0.2s; }
+.settings[open] summary::before { transform:rotate(45deg); }
+.settings summary:hover { color:var(--primary-accent); }
+.settings-body { display:flex; flex-direction:column; gap:1.25rem; margin-top:1.25rem; }
 .grid { display:grid; grid-template-columns:2fr 1fr; gap:1rem; }
 .field { display:flex; flex-direction:column; gap:0.4rem; }
 .field label, .field .label { font-size:0.85rem; font-weight:700; color:var(--text-gray); }
@@ -1028,12 +1034,17 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
 
   <div class="section-label">Connection Settings</div>
   <div class="panel">
-    <div class="grid">
-      <div class="field"><label for="ip">Server IP</label><input type="text" id="ip" autocomplete="off"></div>
-      <div class="field"><label for="port">Port</label><input type="text" id="port" autocomplete="off"></div>
-      <div class="field"><label for="my_id">My ID</label><input type="text" id="my_id" autocomplete="off"></div>
-    </div>
-    <div class="field"><span class="label">Audio</span><div class="rates" id="rates"></div></div>
+    <details class="settings">
+      <summary>Settings</summary>
+      <div class="settings-body">
+        <div class="grid">
+          <div class="field"><label for="ip">Server IP</label><input type="text" id="ip" autocomplete="off"></div>
+          <div class="field"><label for="port">Port</label><input type="text" id="port" autocomplete="off"></div>
+          <div class="field"><label for="my_id">My ID</label><input type="text" id="my_id" autocomplete="off"></div>
+        </div>
+        <div class="field"><span class="label">Audio</span><div class="rates" id="rates"></div></div>
+      </div>
+    </details>
     <div class="status" id="status" data-kind="off"><span class="dot"></span><span id="status-text">STATUS: DISCONNECTED</span></div>
     <button class="btn-primary" id="intercom-btn">START INTERCOM</button>
     <button class="btn-danger" id="shutdown-btn">SHUTDOWN CLIENT</button>

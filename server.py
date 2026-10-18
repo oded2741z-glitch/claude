@@ -4,11 +4,11 @@ import json
 import threading
 import time
 import ipaddress
-import tkinter as tk
+import webbrowser
 import sounddevice as sd
 import numpy as np
 import os
-from collections import deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional, Tuple, Dict, Any
 
 try:
@@ -54,38 +54,19 @@ HW_REFRESH_GAP: float = 5.0       # מרווח מזערי בין אתחולי Po
 STREAM_CLOSE_WAIT: float = 5.0    # סגירת stream על התקן שנשלף עלולה להיתקע
 
 # --- Dashboard ---
-UI_TICK_MS: int = 200             # קצב רענון המחוונים
+UI_TICK_MS: int = 250             # קצב רענון המחוונים בדף
 PEER_IDLE: float = 1.5            # אין אודיו מעבר לזה -> נורית הקליינט כבר לא ירוקה
 HP_REPORT_TTL: float = 5.0        # אין דיווח מהלקוח מעבר לזה -> מצב האוזניות לא ידוע
+
+# --- Web page ---
+WEB_HOST: str = "127.0.0.1"       # הדף נפתח רק במחשב הזה
+WEB_PORT: int = 8080
+ALLOWED_HOSTS: Tuple[str, ...] = (f"127.0.0.1:{WEB_PORT}", f"localhost:{WEB_PORT}")
 
 # --- Ring on headphone connect ---
 RING_INTERVAL: float = 1.5        # מרווח בין ביפים
 RING_FREQ: int = 1000             # Hz
 RING_MS: int = 200                # אורך הביפ. Beep חוסם, אז קצר = השתקה מיידית
-
-
-class Theme:
-    """Centralized configuration for UI colors and fonts."""
-    BG: str = "#121212"
-    FG: str = "#FFFFFF"
-    BTN_BG: str = "#333333"
-    ACCENT: str = "#ff7300"
-    QUIT: str = "#ff0000"
-    ENTRY_BG: str = "#222222"
-    LOG_BG: str = "#1e1e1e"
-    LOG_FG: str = "#FFFFFF"
-    DIVIDER: str = "#444444"
-    DISCONNECTED: str = "#888888"
-    CONNECTED: str = "#00ff00"
-    WAITING: str = "#f0ad4e"
-    PUNCHING: str = "#0275d8"
-    LED_OFF: str = "#3a3a3a"
-
-    FONT_TITLE: Tuple[str, int, str] = ("Consolas", 11, "bold")
-    FONT_LABEL: Tuple[str, int, str] = ("Arial", 10, "bold")
-    FONT_ENTRY: Tuple[str, int] = ("Arial", 9)
-    FONT_LOG: Tuple[str, int] = ("Consolas", 9)
-    FONT_MARK: Tuple[str, int] = ("Arial", 7)
 
 
 HELP_TEXT: str = (
@@ -103,13 +84,8 @@ HELP_TEXT: str = (
 )
 
 
-class IntercomGUI:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root: tk.Tk = root
-        self.root.geometry("480x700")
-        self.root.configure(bg=Theme.BG)
-        self.root.overrideredirect(True)
-
+class IntercomServer:
+    def __init__(self) -> None:
         # Threading & Concurrency Flags
         self.audio_lock: threading.Lock = threading.Lock()
         self.last_refresh_time: float = 0.0
@@ -127,16 +103,24 @@ class IntercomGUI:
         self.locked_peer: Optional[Tuple[str, int]] = None
         self.tx_peer: Optional[Tuple[str, int]] = None
 
+        # Settings (נערכים מהדף)
+        self._settings_lock: threading.Lock = threading.Lock()
+        self.ext_ip: str = "10.20.1.200"
+        self.local_mode: bool = False
+        self.server_ip: str = "127.0.0.1"
+        self.server_port_text: str = "9999"
+
         # Signalling target (נשמר כדי לדווח ניתוק בסגירה)
         self.signalling_addr: Optional[Tuple[str, int]] = None
-        self.my_id: str = ""
+        self.my_id: str = "node_A"
         self.peer_id: str = ""
 
         self.sample_rate: int = DEFAULT_SAMPLE_RATE
         self.chunk_size: int = chunk_for(DEFAULT_SAMPLE_RATE)
 
-        # Dashboard state (נכתב מתרדי הרקע, נקרא מתרד ה-UI)
-        self._events: deque = deque(maxlen=200)
+        # Dashboard state (נכתב מתרדי הרקע, נקרא ע"י הדף)
+        self.status_text: str = "DISCONNECTED"
+        self.status_kind: str = "off"
         self._last_rx: float = 0.0
         self._call_started: float = 0.0
         self._server_port: int = 0
@@ -156,285 +140,55 @@ class IntercomGUI:
         # מקבל פקודות רק מכתובת השרת שהוא רשום אליה.
         self._server_sock: Optional[socket.socket] = None
 
+        self._server_lock: threading.Lock = threading.Lock()
         self.server_thread: Optional[threading.Thread] = None
         self.server_stop_event: threading.Event = threading.Event()
         self._rewrite_warned: bool = False
 
-        # Window Drag Coordinates
-        self._offset_x: int = 0
-        self._offset_y: int = 0
+        self.httpd: Optional[ThreadingHTTPServer] = None
+        self._close_lock: threading.Lock = threading.Lock()
+        self._closed: bool = False
 
-        self._create_widgets()
         self.load_settings()
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self._ui_tick()
-
-    def start_move(self, event: tk.Event) -> None:
-        """Records initial coordinates for borderless window dragging."""
-        self._offset_x = event.x
-        self._offset_y = event.y
-
-    def do_move(self, event: tk.Event) -> None:
-        """Calculates and applies new window position during a drag event."""
-        x: int = self.root.winfo_x() + event.x - self._offset_x
-        y: int = self.root.winfo_y() + event.y - self._offset_y
-        self.root.geometry(f"+{x}+{y}")
-
-    def _create_widgets(self) -> None:
-        """Initializes and packs all Tkinter widgets using the Theme class."""
-        # --- Custom Title Bar ---
-        title_bar = tk.Frame(self.root, bg=Theme.BG)
-        title_bar.pack(fill="x", pady=5, padx=5)
-        title_bar.bind("<ButtonPress-1>", self.start_move)
-        title_bar.bind("<B1-Motion>", self.do_move)
-
-        title_lbl = tk.Label(title_bar, text="Intercom Server", font=Theme.FONT_TITLE,
-                             bg=Theme.BG, fg=Theme.ACCENT)
-        title_lbl.pack(side="left", padx=10)
-        title_lbl.bind("<ButtonPress-1>", self.start_move)
-        title_lbl.bind("<B1-Motion>", self.do_move)
-
-        tk.Button(title_bar, text="Quit", bg=Theme.QUIT, fg=Theme.FG, font=Theme.FONT_LABEL,
-                  relief="flat", width=6, command=self.on_close, activebackground="#cc0000",
-                  activeforeground=Theme.FG).pack(side="right", padx=2)
-
-        tk.Button(title_bar, text="Help", bg=Theme.BTN_BG, fg=Theme.FG, font=Theme.FONT_LABEL,
-                  relief="flat", width=6, command=self.show_help, activebackground=Theme.DIVIDER,
-                  activeforeground=Theme.FG).pack(side="right", padx=2)
-
-        tk.Frame(self.root, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10, pady=5)
-
-        # --- Integrated Signalling Server ---
-        tk.Label(self.root, text="Integrated Signalling Server", font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.FG).pack(anchor="w", padx=15, pady=(10, 0))
-        server_frame = tk.Frame(self.root, bg=Theme.BG)
-        server_frame.pack(fill="x", padx=20, pady=5)
-
-        tk.Label(server_frame, text="External IP:", bg=Theme.BG, fg=Theme.FG, font=Theme.FONT_ENTRY).grid(row=0, column=0, sticky="w", pady=5)
-        self.ext_ip_entry = tk.Entry(server_frame, bg=Theme.ENTRY_BG, fg=Theme.FG, insertbackground=Theme.FG,
-                                     relief="flat", highlightthickness=1, highlightbackground=Theme.DIVIDER, width=20)
-        self.ext_ip_entry.grid(row=0, column=1, padx=10, pady=5, sticky="w")
-
-        self.local_mode_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(server_frame, text="Use Local Mode (Ignore External IP)", variable=self.local_mode_var,
-                       command=self.save_settings, bg=Theme.BG, fg=Theme.FG, selectcolor=Theme.BTN_BG,
-                       activebackground=Theme.BG, activeforeground=Theme.FG).grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
-
-        self.server_btn = tk.Button(server_frame, text="START INTERNAL SERVER", font=("Arial", 9, "bold"),
-                                    bg=Theme.BTN_BG, fg=Theme.FG, relief="flat", width=35, pady=4,
-                                    command=self.toggle_local_server, activebackground=Theme.DIVIDER, activeforeground=Theme.FG)
-        self.server_btn.grid(row=2, column=0, columnspan=2, pady=10)
-
-        tk.Frame(self.root, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10, pady=5)
-
-        # --- Connection Settings ---
-        tk.Label(self.root, text="Connection Settings", font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.FG).pack(anchor="w", padx=15, pady=(5, 0))
-        config_frame = tk.Frame(self.root, bg=Theme.BG)
-        config_frame.pack(fill="x", padx=20, pady=5)
-
-        tk.Label(config_frame, text="Server IP:", bg=Theme.BG, fg=Theme.FG).grid(row=0, column=0, sticky="w", pady=5)
-        self.server_ip_entry = tk.Entry(config_frame, bg=Theme.ENTRY_BG, fg=Theme.FG, insertbackground=Theme.FG, relief="flat", highlightthickness=1, highlightbackground=Theme.DIVIDER, width=18)
-        self.server_ip_entry.grid(row=0, column=1, pady=5, padx=5)
-
-        tk.Label(config_frame, text="Port:", bg=Theme.BG, fg=Theme.FG).grid(row=0, column=2, sticky="w", pady=5, padx=(10, 0))
-        self.server_port_entry = tk.Entry(config_frame, bg=Theme.ENTRY_BG, fg=Theme.FG, insertbackground=Theme.FG, relief="flat", highlightthickness=1, highlightbackground=Theme.DIVIDER, width=7)
-        self.server_port_entry.grid(row=0, column=3, pady=5, padx=5)
-
-        tk.Label(config_frame, text="My ID:", bg=Theme.BG, fg=Theme.FG).grid(row=1, column=0, sticky="w", pady=5)
-        self.my_id_entry = tk.Entry(config_frame, bg=Theme.ENTRY_BG, fg=Theme.FG, insertbackground=Theme.FG, relief="flat", highlightthickness=1, highlightbackground=Theme.DIVIDER, width=18)
-        self.my_id_entry.grid(row=1, column=1, pady=5, padx=5)
-
-        tk.Label(config_frame, text="Audio:", bg=Theme.BG, fg=Theme.FG).grid(row=2, column=0, sticky="w", pady=5)
-        rate_frame = tk.Frame(config_frame, bg=Theme.BG)
-        rate_frame.grid(row=2, column=1, columnspan=3, sticky="w", pady=5)
-        self.rate_var = tk.IntVar(value=DEFAULT_SAMPLE_RATE)
-        self.rate_buttons: list = []
-        for rate in ALLOWED_RATES:
-            rb = tk.Radiobutton(rate_frame, text=RATE_LABELS[rate], value=rate, variable=self.rate_var,
-                                command=self._on_rate_change, bg=Theme.BG, fg=Theme.FG,
-                                selectcolor=Theme.BTN_BG, activebackground=Theme.BG,
-                                activeforeground=Theme.FG, font=Theme.FONT_ENTRY)
-            rb.pack(side="left", padx=(0, 8))
-            self.rate_buttons.append(rb)
-
-        self.status_label = tk.Label(self.root, text="STATUS: DISCONNECTED", font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.DISCONNECTED)
-        self.status_label.pack(pady=10)
-
-        # --- Main Toggle Button ---
-        btn_border = tk.Frame(self.root, bg=Theme.FG, padx=1, pady=1)
-        btn_border.pack(pady=5)
-        self.toggle_btn = tk.Button(btn_border, text="START INTERCOM", font=("Consolas", 12, "bold"),
-                                    bg=Theme.ACCENT, fg="#000000", activebackground="#e66a00", activeforeground="#000000",
-                                    relief="flat", width=42, pady=6, command=self.toggle_intercom)
-        self.toggle_btn.pack()
-
-        # --- Remote client control ---
-        self.shutdown_client_btn = tk.Button(self.root, text="SHUTDOWN CLIENT", font=("Arial", 9, "bold"),
-                                             bg=Theme.QUIT, fg=Theme.FG, relief="flat", width=35, pady=3,
-                                             command=self.shutdown_client,
-                                             activebackground="#cc0000", activeforeground=Theme.FG)
-        self.shutdown_client_btn.pack(pady=(8, 0))
-
-        # נארז לפני הדשבורד: pack מקצה מלמטה, והדשבורד לוקח expand=True.
-        # בסדר ההפוך אין מקום שנשאר והתווית פשוט לא מצוירת.
-        tk.Label(self.root, text="oT", font=Theme.FONT_MARK, bg=Theme.BG,
-                 fg=Theme.DIVIDER).pack(side="bottom", anchor="e", padx=10, pady=4)
-
-        # --- Live Dashboard (replaces the scrolling text log) ---
-        self._create_dashboard()
-
-    def _create_dashboard(self) -> None:
-        """Three status rows: signalling server, client link, client headphones."""
-        dash = tk.Frame(self.root, bg=Theme.BG)
-        dash.pack(fill="both", expand=True, padx=15, pady=(5, 5))
-
-        self.rows: Dict[str, Tuple[tk.Canvas, int, tk.Label]] = {}
-        for key, title in (("SERVER", "SERVER CONNECTION"),
-                           ("CLIENT", "CLIENT CONNECTION"),
-                           ("HEADPHONES", "CLIENT HEADPHONES")):
-            card = tk.Frame(dash, bg=Theme.LOG_BG, padx=10, pady=8)
-            card.pack(fill="x", pady=4)
-
-            head = tk.Frame(card, bg=Theme.LOG_BG)
-            head.pack(fill="x")
-            canvas = tk.Canvas(head, width=16, height=16, bg=Theme.LOG_BG, highlightthickness=0)
-            canvas.pack(side="left")
-            dot = canvas.create_oval(3, 3, 14, 14, fill=Theme.LED_OFF, outline="")
-            title_lbl = tk.Label(head, text=title, bg=Theme.LOG_BG, fg=Theme.FG,
-                                 font=Theme.FONT_LABEL)
-            title_lbl.pack(side="left", padx=(6, 0))
-
-            detail = tk.Label(card, text="-", anchor="w", bg=Theme.LOG_BG, fg=Theme.DISCONNECTED,
-                              font=Theme.FONT_LOG)
-            detail.pack(fill="x", padx=(22, 0), pady=(2, 0))
-            self.rows[key] = (canvas, dot, detail)
-
-            # לחיצה בכל מקום על הכרטיס משתיקה את הצלצול
-            if key == "HEADPHONES":
-                for widget in (card, head, canvas, title_lbl, detail):
-                    widget.bind("<Button-1>", self._silence_ring)
-
-    # ------------------------------------------------------------------
-    # Themed modal dialog
-    # ------------------------------------------------------------------
-    def _dark_dialog(self, title: str, message: str, confirm_text: str = "",
-                     wrap: int = 340) -> bool:
-        """Modal dialog in the app's own theme. True only when confirmed."""
-        win = tk.Toplevel(self.root)
-        win.configure(bg=Theme.BG)
-        win.overrideredirect(True)
-        win.transient(self.root)
-        win.resizable(False, False)
-        result: Dict[str, bool] = {"ok": False}
-
-        def close(ok: bool) -> None:
-            result["ok"] = ok
-            try:
-                win.grab_release()
-            except tk.TclError:
-                pass
-            win.destroy()
-
-        bar = tk.Frame(win, bg=Theme.BG)
-        bar.pack(fill="x", pady=5, padx=5)
-        title_lbl = tk.Label(bar, text=title, font=Theme.FONT_TITLE, bg=Theme.BG, fg=Theme.ACCENT)
-        title_lbl.pack(side="left", padx=10)
-
-        offset: Dict[str, int] = {"x": 0, "y": 0}
-
-        def press(event: tk.Event) -> None:
-            offset["x"], offset["y"] = event.x, event.y
-
-        def drag(event: tk.Event) -> None:
-            win.geometry(f"+{win.winfo_x() + event.x - offset['x']}"
-                         f"+{win.winfo_y() + event.y - offset['y']}")
-
-        for widget in (bar, title_lbl):
-            widget.bind("<ButtonPress-1>", press)
-            widget.bind("<B1-Motion>", drag)
-
-        tk.Frame(win, bg=Theme.DIVIDER, height=1).pack(fill="x", padx=10)
-
-        body = tk.Frame(win, bg=Theme.LOG_BG, padx=15, pady=15)
-        body.pack(fill="both", expand=True, padx=10, pady=10)
-        tk.Label(body, text=message, justify="left", anchor="w", wraplength=wrap,
-                 bg=Theme.LOG_BG, fg=Theme.FG, font=Theme.FONT_ENTRY).pack(fill="x")
-
-        btns = tk.Frame(win, bg=Theme.BG)
-        btns.pack(fill="x", padx=15, pady=(0, 12))
-
-        tk.Label(btns, text="oT", font=Theme.FONT_MARK, bg=Theme.BG,
-                 fg=Theme.DIVIDER).pack(side="left", anchor="s")
-
-        if confirm_text:
-            tk.Button(btns, text="Cancel", font=Theme.FONT_LABEL, bg=Theme.BTN_BG, fg=Theme.FG,
-                      relief="flat", width=10, pady=4, command=lambda: close(False),
-                      activebackground=Theme.DIVIDER,
-                      activeforeground=Theme.FG).pack(side="right", padx=(6, 0))
-            tk.Button(btns, text=confirm_text, font=Theme.FONT_LABEL, bg=Theme.QUIT, fg=Theme.FG,
-                      relief="flat", width=12, pady=4, command=lambda: close(True),
-                      activebackground="#cc0000",
-                      activeforeground=Theme.FG).pack(side="right")
-        else:
-            tk.Button(btns, text="OK", font=Theme.FONT_LABEL, bg=Theme.BTN_BG, fg=Theme.FG,
-                      relief="flat", width=10, pady=4, command=lambda: close(False),
-                      activebackground=Theme.DIVIDER,
-                      activeforeground=Theme.FG).pack(side="right")
-
-        win.update_idletasks()
-        x = self.root.winfo_x() + (self.root.winfo_width() - win.winfo_width()) // 2
-        y = self.root.winfo_y() + (self.root.winfo_height() - win.winfo_height()) // 3
-        win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
-
-        # overrideredirect מוריד את קישוט החלון, ולכן מרימים אותו במפורש
-        win.attributes("-topmost", True)
-        win.lift()
-        win.grab_set()
-        win.focus_force()
-        win.bind("<Escape>", lambda e: close(False))
-        win.bind("<Return>", lambda e: close(bool(confirm_text)))
-        self.root.wait_window(win)
-        return result["ok"]
 
     # ------------------------------------------------------------------
     # Remote client control
     # ------------------------------------------------------------------
-    def shutdown_client(self) -> None:
+    def shutdown_client(self, confirmed: bool, expected_id: Any) -> Dict[str, Any]:
         """Tells the most recently heard client to exit its process."""
         with self._hp_lock:
             entries = sorted(self._remote_clients.items(), key=lambda kv: kv[1][2], reverse=True)
         target = next(((cid, e[3]) for cid, e in entries if e[3] is not None), None)
         if target is None:
-            self._dark_dialog("Shutdown Client", "No client has reported to this server yet.")
-            return
+            return {"message": "No client has reported to this server yet."}
 
         client_id, addr = target
         sock = self._server_sock
         if sock is None:
             # הלקוח מקבל פקודות רק מכתובת השרת, ולכן חייבים לשלוח מהסוקט שלו
-            self._dark_dialog("Shutdown Client",
-                              "Start the internal signalling server first.\n\n"
-                              "The command is sent from its socket, and the client accepts "
-                              "it only from the server address it registered with.")
-            return
+            return {"message": "Start the internal signalling server first.\n\n"
+                               "The command is sent from its socket, and the client accepts "
+                               "it only from the server address it registered with."}
 
-        if not self._dark_dialog("Shutdown Client",
-                                 f"Shut down {client_id} at {addr[0]}:{addr[1]}?\n\n"
-                                 "The client process will exit and has to be restarted "
-                                 "on that machine.",
-                                 confirm_text="Shut Down"):
-            return
+        # האישור חייב להתייחס לאותו לקוח שהוצג למשתמש
+        if not confirmed or expected_id != client_id:
+            return {"confirm": f"Shut down {client_id} at {addr[0]}:{addr[1]}?\n\n"
+                               "The client process will exit and has to be restarted "
+                               "on that machine.",
+                    "target": client_id}
 
         payload = json.dumps({"cmd": "shutdown"}).encode('utf-8')
         for _ in range(CMD_RETRIES):
             try:
                 sock.sendto(payload, addr)
             except OSError as e:
-                self.log(f"[Server] Failed to send shutdown to {client_id}: {e}", "red")
-                return
+                self.log(f"[Server] Failed to send shutdown to {client_id}: {e}")
+                return {"message": f"Failed to send shutdown to {client_id}: {e}"}
             time.sleep(CMD_RETRY_DELAY)
 
         self.stop_ring()
-        self.log(f"[Server] Shutdown command sent to {client_id} ({addr[0]}:{addr[1]}).", "yellow")
+        self.log(f"[Server] Shutdown command sent to {client_id} ({addr[0]}:{addr[1]}).")
+        return {}
 
     # ------------------------------------------------------------------
     # Ring on headphone connect
@@ -467,59 +221,51 @@ class IntercomGUI:
             self._ring_stop.set()
             self._ring_thread = None
 
-    def _silence_ring(self, event: Optional[tk.Event] = None) -> None:
+    def _silence_ring(self) -> None:
         if self._ringing:
             self.stop_ring()
             self.log("Ring silenced.")
 
-    def show_help(self) -> None:
-        self._dark_dialog("Help", HELP_TEXT, wrap=470)
-
-    def log(self, msg: str, color_tag: str = "white") -> None:
+    def log(self, msg: str) -> None:
         """Events go to stdout only - the dashboard carries the state itself."""
-        line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-        print(line, flush=True)
-        self._events.append(line)
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
     # ------------------------------------------------------------------
-    # Dashboard refresh
+    # Dashboard state
     # ------------------------------------------------------------------
-    def _set_row(self, key: str, color: str, text: str, text_color: Optional[str] = None) -> None:
-        canvas, dot, detail = self.rows[key]
-        canvas.itemconfig(dot, fill=color)
-        detail.config(text=text, fg=text_color or (Theme.FG if color != Theme.LED_OFF else Theme.DISCONNECTED))
+    @staticmethod
+    def _row(kind: str, text: str, text_kind: Optional[str] = None) -> Dict[str, str]:
+        return {"kind": kind, "text": text,
+                "text_kind": text_kind or ("muted" if kind == "off" else "normal")}
 
-    def _refresh_server_row(self) -> None:
+    def _server_row(self) -> Dict[str, str]:
         server_up = self.server_thread is not None and self.server_thread.is_alive()
         if server_up:
-            self._set_row("SERVER", Theme.CONNECTED, f"internal server listening on port {self._server_port}")
-        elif self._server_error:
-            self._set_row("SERVER", Theme.QUIT, self._server_error, Theme.QUIT)
-        elif self.is_running and self.signalling_addr:
+            return self._row("on", f"internal server listening on port {self._server_port}")
+        if self._server_error:
+            return self._row("err", self._server_error, "err")
+        if self.is_running and self.signalling_addr:
             # לא מארחים שרת, אבל רשומים מול שרת חיצוני
             host, port = self.signalling_addr
             if self.assigned_peer:
-                self._set_row("SERVER", Theme.CONNECTED, f"registered with {host}:{port}")
-            else:
-                self._set_row("SERVER", Theme.WAITING, f"registering with {host}:{port}...")
-        else:
-            self._set_row("SERVER", Theme.LED_OFF, "stopped")
+                return self._row("on", f"registered with {host}:{port}")
+            return self._row("wait", f"registering with {host}:{port}...")
+        return self._row("off", "stopped")
 
-    def _refresh_client_row(self, now: float) -> None:
+    def _client_row(self, now: float) -> Dict[str, str]:
         with self.peer_lock:
             peer, locked = self.assigned_peer, self.locked_peer
         if not self.is_running:
-            self._set_row("CLIENT", Theme.LED_OFF, "not connected")
-        elif peer is None:
-            self._set_row("CLIENT", Theme.WAITING, "waiting for a peer...")
-        elif locked and now - self._last_rx < PEER_IDLE:
+            return self._row("off", "not connected")
+        if peer is None:
+            return self._row("wait", "waiting for a peer...")
+        if locked and now - self._last_rx < PEER_IDLE:
             elapsed = int(now - self._call_started) if self._call_started else 0
             name = self.peer_id or "peer"
-            self._set_row("CLIENT", Theme.CONNECTED,
-                          f"{name}  ·  {locked[0]}:{locked[1]}  ·  {elapsed // 60:02d}:{elapsed % 60:02d}")
-        else:
-            state = "no audio from peer" if self._call_started else "punching NAT..."
-            self._set_row("CLIENT", Theme.WAITING, f"{peer[0]}:{peer[1]}  ·  {state}")
+            return self._row("on", f"{name}  ·  {locked[0]}:{locked[1]}  ·  "
+                                   f"{elapsed // 60:02d}:{elapsed % 60:02d}")
+        state = "no audio from peer" if self._call_started else "punching NAT..."
+        return self._row("wait", f"{peer[0]}:{peer[1]}  ·  {state}")
 
     def _mark_headphones(self, client_id: str, connected: bool,
                          addr: Optional[Tuple[str, int]] = None) -> bool:
@@ -537,12 +283,11 @@ class IntercomGUI:
             self._remote_clients[client_id] = (connected, now, now, known_addr)
         return True
 
-    def _refresh_headphones_row(self) -> None:
+    def _headphones_row(self) -> Dict[str, str]:
         with self._hp_lock:
             entries = sorted(self._remote_clients.items(), key=lambda kv: kv[1][2], reverse=True)
         if not entries:
-            self._set_row("HEADPHONES", Theme.LED_OFF, "waiting for a client to report...")
-            return
+            return self._row("off", "waiting for a client to report...")
 
         client_id, (connected, since, last_seen, _addr) = entries[0]
         stamp = time.strftime('%H:%M:%S', time.localtime(since))
@@ -551,9 +296,9 @@ class IntercomGUI:
         if age > HP_REPORT_TTL:
             # הלקוח הפסיק לדווח - עדיף "לא ידוע" על פני נורית ירוקה משקרת
             last_state = "connected" if connected else "disconnected"
-            self._set_row("HEADPHONES", Theme.LED_OFF,
-                          f"{client_id}: no report for {int(age)}s  ·  last known: {last_state}{extra}")
-        elif connected:
+            return self._row("off", f"{client_id}: no report for {int(age)}s  ·  "
+                                    f"last known: {last_state}{extra}")
+        if connected:
             # הרמז שבגללו השורה קיימת: הצד השני מוכן, אפשר לפתוח שיחה
             if self._ringing:
                 hint = "   ->  click to silence"
@@ -561,52 +306,74 @@ class IntercomGUI:
                 hint = "   ->  press START INTERCOM"
             else:
                 hint = ""
-            self._set_row("HEADPHONES", Theme.CONNECTED,
-                          f"{client_id} connected  ·  {stamp}{extra}{hint}")
-        else:
-            self._set_row("HEADPHONES", Theme.QUIT,
-                          f"{client_id} disconnected  ·  {stamp}{extra}", Theme.QUIT)
+            return self._row("on", f"{client_id} connected  ·  {stamp}{extra}{hint}")
+        return self._row("err", f"{client_id} disconnected  ·  {stamp}{extra}", "err")
 
-    def _ui_tick(self) -> None:
-        """Single periodic redraw. Worker threads only write plain values."""
+    def get_state(self) -> Dict[str, Any]:
+        """Everything the page needs for one redraw."""
         now = time.time()
+        alive = self.server_thread is not None and self.server_thread.is_alive()
+        if not alive:
+            server_button = {"text": "START INTERNAL SERVER", "style": "secondary", "busy": False}
+        elif self._server_sock is None:
+            server_button = {"text": "STARTING SERVER...", "style": "secondary", "busy": True}
+        else:
+            server_button = {"text": "STOP INTERNAL SERVER", "style": "primary", "busy": False}
+        return {
+            "settings": {"ext_ip": self.ext_ip, "local_mode": self.local_mode,
+                         "ip": self.server_ip, "port": self.server_port_text,
+                         "my_id": self.my_id, "sample_rate": self.sample_rate},
+            "running": self.is_running,
+            "status": {"text": self.status_text, "kind": self.status_kind},
+            "server_button": server_button,
+            "ringing": self._ringing,
+            "rows": {"SERVER": self._server_row(),
+                     "CLIENT": self._client_row(now),
+                     "HEADPHONES": self._headphones_row()},
+        }
+
+    def update_status(self, text: str, kind: str) -> None:
+        self.status_text = text
+        self.status_kind = kind
+
+    # ------------------------------------------------------------------
+    # Settings
+    # ------------------------------------------------------------------
+    def _set_rate(self, value: Any) -> None:
         try:
-            # קריאה מתרד ה-UI, כדי שנדע את ה-ID שלנו עוד לפני לחיצה על START
-            self.my_id = self.my_id_entry.get().strip()
-            self._refresh_server_row()
-            self._refresh_client_row(now)
-            self._refresh_headphones_row()
-            self.root.after(UI_TICK_MS, self._ui_tick)
-        except tk.TclError:
-            return  # החלון נסגר
-
-    def update_status(self, text: str, color: str) -> None:
-        """Thread-safe status label update."""
-        def apply() -> None:
-            try:
-                self.status_label.config(text=f"STATUS: {text}", fg=color)
-            except tk.TclError:
-                pass
-        self.root.after(0, apply)
-
-    def _on_rate_change(self) -> None:
-        rate = self.rate_var.get()
+            rate = int(value)
+        except (TypeError, ValueError):
+            rate = DEFAULT_SAMPLE_RATE
         if rate not in ALLOWED_RATES:
             rate = DEFAULT_SAMPLE_RATE
-            self.rate_var.set(rate)
+        if rate == self.sample_rate:
+            return
         self.sample_rate = rate
         self.chunk_size = chunk_for(rate)
-        self.save_settings()
-        self.log(f"Audio sample rate set to {rate} ({RATE_LABELS[rate]}).", "yellow")
+        self.log(f"Audio sample rate set to {rate} ({RATE_LABELS[rate]}).")
+
+    def apply_settings(self, data: Dict[str, Any]) -> None:
+        """Takes the values typed in the page. Locked fields stay put during a call."""
+        with self._settings_lock:
+            if "local_mode" in data:
+                self.local_mode = bool(data["local_mode"])
+            if not self.is_running:
+                for attr, key in (("ext_ip", "ext_ip"), ("server_ip", "ip"),
+                                  ("server_port_text", "port"), ("my_id", "my_id")):
+                    if key in data:
+                        setattr(self, attr, str(data[key]).strip())
+                if "sample_rate" in data:
+                    self._set_rate(data["sample_rate"])
+            self.save_settings()
 
     def save_settings(self) -> None:
-        """Serializes current UI entries into a localized JSON config."""
+        """Serializes current settings into a localized JSON config."""
         data: Dict[str, Any] = {
-            "ext_ip": self.ext_ip_entry.get().strip(),
-            "local_mode": self.local_mode_var.get(),
-            "ip": self.server_ip_entry.get().strip(),
-            "port": self.server_port_entry.get().strip(),
-            "my_id": self.my_id_entry.get().strip(),
+            "ext_ip": self.ext_ip,
+            "local_mode": self.local_mode,
+            "ip": self.server_ip,
+            "port": self.server_port_text,
+            "my_id": self.my_id,
             "sample_rate": self.sample_rate
         }
         try:
@@ -616,65 +383,55 @@ class IntercomGUI:
             self.log(f"Error saving settings: {e}")
 
     def load_settings(self) -> None:
-        """Parses the JSON settings file and populates UI elements."""
+        """Parses the JSON settings file into the current settings."""
         if not os.path.exists(SETTINGS_FILE):
-            self.ext_ip_entry.insert(0, "10.20.1.200")
-            self.server_ip_entry.insert(0, "127.0.0.1")
-            self.server_port_entry.insert(0, "9999")
-            self.my_id_entry.insert(0, "node_A")
             return
 
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data: Dict[str, Any] = json.load(f)
 
-            for entry, key, default in [
-                (self.ext_ip_entry, "ext_ip", "10.20.1.200"),
-                (self.server_ip_entry, "ip", "127.0.0.1"),
-                (self.server_port_entry, "port", "9999"),
-                (self.my_id_entry, "my_id", "node_A")
-            ]:
-                entry.delete(0, tk.END)
-                entry.insert(0, str(data.get(key, default)))
-
-            self.local_mode_var.set(data.get("local_mode", False))
+            self.ext_ip = str(data.get("ext_ip", self.ext_ip))
+            self.server_ip = str(data.get("ip", self.server_ip))
+            self.server_port_text = str(data.get("port", self.server_port_text))
+            self.my_id = str(data.get("my_id", self.my_id))
+            self.local_mode = bool(data.get("local_mode", False))
             rate = data.get("sample_rate", DEFAULT_SAMPLE_RATE)
             if rate not in ALLOWED_RATES:
                 rate = DEFAULT_SAMPLE_RATE
-            self.rate_var.set(rate)
             self.sample_rate = rate
             self.chunk_size = chunk_for(rate)
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, json.JSONDecodeError, AttributeError) as e:
             self.log(f"Error loading settings: {e}")
 
     # ------------------------------------------------------------------
     # Signalling server
     # ------------------------------------------------------------------
-    def toggle_local_server(self) -> None:
-        if self.server_thread is None or not self.server_thread.is_alive():
-            self.start_local_server()
-        else:
+    def toggle_local_server(self) -> Optional[str]:
+        with self._server_lock:
+            if self.server_thread is None or not self.server_thread.is_alive():
+                return self.start_local_server()
             self.stop_local_server()
+            return None
 
-    def start_local_server(self) -> None:
+    def start_local_server(self) -> Optional[str]:
         try:
-            server_port: int = int(self.server_port_entry.get().strip())
+            server_port: int = int(self.server_port_text)
         except ValueError:
-            self.log("Failed to start server: Invalid port number.", "red")
-            return
+            self.log("Failed to start server: Invalid port number.")
+            return "Port must be a valid number."
 
-        ext_ip: str = self.ext_ip_entry.get().strip()
-        use_local: bool = self.local_mode_var.get()
+        ext_ip: str = self.ext_ip
+        use_local: bool = self.local_mode
 
         self.server_stop_event.clear()
         self._rewrite_warned = False
         self._server_port = server_port
         self._server_error = ""
-        # הכפתור מתעדכן רק אחרי ש-bind באמת הצליח
-        self.server_btn.config(text="STARTING SERVER...", bg=Theme.BTN_BG, fg=Theme.FG)
         self.server_thread = threading.Thread(target=self._run_internal_server,
                                               args=(server_port, ext_ip, use_local), daemon=True)
         self.server_thread.start()
+        return None
 
     def stop_local_server(self) -> None:
         self.stop_ring()
@@ -683,18 +440,7 @@ class IntercomGUI:
             # לסוקט השרת יש timeout של שנייה - נותנים לו מספיק זמן לשחרר את הפורט
             self.server_thread.join(timeout=2.5)
         self.server_thread = None
-        self._mark_server_stopped()
         self.log("Internal Signalling Server STOPPED.")
-
-    def _mark_server_started(self, port: int) -> None:
-        self.server_btn.config(text="STOP INTERNAL SERVER", bg=Theme.ACCENT, fg="#000000")
-        self.log(f"Internal Signalling Server STARTED on port {port}.", "green")
-
-    def _mark_server_stopped(self) -> None:
-        try:
-            self.server_btn.config(text="START INTERNAL SERVER", bg=Theme.BTN_BG, fg=Theme.FG)
-        except tk.TclError:
-            pass
 
     @staticmethod
     def _parse_json_dict(data: bytes) -> Optional[Dict[str, Any]]:
@@ -718,13 +464,13 @@ class IntercomGUI:
         if not self._rewrite_warned:
             self._rewrite_warned = True
             self.log("[Server] Rewriting private IPs to External IP. Note: the PORT is "
-                     "not translated, so this needs a static port forward.", "yellow")
+                     "not translated, so this needs a static port forward.")
         return ext_ip
 
     def _purge_stale(self, clients: Dict[str, Tuple[Tuple[str, int], float]], now: float) -> None:
         for cid in [c for c, (_, ts) in clients.items() if now - ts > CLIENT_TTL]:
             del clients[cid]
-            self.log(f"[Server] {cid}: registration expired.", "yellow")
+            self.log(f"[Server] {cid}: registration expired.")
 
     def _handle_signalling(self, server_sock: socket.socket,
                            clients: Dict[str, Tuple[Tuple[str, int], float]],
@@ -752,12 +498,12 @@ class IntercomGUI:
             connected = bool(msg.get("headphones"))
             if self._mark_headphones(client_id, connected, addr):
                 if connected:
-                    self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
+                    self.log(f"[Server] {client_id}: Headphones connected !!!")
                     # לא מצלצלים באמצע שיחה - הביפ ייכנס לאודיו החי
                     if not self.is_running:
                         self.start_ring()
                 else:
-                    self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
+                    self.log(f"[Server] {client_id}: Headphones disconnected !!!")
                     self.stop_ring()
             if not connected:
                 clients.pop(client_id, None)
@@ -768,7 +514,7 @@ class IntercomGUI:
         if status == "disconnected":
             clients.pop(client_id, None)
             if self._mark_headphones(client_id, False, addr):
-                self.log(f"[Server] {client_id}: Headphones disconnected !!!", "red")
+                self.log(f"[Server] {client_id}: Headphones disconnected !!!")
                 self.stop_ring()
             return
 
@@ -777,16 +523,16 @@ class IntercomGUI:
 
         # רישום להצמדה. לקוח שנרשם בהכרח מחזיק אוזניות תקינות.
         if self._mark_headphones(client_id, True, addr):
-            self.log(f"[Server] {client_id}: Headphones connected !!!", "purple")
+            self.log(f"[Server] {client_id}: Headphones connected !!!")
             if not self.is_running:
                 self.start_ring()
         if client_id not in clients:
-            self.log(f"[Server] {client_id}: registered, waiting for a match.", "purple")
+            self.log(f"[Server] {client_id}: registered, waiting for a match.")
         clients[client_id] = (addr, now)
 
         if len(clients) == 2:
             (peer1_id, (addr1, _)), (peer2_id, (addr2, _)) = clients.items()
-            self.log(f"[Server] Matched {peer1_id} <---> {peer2_id}.", "green")
+            self.log(f"[Server] Matched {peer1_id} <---> {peer2_id}.")
 
             ip1 = self._visible_ip(addr1[0], ext_ip, use_local)
             ip2 = self._visible_ip(addr2[0], ext_ip, use_local)
@@ -810,13 +556,12 @@ class IntercomGUI:
             server_sock.settimeout(1.0)
         except OSError as e:
             self._server_error = f"bind failed on port {port}: {e.strerror or e}"
-            self.log(f"[Server] Bind Error: {e}", "red")
-            self.root.after(0, self._mark_server_stopped)
+            self.log(f"[Server] Bind Error: {e}")
             return
 
-        self.root.after(0, self._mark_server_started, port)
         clients: Dict[str, Tuple[Tuple[str, int], float]] = {}
         self._server_sock = server_sock
+        self.log(f"Internal Signalling Server STARTED on port {port}.")
 
         with server_sock:
             while not self.server_stop_event.is_set():
@@ -828,17 +573,16 @@ class IntercomGUI:
                 except ConnectionResetError:
                     continue  # Windows WinError 10054
                 except OSError as e:
-                    self.log(f"[Server] Socket error: {e}", "red")
+                    self.log(f"[Server] Socket error: {e}")
                     break
 
                 # חבילה פגומה אחת לא מפילה את השרת
                 try:
                     self._handle_signalling(server_sock, clients, data, addr, ext_ip, use_local)
                 except Exception as e:
-                    self.log(f"[Server] Error handling packet: {e}", "red")
+                    self.log(f"[Server] Error handling packet: {e}")
 
         self._server_sock = None
-        self.root.after(0, self._mark_server_stopped)
 
     # ------------------------------------------------------------------
     # Audio hardware
@@ -883,36 +627,33 @@ class IntercomGUI:
     # ------------------------------------------------------------------
     # Intercom connection
     # ------------------------------------------------------------------
-    def toggle_intercom(self) -> None:
+    def toggle_intercom(self) -> Optional[str]:
         if not self.is_running:
-            self.start_connection()
-        else:
-            self.stop_connection()
+            return self.start_connection()
+        self.stop_connection()
+        return None
 
-    def start_connection(self) -> None:
+    def start_connection(self) -> Optional[str]:
         self.save_settings()
         try:
-            server_port: int = int(self.server_port_entry.get().strip())
+            server_port: int = int(self.server_port_text)
         except ValueError:
-            self._dark_dialog("Error", "Port must be a valid number.")
-            return
+            return "Port must be a valid number."
 
-        server_ip = self.server_ip_entry.get().strip()
-        my_id = self.my_id_entry.get().strip()
+        server_ip = self.server_ip
+        my_id = self.my_id
         if not my_id:
-            self._dark_dialog("Error", "Please enter a valid ID.")
-            return
+            return "Please enter a valid ID."
 
         with self._stop_lock:
             if self.is_running:      # מגן מפני לחיצה כפולה מהירה
-                return
+                return None
             self.is_running = True
 
         # לענות לשיחה זו גם השתקה - אחרת הצלצול נכנס לאודיו של האינטרקום
         self.stop_ring()
 
         self.last_refresh_time = 0.0
-        self.my_id = my_id
         self.peer_id = ""
         self._call_started = 0.0
         self._last_rx = 0.0
@@ -922,18 +663,13 @@ class IntercomGUI:
             self.locked_peer = None
             self.tx_peer = None
 
-        self.toggle_btn.config(text="DISCONNECT", bg=Theme.QUIT, fg=Theme.FG)
-        for entry in (self.server_ip_entry, self.server_port_entry, self.my_id_entry, self.ext_ip_entry):
-            entry.config(state="disabled")
-        for rb in self.rate_buttons:
-            rb.config(state="disabled")
-
         self._safe_refresh_hardware()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.settimeout(1.0)
 
         threading.Thread(target=self._connection_flow, args=(server_ip, server_port, my_id),
                          daemon=True).start()
+        return None
 
     def _await_peer(self, server_ip: str, server_port: int, my_id: str) -> Optional[Tuple[str, int]]:
         """ממתין לפרטי העמית. מתעלם מכל חבילה שאינה תשובת סיגנלינג תקינה."""
@@ -972,9 +708,9 @@ class IntercomGUI:
             if not self.sock:
                 return
 
-            self.update_status("WAITING FOR PEER...", Theme.WAITING)
+            self.update_status("WAITING FOR PEER...", "wait")
             self.log("Waiting for matching peer from server...")
-            self.log("Please wait 5 seconds...", "yellow")
+            self.log("Please wait 5 seconds...")
 
             peer_addr = self._await_peer(server_ip, server_port, my_id)
             if not self.is_running or not peer_addr:
@@ -985,8 +721,8 @@ class IntercomGUI:
                 self.assigned_peer = peer_addr
                 self.tx_peer = peer_addr
 
-            self.log(f"Peer Target Assigned -> IP: {peer_addr[0]}, Port: {peer_addr[1]}", "green")
-            self.update_status("PUNCHING NAT...", Theme.PUNCHING)
+            self.log(f"Peer Target Assigned -> IP: {peer_addr[0]}, Port: {peer_addr[1]}")
+            self.update_status("PUNCHING NAT...", "info")
 
             punch_until = time.time() + PUNCH_DURATION
             while self.is_running and time.time() < punch_until:
@@ -999,8 +735,8 @@ class IntercomGUI:
             if not self.is_running:
                 return
 
-            self.update_status("CONNECTED (P2P AUDIO)", Theme.CONNECTED)
-            self.log("NAT hole punched! Live audio streaming active.", "green")
+            self.update_status("CONNECTED (P2P AUDIO)", "on")
+            self.log("NAT hole punched! Live audio streaming active.")
 
             self._call_started = time.time()
             self.rx_thread = threading.Thread(target=self._audio_receiver, daemon=True)
@@ -1009,9 +745,9 @@ class IntercomGUI:
             self.tx_thread.start()
 
         except Exception as e:
-            # בלי זה חריגה כאן משאירה את ה-GUI תקוע ב-WAITING FOR PEER לנצח
+            # בלי זה חריגה כאן משאירה את הדף תקוע ב-WAITING FOR PEER לנצח
             if self.is_running:
-                self.log(f"Connection error: {e}", "red")
+                self.log(f"Connection error: {e}")
                 self.stop_connection()
 
     def _peer_audio(self, addr: Tuple[str, int], data: bytes) -> Optional[bytes]:
@@ -1028,7 +764,7 @@ class IntercomGUI:
                 self.tx_peer = addr
                 if addr != self.assigned_peer:
                     self.log(f"Peer reached us from {addr[0]}:{addr[1]} (assigned "
-                             f"{self.assigned_peer}). Locking on.", "yellow")
+                             f"{self.assigned_peer}). Locking on.")
             elif addr != self.locked_peer:
                 return None  # מונע הזרקת אודיו מכל מקור אחר ברשת
 
@@ -1037,6 +773,10 @@ class IntercomGUI:
         if len(payload) % (2 * CHANNELS) != 0:
             return None  # חבילה קטומה
         return payload
+
+    def _stop_later(self) -> None:
+        """stop_connection ממתין לתרדי האודיו, ולכן לא נקרא מתוכם ישירות."""
+        threading.Thread(target=self.stop_connection, daemon=True).start()
 
     def _audio_receiver(self) -> None:
         last_data_time: float = time.time()
@@ -1056,13 +796,13 @@ class IntercomGUI:
                             if time.time() - last_data_time > TIMEOUT_SECS:
                                 if self.is_running:
                                     self.log("Peer disconnected (3 seconds timeout).")
-                                    self.root.after(0, self.stop_connection)
+                                    self._stop_later()
                                 return
                             continue
                         except ConnectionResetError:
                             if self.is_running:
                                 self.log("Peer disconnected unexpectedly.")
-                                self.root.after(0, self.stop_connection)
+                                self._stop_later()
                             return
                         except (AttributeError, OSError):
                             return  # הסוקט נסגר - יציאה נקייה, בלי הודעת חומרה מטעה
@@ -1077,7 +817,7 @@ class IntercomGUI:
                             stream.write(block.reshape(-1, CHANNELS))
                         except sd.PortAudioError:
                             if self.is_running:
-                                self.log("Output device error. Reconnecting...", "red")
+                                self.log("Output device error. Reconnecting...")
                             restart_needed = True
                             break
             except sd.PortAudioError:
@@ -1100,7 +840,7 @@ class IntercomGUI:
                             data, _ = stream.read(self.chunk_size)
                         except sd.PortAudioError:
                             if self.is_running:
-                                self.log("Input device disconnected. Reconnecting...", "red")
+                                self.log("Input device disconnected. Reconnecting...")
                             restart_needed = True
                             break
 
@@ -1142,7 +882,7 @@ class IntercomGUI:
             if t is not None and t.is_alive() and t is not current:
                 t.join(timeout=STREAM_CLOSE_WAIT)
                 if t.is_alive():
-                    self.log("Audio thread still closing the device; will not touch PortAudio.", "yellow")
+                    self.log("Audio thread still closing the device; will not touch PortAudio.")
         self.rx_thread = None
         self.tx_thread = None
 
@@ -1159,33 +899,440 @@ class IntercomGUI:
             self.locked_peer = None
             self.tx_peer = None
 
-        # החזרת הלוח למצב מנותק (ה-tick ידאג לצייר)
+        # החזרת הלוח למצב מנותק (הדף יצייר בסבב הבא)
         self.peer_id = ""
         self._call_started = 0.0
         self._last_rx = 0.0
+        self.update_status("DISCONNECTED", "off")
+        self.log("Intercom stopped.")
 
-        def reset_gui() -> None:
-            try:
-                self.toggle_btn.config(text="START INTERCOM", bg=Theme.ACCENT, fg="#000000")
-                for entry in (self.server_ip_entry, self.server_port_entry, self.my_id_entry, self.ext_ip_entry):
-                    entry.config(state="normal")
-                for rb in self.rate_buttons:
-                    rb.config(state="normal")
-                self.status_label.config(text="STATUS: DISCONNECTED", fg=Theme.DISCONNECTED)
-                self.log("Intercom stopped.", "red")
-            except tk.TclError:
-                pass
+    # ------------------------------------------------------------------
+    # Page actions & shutdown
+    # ------------------------------------------------------------------
+    def handle_action(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        if self._closed:
+            return {"message": "Intercom Server is shutting down."}
 
-        self.root.after(0, reset_gui)
+        settings = body.get("settings")
+        if isinstance(settings, dict):
+            self.apply_settings(settings)
 
-    def on_close(self) -> None:
+        action = body.get("action")
+        if action == "settings":
+            return {}
+        if action == "toggle_server":
+            error = self.toggle_local_server()
+            return {"message": error} if error else {}
+        if action == "toggle_intercom":
+            error = self.toggle_intercom()
+            return {"message": error} if error else {}
+        if action == "shutdown_client":
+            return self.shutdown_client(bool(body.get("confirmed")), body.get("target"))
+        if action == "silence":
+            self._silence_ring()
+            return {}
+        if action == "quit":
+            threading.Thread(target=self.quit, daemon=True).start()
+            return {}
+        return {"message": "Unknown action."}
+
+    def shutdown_all(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         self.stop_ring()
         self.stop_connection()
-        self.stop_local_server()
-        self.root.destroy()
+        with self._server_lock:
+            if self.server_thread is not None and self.server_thread.is_alive():
+                self.stop_local_server()
+
+    def quit(self) -> None:
+        self.shutdown_all()
+        if self.httpd is not None:
+            self.httpd.shutdown()
+
+
+# ----------------------------------------------------------------------
+# Web page
+# ----------------------------------------------------------------------
+PAGE_HTML: str = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="__FAVICON__">
+<link rel="shortcut icon" href="__FAVICON__">
+<meta name="theme-color" content="#f9fafb">
+<title>Intercom Server</title>
+<meta name="description" content="Local control page for the P2P intercom signalling server and call.">
+<link rel="canonical" href="__URL__">
+<meta property="og:title" content="Intercom Server">
+<meta property="og:description" content="Local control page for the P2P intercom signalling server and call.">
+<meta property="og:type" content="website">
+<style>
+:root {
+  --primary-accent: #2563eb;
+  --primary-hover:  #1d4ed8;
+  --bg-light:       #f9fafb;
+  --text-dark:      #111827;
+  --text-gray:      #64748b;
+  --border-color:   #e2e8f0;
+}
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden; }
+.site-header { padding:1.5rem 6%; background:#ffffff; border-bottom:1px solid var(--border-color); display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+.logo-text { font-weight:800; font-size:1.5rem; letter-spacing:-0.5px; color:var(--text-dark); text-decoration:none; }
+.logo-accent { color:var(--primary-accent); }
+.header-actions { display:flex; gap:0.5rem; }
+.btn-outline { background:none; border:1px solid var(--border-color); border-radius:8px; padding:0.5rem 1rem; font-size:0.85rem; font-weight:600; color:var(--text-gray); cursor:pointer; }
+.btn-outline:hover { border-color:var(--primary-accent); color:var(--primary-accent); }
+.work-wrap { max-width:760px; margin:3rem auto; padding:0 6%; width:100%; flex:1; }
+h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); }
+.subtitle { font-size:1.05rem; color:var(--text-gray); line-height:1.6; margin-bottom:1rem; }
+.section-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); margin:2rem 0 1rem; }
+.panel { background:#ffffff; border:1px solid var(--border-color); border-radius:12px; padding:2rem; display:flex; flex-direction:column; gap:1.25rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }
+.help-text { white-space:pre-line; color:#475569; font-size:0.95rem; line-height:1.6; }
+.grid { display:grid; grid-template-columns:2fr 1fr; gap:1rem; }
+.field { display:flex; flex-direction:column; gap:0.4rem; }
+.field label, .field .label { font-size:0.85rem; font-weight:700; color:var(--text-gray); }
+input[type="text"] { background:#ffffff; border:1px solid var(--border-color); color:var(--text-dark); border-radius:8px; padding:0.6rem 0.8rem; font-size:1rem; width:100%; }
+input[type="text"]:focus { outline:none; border-color:var(--primary-accent); }
+input[type="text"]:disabled { background:var(--bg-light); color:var(--text-gray); }
+input[type="checkbox"], input[type="radio"] { accent-color:var(--primary-accent); width:16px; height:16px; }
+.check, .rate { display:flex; align-items:center; gap:8px; font-size:0.95rem; font-weight:600; color:var(--text-dark); cursor:pointer; }
+.rates { display:flex; gap:1.5rem; flex-wrap:wrap; }
+.btn-primary { background:var(--primary-accent); color:#fff; border:1px solid var(--primary-accent); border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:0.95rem; cursor:pointer; transition:background 0.2s; }
+.btn-primary:hover { background:var(--primary-hover); }
+.btn-secondary { background:#ffffff; color:var(--text-dark); border:1px solid var(--border-color); border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:0.95rem; cursor:pointer; }
+.btn-secondary:hover { border-color:var(--primary-accent); }
+.btn-danger { background:#fee2e2; color:#991b1b; border:1px solid #fee2e2; border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:0.95rem; cursor:pointer; }
+.btn-danger:hover { border-color:#991b1b; }
+.site-header .btn-danger { padding:0.5rem 1rem; font-size:0.85rem; font-weight:600; }
+button:disabled { opacity:0.5; cursor:not-allowed; }
+[hidden] { display:none !important; }
+.status { display:flex; align-items:center; justify-content:center; gap:8px; font-weight:700; font-size:0.95rem; color:var(--text-gray); }
+.dot { width:8px; height:8px; border-radius:50%; background:#cbd5e1; flex-shrink:0; }
+[data-kind="on"] .dot { background:#10b981; }
+[data-kind="wait"] .dot { background:#92400e; }
+[data-kind="info"] .dot { background:var(--primary-accent); }
+[data-kind="err"] .dot { background:#991b1b; }
+.status[data-kind="on"] { color:#065f46; }
+.status[data-kind="wait"] { color:#92400e; }
+.status[data-kind="info"] { color:#1d4ed8; }
+.status[data-kind="err"] { color:#991b1b; }
+.rows { display:flex; flex-direction:column; gap:0.75rem; }
+.row { background:#ffffff; border:1px solid var(--border-color); border-radius:12px; padding:1rem 1.25rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }
+.row-head { display:flex; align-items:center; gap:10px; }
+.row-title { font-size:0.75rem; font-weight:700; letter-spacing:2px; color:var(--text-dark); }
+.row-detail { margin:0.4rem 0 0 18px; font-size:0.95rem; color:var(--text-dark); white-space:pre-wrap; word-break:break-word; }
+.row-detail[data-text="muted"] { color:var(--text-gray); }
+.row-detail[data-text="err"] { color:#991b1b; }
+.row.ringing { border-color:#bfdbfe; cursor:pointer; }
+.site-footer { padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; background:transparent; }
+.acc-btn { position:fixed; bottom:30px; left:30px; width:50px; height:50px; border-radius:50%; background:var(--primary-accent); display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:1000; }
+.acc-menu { position:fixed; bottom:90px; left:30px; width:260px; display:none; flex-direction:column; gap:0.8rem; padding:1.5rem; background:white; border:1px solid var(--border-color); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:1000; }
+.acc-toggle { width:100%; padding:0.6rem; border:1px solid var(--border-color); border-radius:6px; background:white; font-weight:700; text-align:left; cursor:pointer; }
+.acc-toggle:hover { border-color:var(--primary-accent); }
+body.acc-high-contrast { background:#000; color:#fff; }
+body.acc-high-contrast * { background:#000 !important; color:#fff !important; border-color:#fff !important; }
+body.acc-large-text * { font-size:120% !important; }
+body.acc-highlight-links a { background:yellow !important; color:black !important; padding:2px !important; }
+@media (max-width:768px) { h1 { font-size:1.8rem; } }
+@media (max-width:600px) { .grid { grid-template-columns:1fr; } .site-header { padding:1rem 6%; } .panel { padding:1.5rem; } }
+</style>
+</head>
+<body>
+<header class="site-header">
+  <a href="/" class="logo-text">Intercom<span class="logo-accent">Server</span></a>
+  <div class="header-actions">
+    <button class="btn-outline" id="help-btn">Help</button>
+    <button class="btn-danger" id="quit-btn">Quit</button>
+  </div>
+</header>
+
+<div class="work-wrap">
+  <h1>Intercom Server</h1>
+  <p class="subtitle">Signalling server, live call and client status on this computer.</p>
+
+  <div class="panel" id="help-panel" hidden><div class="help-text" id="help-text"></div></div>
+
+  <div class="section-label">Integrated Signalling Server</div>
+  <div class="panel">
+    <div class="field"><label for="ext_ip">External IP</label><input type="text" id="ext_ip" autocomplete="off"></div>
+    <label class="check"><input type="checkbox" id="local_mode"> Use Local Mode (Ignore External IP)</label>
+    <button class="btn-secondary" id="server-btn">START INTERNAL SERVER</button>
+  </div>
+
+  <div class="section-label">Connection Settings</div>
+  <div class="panel">
+    <div class="grid">
+      <div class="field"><label for="ip">Server IP</label><input type="text" id="ip" autocomplete="off"></div>
+      <div class="field"><label for="port">Port</label><input type="text" id="port" autocomplete="off"></div>
+      <div class="field"><label for="my_id">My ID</label><input type="text" id="my_id" autocomplete="off"></div>
+    </div>
+    <div class="field"><span class="label">Audio</span><div class="rates" id="rates"></div></div>
+    <div class="status" id="status" data-kind="off"><span class="dot"></span><span id="status-text">STATUS: DISCONNECTED</span></div>
+    <button class="btn-primary" id="intercom-btn">START INTERCOM</button>
+    <button class="btn-danger" id="shutdown-btn">SHUTDOWN CLIENT</button>
+  </div>
+
+  <div class="section-label">Live Status</div>
+  <div class="rows">
+    <div class="row" id="row-SERVER" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">SERVER CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
+    <div class="row" id="row-CLIENT" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT CONNECTION</span></div><div class="row-detail" data-text="muted">-</div></div>
+    <div class="row" id="row-HEADPHONES" data-kind="off"><div class="row-head"><span class="dot"></span><span class="row-title">CLIENT HEADPHONES</span></div><div class="row-detail" data-text="muted">-</div></div>
+  </div>
+</div>
+
+<footer class="site-footer">&copy; <span id="year"></span> oT. All rights reserved.</footer>
+
+<button class="acc-btn" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')">
+  <svg viewBox="0 0 24 24" fill="white" width="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
+</button>
+<div class="acc-menu" id="acc-menu">
+  <h4 style="margin-bottom:0.5rem;">Accessibility Options</h4>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-high-contrast')">High Contrast Mode</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-large-text')">Increase Font Size</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-highlight-links')">Highlight Links</button>
+  <button class="acc-toggle" onclick="location.reload()" style="color:red;border-color:red;margin-top:10px;">Reset All</button>
+</div>
+
+<script>
+const RATES = __RATES__;
+const HELP = __HELP__;
+const POLL_MS = __POLL__;
+const LOCKED = ["ext_ip", "ip", "port", "my_id"];
+let loaded = false;
+let stopped = false;
+
+function $(id) { return document.getElementById(id); }
+
+function readSettings() {
+  const r = document.querySelector('input[name="rate"]:checked');
+  return {
+    ext_ip: $("ext_ip").value.trim(),
+    local_mode: $("local_mode").checked,
+    ip: $("ip").value.trim(),
+    port: $("port").value.trim(),
+    my_id: $("my_id").value.trim(),
+    sample_rate: r ? parseInt(r.value, 10) : 0
+  };
+}
+
+async function act(action, extra) {
+  const body = Object.assign({ action: action }, extra || {});
+  if (loaded) body.settings = readSettings();
+  try {
+    const res = await fetch("/api/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Intercom": "1" },
+      body: JSON.stringify(body)
+    });
+    return await res.json();
+  } catch (e) {
+    return { message: "Intercom Server is not responding." };
+  }
+}
+
+function show(res) { if (res && res.message) alert(res.message); }
+
+async function run(action) {
+  show(await act(action));
+  refresh();
+}
+
+async function shutdownClient() {
+  let res = await act("shutdown_client");
+  while (res && res.confirm) {
+    if (!confirm(res.confirm)) return;
+    res = await act("shutdown_client", { confirmed: true, target: res.target });
+  }
+  show(res);
+  refresh();
+}
+
+function setRow(key, row) {
+  const el = $("row-" + key);
+  el.dataset.kind = row.kind;
+  const detail = el.querySelector(".row-detail");
+  detail.textContent = row.text;
+  detail.dataset.text = row.text_kind;
+}
+
+function fill(s) {
+  for (const k of LOCKED) $(k).value = s[k];
+  $("local_mode").checked = s.local_mode;
+  const r = document.querySelector('input[name="rate"][value="' + s.sample_rate + '"]');
+  if (r) r.checked = true;
+}
+
+function render(s) {
+  if (!loaded) { fill(s.settings); loaded = true; }
+  for (const k of LOCKED) $(k).disabled = s.running;
+  document.querySelectorAll('input[name="rate"]').forEach(function (r) { r.disabled = s.running; });
+
+  const sb = $("server-btn");
+  sb.textContent = s.server_button.text;
+  sb.className = s.server_button.style === "primary" ? "btn-primary" : "btn-secondary";
+  sb.disabled = s.server_button.busy;
+
+  const ib = $("intercom-btn");
+  ib.textContent = s.running ? "DISCONNECT" : "START INTERCOM";
+  ib.className = s.running ? "btn-danger" : "btn-primary";
+
+  $("status").dataset.kind = s.status.kind;
+  $("status-text").textContent = "STATUS: " + s.status.text;
+
+  for (const key of ["SERVER", "CLIENT", "HEADPHONES"]) setRow(key, s.rows[key]);
+  $("row-HEADPHONES").classList.toggle("ringing", s.ringing);
+}
+
+function renderStopped() {
+  document.querySelectorAll(".work-wrap button, .work-wrap input, #help-btn, #quit-btn").forEach(function (el) { el.disabled = true; });
+  $("status").dataset.kind = "err";
+  $("status-text").textContent = "STATUS: INTERCOM SERVER IS NOT RUNNING";
+  for (const key of ["SERVER", "CLIENT", "HEADPHONES"]) setRow(key, { kind: "off", text: "-", text_kind: "muted" });
+}
+
+async function refresh() {
+  try {
+    const res = await fetch("/api/state", { cache: "no-store" });
+    render(await res.json());
+  } catch (e) {
+    renderStopped();
+  }
+}
+
+function loop() {
+  if (stopped) return;
+  refresh().finally(function () { setTimeout(loop, POLL_MS); });
+}
+
+for (const pair of RATES) {
+  const label = document.createElement("label");
+  label.className = "rate";
+  const input = document.createElement("input");
+  input.type = "radio";
+  input.name = "rate";
+  input.value = String(pair[0]);
+  input.addEventListener("change", function () { act("settings"); });
+  label.appendChild(input);
+  label.appendChild(document.createTextNode(" " + pair[1]));
+  $("rates").appendChild(label);
+}
+
+$("help-text").textContent = HELP;
+$("year").textContent = String(new Date().getFullYear());
+for (const k of LOCKED) $(k).addEventListener("change", function () { act("settings"); });
+$("local_mode").addEventListener("change", function () { act("settings"); });
+$("help-btn").addEventListener("click", function () { $("help-panel").hidden = !$("help-panel").hidden; });
+$("server-btn").addEventListener("click", function () { run("toggle_server"); });
+$("intercom-btn").addEventListener("click", function () { run("toggle_intercom"); });
+$("shutdown-btn").addEventListener("click", shutdownClient);
+$("row-HEADPHONES").addEventListener("click", function () { act("silence"); });
+$("quit-btn").addEventListener("click", async function () {
+  stopped = true;
+  await act("quit");
+  renderStopped();
+});
+
+loop();
+</script>
+</body>
+</html>
+"""
+
+FAVICON: str = ("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+                "<rect width='32' height='32' rx='8' fill='%232563eb'/>"
+                "<circle cx='16' cy='16' r='6' fill='white'/></svg>")
+PAGE_URL: str = f"http://{WEB_HOST}:{WEB_PORT}/"
+PAGE_BYTES: bytes = (PAGE_HTML
+                     .replace("__FAVICON__", FAVICON)
+                     .replace("__URL__", PAGE_URL)
+                     .replace("__RATES__", json.dumps([[r, RATE_LABELS[r]] for r in ALLOWED_RATES]))
+                     .replace("__HELP__", json.dumps(HELP_TEXT))
+                     .replace("__POLL__", str(UI_TICK_MS))
+                     .encode("utf-8"))
+
+
+class WebHandler(BaseHTTPRequestHandler):
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+    def _send(self, code: int, body: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, data: Dict[str, Any], code: int = 200) -> None:
+        self._send(code, json.dumps(data).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _local_host(self) -> bool:
+        # חוסם אתרים זרים שמנסים לדבר עם הדף דרך שם דומיין (DNS rebinding)
+        return (self.headers.get("Host") or "").strip().lower() in ALLOWED_HOSTS
+
+    def do_GET(self) -> None:
+        if not self._local_host():
+            self._send(403, b"Forbidden", "text/plain")
+            return
+        app: IntercomServer = self.server.app  # type: ignore[attr-defined]
+        if self.path in ("/", "/index.html"):
+            self._send(200, PAGE_BYTES, "text/html; charset=utf-8")
+        elif self.path == "/api/state":
+            self._json(app.get_state())
+        else:
+            self._send(404, b"Not found", "text/plain")
+
+    def do_POST(self) -> None:
+        # כותרת מותאמת מכריחה דפדפן לבקש אישור CORS, שלא ניתן, ולכן אתר זר
+        # לא יכול ללחוץ על הכפתורים בשמנו
+        if not self._local_host() or self.headers.get("X-Intercom") != "1":
+            self._send(403, b"Forbidden", "text/plain")
+            return
+        if self.path != "/api/action":
+            self._send(404, b"Not found", "text/plain")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            self._send(400, b"Bad request", "text/plain")
+            return
+        if not isinstance(body, dict):
+            self._send(400, b"Bad request", "text/plain")
+            return
+        app: IntercomServer = self.server.app  # type: ignore[attr-defined]
+        self._json(app.handle_action(body))
+
+
+def main() -> None:
+    app = IntercomServer()
+    try:
+        httpd = ThreadingHTTPServer((WEB_HOST, WEB_PORT), WebHandler)
+    except OSError as e:
+        app.log(f"Cannot open the control page on port {WEB_PORT}: {e}")
+        return
+    httpd.daemon_threads = True
+    httpd.app = app  # type: ignore[attr-defined]
+    app.httpd = httpd
+
+    app.log(f"Intercom Server control page: {PAGE_URL}")
+    app.log("Press Ctrl+C or the Quit button to exit.")
+    webbrowser.open(PAGE_URL)
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        app.log("Exiting...")
+    finally:
+        app.shutdown_all()
+        httpd.server_close()
+        app.log("Intercom Server stopped.")
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = IntercomGUI(root)
-    root.mainloop()
+    main()

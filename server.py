@@ -1043,11 +1043,11 @@ button:disabled { opacity:0.5; cursor:not-allowed; }
           <div class="field"><label for="my_id">My ID</label><input type="text" id="my_id" autocomplete="off"></div>
         </div>
         <div class="field"><span class="label">Audio</span><div class="rates" id="rates"></div></div>
+        <button class="btn-danger" id="shutdown-btn">SHUTDOWN CLIENT</button>
       </div>
     </details>
     <div class="status" id="status" data-kind="off"><span class="dot"></span><span id="status-text">STATUS: DISCONNECTED</span></div>
     <button class="btn-primary" id="intercom-btn">START INTERCOM</button>
-    <button class="btn-danger" id="shutdown-btn">SHUTDOWN CLIENT</button>
   </div>
 </div>
 

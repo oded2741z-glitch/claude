@@ -36,6 +36,11 @@ AUDIO_QUEUE_MAX: int = 64
 STREAM_CLOSE_WAIT: float = 5.0
 UI_TICK_MS: int = 200
 LOG_MAX_LINES: int = 400
+WINDOW_W: int = 500
+WINDOW_H: int = 800
+MIN_W: int = 460
+MIN_H: int = 720
+SETTINGS_PAD: int = 6
 
 DEFAULT_DEVICE: str = "Default"
 NOISE_KEYWORDS: Tuple[str, ...] = (
@@ -92,8 +97,8 @@ class IntercomClientGUI:
         self.root = root
         self.root.withdraw()
         self.root.title("Intercom Client")
-        self.root.geometry("500x800")
-        self.root.minsize(460, 720)
+        self.root.geometry(f"{WINDOW_W}x{WINDOW_H}")
+        self.root.minsize(MIN_W, MIN_H)
         self.root.configure(bg=Theme.BG)
         self._clear_icon()
 
@@ -142,8 +147,10 @@ class IntercomClientGUI:
         self.output_name: str = DEFAULT_DEVICE
         self._load_settings()
 
+        self.settings_open: bool = True
         self._build()
         self._refresh_devices()
+        self._set_settings_open(False)
         self._dark_titlebar()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -204,10 +211,20 @@ class IntercomClientGUI:
     def _build(self) -> None:
         tk.Label(self.root, text="Intercom Client", font=Theme.FONT_TITLE, bg=Theme.BG,
                  fg=Theme.ACCENT).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Frame(self.root, bg=Theme.BTN, height=1).pack(fill="x", padx=16, pady=(8, 10))
+        tk.Frame(self.root, bg=Theme.BTN, height=1).pack(fill="x", padx=16, pady=(8, 6))
 
-        conn = tk.Frame(self.root, bg=Theme.BG)
-        conn.pack(fill="x", padx=16)
+        self.settings_toggle = tk.Label(self.root, text="", font=Theme.FONT_LABEL, bg=Theme.BG,
+                                        fg=Theme.FG, cursor="hand2", anchor="w")
+        self.settings_toggle.pack(fill="x", padx=16, pady=(0, 4))
+        self.settings_toggle.bind("<Button-1>", lambda _e: self._set_settings_open(not self.settings_open))
+        self.settings_toggle.bind("<Enter>", lambda _e: self.settings_toggle.config(fg=Theme.ACCENT))
+        self.settings_toggle.bind("<Leave>", lambda _e: self.settings_toggle.config(fg=Theme.FG))
+
+        self.settings_frame = tk.Frame(self.root, bg=Theme.BG)
+        self.settings_frame.pack(fill="x", padx=16, pady=(0, SETTINGS_PAD))
+
+        conn = tk.Frame(self.settings_frame, bg=Theme.BG)
+        conn.pack(fill="x")
         self.ip_entry = self._entry(conn, 18)
         self.port_entry = self._entry(conn, 7)
         self.id_entry = self._entry(conn, 18)
@@ -224,10 +241,10 @@ class IntercomClientGUI:
             entry.bind("<FocusOut>", lambda _e: self._apply_fields())
             entry.bind("<Return>", lambda _e: self._apply_fields())
 
-        tk.Frame(self.root, bg=Theme.BTN, height=1).pack(fill="x", padx=16, pady=10)
+        tk.Frame(self.settings_frame, bg=Theme.BTN, height=1).pack(fill="x", pady=10)
 
-        audio = tk.Frame(self.root, bg=Theme.BG)
-        audio.pack(fill="x", padx=16)
+        audio = tk.Frame(self.settings_frame, bg=Theme.BG)
+        audio.pack(fill="x")
         audio.columnconfigure(1, weight=1)
 
         self.mic_var = tk.StringVar(value=self.input_name)
@@ -259,14 +276,16 @@ class IntercomClientGUI:
             button.pack(side="left", padx=(0, 8))
             self.rate_buttons.append(button)
 
-        self.gain_lbl = self._label(audio, "")
-        self.gain_lbl.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        self.gain_scale = self._scale(audio, self._on_gain)
-        self.gain_scale.grid(row=5, column=0, columnspan=2, sticky="ew")
-        self.level_lbl = self._label(audio, "")
-        self.level_lbl.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.level_scale = self._scale(audio, self._on_level)
-        self.level_scale.grid(row=7, column=0, columnspan=2, sticky="ew")
+        self.volume_frame = tk.Frame(self.root, bg=Theme.BG)
+        self.volume_frame.pack(fill="x", padx=16)
+        self.gain_lbl = self._label(self.volume_frame, "")
+        self.gain_lbl.pack(anchor="w", pady=(4, 0))
+        self.gain_scale = self._scale(self.volume_frame, self._on_gain)
+        self.gain_scale.pack(fill="x")
+        self.level_lbl = self._label(self.volume_frame, "")
+        self.level_lbl.pack(anchor="w", pady=(6, 0))
+        self.level_scale = self._scale(self.volume_frame, self._on_level)
+        self.level_scale.pack(fill="x")
         self.gain_scale.set(int(round(self.gain * 100)))
         self.level_scale.set(int(round(self.level * 100)))
         self._update_vol_labels()
@@ -302,6 +321,28 @@ class IntercomClientGUI:
                                 font=Theme.FONT_LOG, relief="flat", highlightthickness=0,
                                 wrap="word", state="disabled", insertbackground=Theme.FG)
         self.log_text.pack(fill="both", expand=True, padx=16, pady=(6, 2))
+
+    def _set_settings_open(self, show: bool) -> None:
+        if show == self.settings_open:
+            return
+        self.settings_open = show
+        self.root.update_idletasks()
+        extra = self.settings_frame.winfo_reqheight() + SETTINGS_PAD
+        if show:
+            self.settings_frame.pack(fill="x", padx=16, pady=(0, SETTINGS_PAD),
+                                     after=self.settings_toggle)
+            self.settings_toggle.config(text="▼  SETTINGS")
+        else:
+            self.settings_frame.pack_forget()
+            self.settings_toggle.config(text="►  SETTINGS")
+        min_h = MIN_H if show else max(200, MIN_H - extra)
+        self.root.minsize(MIN_W, min_h)
+        if self.root.winfo_ismapped():
+            width, height = self.root.winfo_width(), self.root.winfo_height()
+        else:
+            width, height = WINDOW_W, (WINDOW_H - extra if show else WINDOW_H)
+        height = height + extra if show else max(min_h, height - extra)
+        self.root.geometry(f"{width}x{height}")
 
     def log(self, msg: str) -> None:
         self._events.append(f"[{time.strftime('%H:%M:%S')}] {msg}")

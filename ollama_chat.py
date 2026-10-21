@@ -70,12 +70,13 @@ def list_models(host=OLLAMA_HOST):
 
 
 def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb,
-                num_ctx=None):
+                num_ctx=None, thinking_cb=None):
     """
     Stream a chat completion from Ollama.
 
-    Calls chunk_cb(text) for every token chunk, done_cb() when finished,
-    and error_cb(message) on failure. Honors stop_event to abort early.
+    Calls chunk_cb(text) for every token chunk, thinking_cb(text) for every
+    chunk of the model's "thinking" field, done_cb() when finished, and
+    error_cb(message) on failure. Honors stop_event to abort early.
     """
     url = f"{host}/api/chat"
     body = {"model": model, "messages": messages, "stream": True}
@@ -97,7 +98,11 @@ def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb,
                 if "error" in obj:
                     error_cb(obj["error"])
                     return
-                content = obj.get("message", {}).get("content", "")
+                msg = obj.get("message", {}) or {}
+                thinking = msg.get("thinking", "")
+                if thinking and thinking_cb:
+                    thinking_cb(thinking)
+                content = msg.get("content", "")
                 if content:
                     chunk_cb(content)
                 if obj.get("done"):
@@ -329,6 +334,15 @@ class OllamaChatApp:
             self.workspace = ""
         self.write_mode = self.config.get("write_mode", "free")  # confirm|readonly|free
         self.num_ctx = int(self.config.get("num_ctx", 16384) or 16384)
+        self.show_thinking = bool(self.config.get("show_thinking", True))
+        # per-reply thinking state (reset in send())
+        self._think_n = None             # id of this reply's Thinking block
+        self._think_seen = False         # any thinking received this reply?
+        self._think_autocollapsed = False
+        self._in_think = False           # inside a <think>...</think> span
+        self._tag_buf = ""               # held-back partial <think> tag
+        self._think_count = 0            # block id counter
+        self._think_state = {}           # block id -> collapsed?
         self.tts_auto = bool(self.config.get("tts_auto", False))
         self.tts_rate = int(self.config.get("tts_rate", 175))
         self.stt_lang = self.config.get("stt_lang", "he-IL")
@@ -553,6 +567,16 @@ class OllamaChatApp:
         self.chat.tag_configure(
             "thinking", foreground="#a0a0a0",
             font=("Segoe UI", 13), spacing1=6, spacing3=6,
+        )
+        # collapsible "Thinking" block shown above an answer
+        self.chat.tag_configure(
+            "think_hdr", foreground="#6b7280", font=("Segoe UI", 9, "bold"),
+            spacing1=6, spacing3=2,
+        )
+        self.chat.tag_configure(
+            "think_body", foreground="#6b7280", background="#f0f0f0",
+            font=("Segoe UI", 9, "italic"), lmargin1=12, lmargin2=12,
+            rmargin=12, spacing1=2, spacing3=2,
         )
 
         self._add_context_menu(self.chat)
@@ -885,6 +909,7 @@ class OllamaChatApp:
         ln = getattr(self, "_thinking_line", None)
         if ln is None:
             return
+        self._thinking_line = None   # only delete the dots line once
         self.chat.configure(state=tk.NORMAL)
         try:
             # delete the whole line including the preceding newline
@@ -1462,6 +1487,7 @@ class OllamaChatApp:
         self.config["tts_rate"] = self.tts_rate
         self.config["stt_lang"] = self.stt_lang
         self.config["num_ctx"] = self.num_ctx
+        self.config["show_thinking"] = self.show_thinking
         save_config(self.config)
 
     def _read_source(self, src):
@@ -2105,6 +2131,11 @@ class OllamaChatApp:
         self.set_status("Generating...")
         self._bot_reply = ""
         self._got_first_chunk = False
+        self._think_n = None
+        self._think_seen = False
+        self._think_autocollapsed = False
+        self._in_think = False
+        self._tag_buf = ""
         self._start_thinking_anim()
 
         outgoing = list(self.messages)
@@ -2120,6 +2151,7 @@ class OllamaChatApp:
                 lambda: self.ui_queue.put(("done", None)),
                 lambda e: self.ui_queue.put(("error", e)),
                 self.num_ctx,
+                lambda t: self.ui_queue.put(("think_chunk", t)),
             ),
             daemon=True,
         )
@@ -2150,11 +2182,13 @@ class OllamaChatApp:
                         "Make sure Ollama is installed and running.",
                     )
                 elif kind == "chunk":
-                    if not self._got_first_chunk:
-                        self._stop_thinking_anim()
-                        self._got_first_chunk = True
-                    self._bot_reply += payload
-                    self._append(payload, "body")
+                    for is_think, seg in self._split_think(payload):
+                        if is_think:
+                            self._think_append(seg)
+                        else:
+                            self._answer_append(seg)
+                elif kind == "think_chunk":
+                    self._think_append(payload)
                 elif kind == "done":
                     self._finish_reply()
                 elif kind == "tool_call":
@@ -2224,6 +2258,9 @@ class OllamaChatApp:
         self.root.after(40, self._poll_queue)
 
     def _finish_reply(self, error=False):
+        self._flush_think_buf()
+        if self._think_n is not None:
+            self._think_trim_tail(self._think_n)
         self._stop_thinking_anim()   # no-op if already stopped by first chunk
         if not error:
             self._render_reply(self._bot_reply)
@@ -2241,6 +2278,163 @@ class OllamaChatApp:
             self._maybe_auto_update()
             if self.tts_auto and self._bot_reply.strip():
                 self._speak(self._bot_reply)
+
+    # ----- thinking display ----------------------------------------------- #
+    @staticmethod
+    def _partial_tag_len(s, tag):
+        """Length of the longest suffix of s that is a proper prefix of tag."""
+        for k in range(min(len(tag) - 1, len(s)), 0, -1):
+            if s.endswith(tag[:k]):
+                return k
+        return 0
+
+    def _split_think(self, text):
+        """Split streamed content into (is_thinking, text) segments.
+
+        Text inside <think>...</think> is thinking. A tag split across chunks
+        is held back in _tag_buf until the next chunk. An opening <think> only
+        counts before the answer starts, so a literal "<think>" later in an
+        answer (e.g. inside code) is left alone.
+        """
+        s = self._tag_buf + text
+        self._tag_buf = ""
+        answered = bool(self._bot_reply.strip())
+        out = []
+        while s:
+            if self._in_think:
+                i = s.find("</think>")
+                if i >= 0:
+                    if i:
+                        out.append((True, s[:i]))
+                    s = s[i + len("</think>"):]
+                    self._in_think = False
+                    continue
+                hold = self._partial_tag_len(s, "</think>")
+                if hold:
+                    self._tag_buf, s = s[-hold:], s[:-hold]
+                if s:
+                    out.append((True, s))
+                break
+            if not answered:
+                i = s.find("<think>")
+                if i >= 0 and not s[:i].strip():
+                    s = s[i + len("<think>"):]
+                    self._in_think = True
+                    continue
+                if i < 0:
+                    hold = self._partial_tag_len(s, "<think>")
+                    if not s[:len(s) - hold].strip():
+                        # only whitespace (+ maybe a partial tag) so far
+                        self._tag_buf = s
+                        break
+            out.append((False, s))
+            break
+        return out
+
+    def _flush_think_buf(self):
+        """Emit text held back while waiting to see if it was a <think> tag."""
+        buf, self._tag_buf = self._tag_buf, ""
+        if buf:
+            if self._in_think:
+                self._think_append(buf)
+            else:
+                self._answer_append(buf)
+
+    def _answer_append(self, text):
+        """Show a piece of the answer (collapses the Thinking block once)."""
+        if self._think_seen and not self._bot_reply.strip():
+            text = text.lstrip()   # drop blank lines left after the thinking
+            if not text:
+                return
+        if not self._got_first_chunk:
+            self._stop_thinking_anim()
+            self._got_first_chunk = True
+        self._bot_reply += text
+        self._append(text, "body")
+        if (self._think_n is not None and not self._think_autocollapsed
+                and self._bot_reply.strip()):
+            self._think_autocollapsed = True
+            self._set_think_collapsed(self._think_n, True)
+
+    def _think_append(self, text):
+        """Add streamed thinking text to this reply's Thinking block.
+
+        Thinking is display-only: it never goes into _bot_reply, so it is not
+        saved in the message history.
+        """
+        if not text:
+            return
+        self._think_seen = True
+        if not self.show_thinking:
+            return
+        if self._think_n is None:
+            text = text.lstrip()
+            if not text:
+                return
+            self._stop_thinking_anim()
+            self._think_open()
+        n = self._think_n
+        self.chat.configure(state=tk.NORMAL)
+        self.chat.insert(
+            f"think_ins_{n}", text, ("think_body", f"think_body_{n}")
+        )
+        self.chat.configure(state=tk.DISABLED)
+        if not self._think_state.get(n):
+            self.chat.see(tk.END)
+
+    def _think_open(self):
+        """Insert an expanded Thinking block just above the answer."""
+        self._think_count += 1
+        n = self._think_n = self._think_count
+        hdr = ("think_hdr", f"think_hdr_{n}")
+        self.chat.configure(state=tk.NORMAL)
+        pos = self.chat.index("reply_start")
+        self.chat.mark_set("think_pos", pos)   # right gravity: follows inserts
+        if pos != "1.0" and self.chat.get(f"{pos} - 1c") != "\n":
+            self.chat.insert("think_pos", "\n")
+        self.chat.insert("think_pos", "▸", hdr + (f"think_closed_{n}",))
+        self.chat.insert("think_pos", "▾", hdr + (f"think_open_{n}",))
+        self.chat.insert("think_pos", " Thinking\n", hdr)
+        self.chat.insert("think_pos", "\n", ("think_body", f"think_body_{n}"))
+        # thinking text goes before the body's final newline
+        self.chat.mark_set(f"think_ins_{n}", "think_pos - 1c")
+        # the answer (re-rendered from reply_start on done) goes below the block
+        self.chat.mark_set("reply_start", "think_pos")
+        self.chat.mark_unset("think_pos")
+        self.chat.configure(state=tk.DISABLED)
+
+        answer_started = bool(self._bot_reply.strip())
+        self._think_autocollapsed = answer_started
+        self._set_think_collapsed(n, answer_started)
+
+        tag = f"think_hdr_{n}"
+        cursor = self.chat.cget("cursor")
+        self.chat.tag_bind(tag, "<Button-1>", lambda e, n=n:
+                           self._set_think_collapsed(n, not self._think_state[n]))
+        self.chat.tag_bind(tag, "<Enter>",
+                           lambda e: self.chat.configure(cursor="hand2"))
+        self.chat.tag_bind(tag, "<Leave>",
+                           lambda e, c=cursor: self.chat.configure(cursor=c))
+
+    def _set_think_collapsed(self, n, collapsed):
+        """Collapse or expand Thinking block n."""
+        self._think_state[n] = collapsed
+        self.chat.tag_configure(f"think_body_{n}", elide=collapsed)
+        self.chat.tag_configure(f"think_open_{n}", elide=collapsed)
+        self.chat.tag_configure(f"think_closed_{n}", elide=not collapsed)
+
+    def _think_trim_tail(self, n):
+        """Drop trailing whitespace at the end of Thinking block n."""
+        rng = self.chat.tag_ranges(f"think_body_{n}")
+        if not rng:
+            return
+        ins = f"think_ins_{n}"
+        body = self.chat.get(rng[0], ins)
+        extra = len(body) - len(body.rstrip())
+        if extra:
+            self.chat.configure(state=tk.NORMAL)
+            self.chat.delete(f"{ins} - {extra} any chars", ins)
+            self.chat.configure(state=tk.DISABLED)
 
     # ----- rich rendering (code blocks + copy) ---------------------------- #
     def _render_reply(self, text):
@@ -2870,6 +3064,26 @@ class OllamaChatApp:
         ctx_spin.configure(command=save_ctx)
         ctx_spin.bind("<FocusOut>", save_ctx)
         ctx_spin.bind("<Return>", save_ctx)
+
+        tk.Frame(tab, bg=self.BORDER, height=1).pack(fill=tk.X, padx=12, pady=8)
+        _show = tk.BooleanVar(value=self.show_thinking)
+
+        def toggle_show():
+            self.show_thinking = _show.get()
+            self._persist()
+
+        tk.Checkbutton(
+            tab, text="Show thinking", variable=_show, command=toggle_show,
+            bg=self.BG, fg=self.TEXT_FG, activebackground=self.BG,
+            selectcolor=self.PANEL, font=("Segoe UI", 10), anchor="w",
+        ).pack(anchor="w", padx=12)
+        tk.Label(
+            tab,
+            text="Show the model's reasoning in a collapsible gray block above "
+                 "the answer. Thinking is never saved in the chat history.",
+            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
+            wraplength=540, justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 4))
 
     def _start_agent(self, model):
         self._append(f"{model}  ·  📁 workspace\n", "bot")

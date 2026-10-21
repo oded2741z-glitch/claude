@@ -14,6 +14,7 @@ Run:
 
 import array
 import base64
+import copy
 import hashlib
 import heapq
 import json
@@ -26,6 +27,7 @@ import subprocess
 import threading
 import urllib.error
 import urllib.request
+import uuid
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -55,6 +57,8 @@ except ImportError:
 
 OLLAMA_HOST = "http://localhost:11434"
 REQUEST_TIMEOUT = 300  # seconds
+DEFAULT_AGENT_ID = "default"              # the built-in agent; can't be deleted
+KEEP_MODEL_LABEL = "(keep current model)"  # agent model option meaning ""
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ollama_chat_config.json")
 
 
@@ -637,6 +641,14 @@ class OllamaChatApp:
         self.workspace = self.config.get("workspace", "") or ""
         if self.workspace and not os.path.isdir(self.workspace):
             self.workspace = ""
+        # Agents bundle model + instructions + skills + sources + workspace.
+        # The live settings above always belong to the *active* agent, and
+        # _persist() writes them back into it.
+        self.agents = self.config.get("agents") or []
+        self.active_agent_id = self.config.get("active_agent") or DEFAULT_AGENT_ID
+        self._ws_unavailable = ""       # agent workspace path that is missing
+        self._settings_refreshers = []  # tab refresh callbacks while Settings is open
+        self._init_agents()
         self.write_mode = self.config.get("write_mode", "free")  # confirm|readonly|free
         self.num_ctx = int(self.config.get("num_ctx", 16384) or 16384)
         self.show_thinking = bool(self.config.get("show_thinking", True))
@@ -667,6 +679,7 @@ class OllamaChatApp:
         self.streaming = False
 
         self._build_ui()
+        self._apply_agent(self._active_agent())
         self._update_ws_label()
         self._load_history()
         self._poll_queue()
@@ -797,6 +810,7 @@ class OllamaChatApp:
         # conversation history storage
         self._history      = []   # list of saved message lists
         self._hist_names   = []   # matching display names
+        self._hist_agents  = []   # matching agent id per conversation
         self._active_hist  = -1   # index of currently displayed conversation (-1 = new)
         # groups: [{"name": str, "expanded": bool, "items": [conv_idx, ...]}]
         self._hist_groups  = []
@@ -994,6 +1008,17 @@ class OllamaChatApp:
             font=("Segoe UI", 9),
         )
         self.model_combo.pack(side=tk.RIGHT)
+        self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
+
+        # Agent selector (to the LEFT of the model selector)
+        self.agent_var = tk.StringVar()
+        self.agent_combo = ttk.Combobox(
+            model_frame, textvariable=self.agent_var,
+            state="readonly", width=14,
+            font=("Segoe UI", 9),
+        )
+        self.agent_combo.pack(side=tk.RIGHT, padx=(0, 6))
+        self.agent_combo.bind("<<ComboboxSelected>>", self._on_agent_selected)
 
         # stop functionality wired through same text button
         self.send_btn  = self.send_text_btn   # keep API compat
@@ -1259,9 +1284,18 @@ class OllamaChatApp:
             self.model_combo["values"] = []
             return
         self.model_combo["values"] = models
+        wanted = self._active_agent().get("model", "")
         if self.model_var.get() not in models:
             self.model_var.set(models[0])
         self.set_status(f"{len(models)} model(s) available")
+        if not wanted:
+            # remember a concrete model for an agent that had none yet
+            self._active_agent()["model"] = self.model_var.get()
+            self._persist()
+        elif wanted not in models:
+            self.set_status(
+                f"Agent '{self._active_agent()['name']}': model '{wanted}' "
+                f"is not installed, using {self.model_var.get()}")
 
     # ----- chat transcript helpers ---------------------------------------- #
     def _append(self, text, tag="body"):
@@ -1298,11 +1332,14 @@ class OllamaChatApp:
         if self._active_hist >= 0:
             # update messages in place, keep any custom/renamed title
             self._history[self._active_hist] = list(self.messages)
+            self._hist_agents[self._active_hist] = self.active_agent_id
         else:
             self._history.insert(0, list(self.messages))
             self._hist_names.insert(0, title)
+            self._hist_agents.insert(0, self.active_agent_id)
             self._history    = self._history[:30]
             self._hist_names = self._hist_names[:30]
+            self._hist_agents = self._hist_agents[:30]
             self._active_hist = 0
         self._rebuild_hist_rows()
         self._persist_history()
@@ -1310,8 +1347,8 @@ class OllamaChatApp:
     def _persist_history(self):
         """Save conversations and groups to disk."""
         self.config["conversations"] = [
-            {"name": n, "messages": m}
-            for n, m in zip(self._hist_names, self._history)
+            {"name": n, "messages": m, "agent": a}
+            for n, m, a in zip(self._hist_names, self._history, self._hist_agents)
         ]
         self.config["groups"] = self._hist_groups
         save_config(self.config)
@@ -1321,6 +1358,8 @@ class OllamaChatApp:
         saved = self.config.get("conversations", [])
         self._history    = [c.get("messages", []) for c in saved]
         self._hist_names = [c.get("name", "(untitled)") for c in saved]
+        # conversations saved before agents existed belong to Default
+        self._hist_agents = [c.get("agent") or DEFAULT_AGENT_ID for c in saved]
         self._hist_groups = self.config.get("groups", [])
         # validate group indices
         n = len(self._history)
@@ -1676,6 +1715,7 @@ class OllamaChatApp:
         # move in data lists
         self._history.insert(dst, self._history.pop(src))
         self._hist_names.insert(dst, self._hist_names.pop(src))
+        self._hist_agents.insert(dst, self._hist_agents.pop(src))
         # fix active index
         if self._active_hist == src:
             self._active_hist = dst
@@ -1748,6 +1788,7 @@ class OllamaChatApp:
         """Delete a conversation and fix all group references."""
         del self._history[idx]
         del self._hist_names[idx]
+        del self._hist_agents[idx]
         if self._active_hist == idx:
             self._active_hist = -1
             self.ws_label.configure(text="New conversation")
@@ -1784,9 +1825,16 @@ class OllamaChatApp:
             self._append("\n", "spacer")
         self.ws_label.configure(text=self._hist_names[idx])
         self._rebuild_hist_rows()   # update highlight
+        # continue the conversation with the agent it was saved with
+        self._select_agent(self._hist_agents[idx])
 
     # ----- settings: persistence & prompt building ------------------------ #
     def _persist(self):
+        self._ensure_item_ids()
+        self._sync_active_agent()
+        self.config["agents"] = self.agents
+        self.config["active_agent"] = self.active_agent_id
+        self.config["workspace"] = self.workspace
         self.config["instructions"] = self.system_prompt
         self.config["skills"] = self.skills
         self.config["sources"] = self.sources
@@ -1799,6 +1847,139 @@ class OllamaChatApp:
         self.config["num_ctx"] = self.num_ctx
         self.config["show_thinking"] = self.show_thinking
         save_config(self.config)
+
+    # ----- agents --------------------------------------------------------- #
+    def _ensure_item_ids(self):
+        """Give every skill and source a stable id that agents refer to."""
+        for item in self.skills + self.sources:
+            if not item.get("id"):
+                item["id"] = uuid.uuid4().hex[:12]
+
+    def _init_agents(self):
+        """Load agents; create "Default" from the current settings if needed."""
+        self._ensure_item_ids()
+        if self._agent(DEFAULT_AGENT_ID) is None:
+            self.agents.insert(0, {
+                "id": DEFAULT_AGENT_ID,
+                "name": "Default",
+                "model": "",
+                "instructions": self.system_prompt,
+                "skills": [s["id"] for s in self.skills if s.get("enabled")],
+                "sources": [s["id"] for s in self.sources if s.get("enabled")],
+                "workspace": self.config.get("workspace", "") or "",
+            })
+        for a in self.agents:   # fill in fields missing from older entries
+            a.setdefault("id", uuid.uuid4().hex[:12])
+            a.setdefault("name", "Agent")
+            for key, empty in (("model", ""), ("instructions", ""),
+                               ("skills", []), ("sources", []),
+                               ("workspace", "")):
+                a.setdefault(key, empty)
+        if self._agent(self.active_agent_id) is None:
+            self.active_agent_id = DEFAULT_AGENT_ID
+
+    def _agent(self, agent_id):
+        return next((a for a in self.agents if a.get("id") == agent_id), None)
+
+    def _active_agent(self):
+        return (self._agent(self.active_agent_id)
+                or self._agent(DEFAULT_AGENT_ID))
+
+    def _sync_active_agent(self):
+        """Write the live settings back into the active agent."""
+        agent = self._active_agent()
+        if agent is None:
+            return
+        agent["instructions"] = self.system_prompt
+        agent["skills"] = [s["id"] for s in self.skills if s.get("enabled")]
+        agent["sources"] = [s["id"] for s in self.sources if s.get("enabled")]
+        if self.workspace or not self._ws_unavailable:
+            agent["workspace"] = self.workspace   # keep a missing folder's path
+        # drop references to skills/sources that were deleted
+        skill_ids = {s["id"] for s in self.skills}
+        source_ids = {s["id"] for s in self.sources}
+        for a in self.agents:
+            a["skills"] = [i for i in a.get("skills", []) if i in skill_ids]
+            a["sources"] = [i for i in a.get("sources", []) if i in source_ids]
+
+    def _apply_agent(self, agent):
+        """Make agent active: load its settings into the live state.
+
+        Returns a list of warnings (missing model or workspace folder).
+        """
+        warnings = []
+        self.active_agent_id = agent["id"]
+        self.system_prompt = agent.get("instructions", "")
+        skills, sources = set(agent.get("skills", [])), set(agent.get("sources", []))
+        for s in self.skills:
+            s["enabled"] = s.get("id") in skills
+        for s in self.sources:
+            s["enabled"] = s.get("id") in sources
+        ws = agent.get("workspace", "") or ""
+        self.workspace = ws if os.path.isdir(ws) else ""
+        self._ws_unavailable = ws if ws and not self.workspace else ""
+        if self._ws_unavailable:
+            warnings.append(f"workspace folder not found: {ws}")
+        model = agent.get("model", "")
+        if model:
+            installed = list(self.model_combo["values"])
+            if not installed or model in installed:
+                self.model_var.set(model)
+            else:
+                warnings.append(f"model '{model}' is not installed")
+        self._update_ws_label()
+        self._refresh_agent_selector()
+        for fn in list(self._settings_refreshers):
+            try:
+                fn()
+            except tk.TclError:   # its Settings tab was closed
+                self._settings_refreshers.remove(fn)
+        return warnings
+
+    def _select_agent(self, agent_id):
+        """Switch to another agent (no-op if it is already active)."""
+        agent = self._agent(agent_id) or self._agent(DEFAULT_AGENT_ID)
+        if agent["id"] == self.active_agent_id:
+            self._refresh_agent_selector()
+            return
+        self._persist()            # keep the current agent's latest edits
+        warnings = self._apply_agent(agent)
+        self._persist()
+        msg = f"Agent: {agent['name']}"
+        self.set_status(msg + (f" ({'; '.join(warnings)})" if warnings else ""))
+
+    def _refresh_agent_selector(self):
+        names = [a["name"] for a in self.agents]
+        self.agent_combo["values"] = names
+        active = self._active_agent()
+        if active in self.agents:
+            self.agent_combo.current(self.agents.index(active))
+
+    def _on_agent_selected(self, _event=None):
+        idx = self.agent_combo.current()
+        if self.streaming:
+            self._refresh_agent_selector()   # put the selection back
+            self.set_status("Can't switch agents while a reply is generating")
+            return
+        if 0 <= idx < len(self.agents):
+            self._select_agent(self.agents[idx]["id"])
+
+    def _on_model_selected(self, _event=None):
+        """A model picked by the user becomes the active agent's model."""
+        self._active_agent()["model"] = self.model_var.get()
+        self._persist()
+        for fn in list(self._settings_refreshers):
+            try:
+                fn()
+            except tk.TclError:
+                self._settings_refreshers.remove(fn)
+
+    def _set_workspace(self, path):
+        """Set (or clear, with "") the active agent's workspace folder."""
+        self.workspace = path
+        self._ws_unavailable = ""
+        self._persist()
+        self._update_ws_label()
 
     def _read_source(self, src):
         """Return the full text of a source (fallback when embeddings fail)."""
@@ -2012,6 +2193,8 @@ class OllamaChatApp:
 
         nb = ttk.Notebook(win)
         nb.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 4))
+        self._settings_refreshers = []
+        self._build_agents_tab(nb)
         self._build_instructions_tab(nb)
         self._build_skills_tab(nb)
         self._build_sources_tab(nb)
@@ -2035,6 +2218,7 @@ class OllamaChatApp:
                     pass
             self._instr_editor = None
             self._instr_autosave = None
+            self._settings_refreshers = []
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", close_settings)
@@ -2061,12 +2245,250 @@ class OllamaChatApp:
             selectforeground=self.TEXT_FG,
         )
 
+    def _build_agents_tab(self, nb):
+        tab = tk.Frame(nb, bg=self.BG)
+        nb.add(tab, text="Agents")
+        tk.Label(
+            tab,
+            text="An agent bundles a model, instructions, skills, sources and "
+                 "a workspace folder. Choose the active agent next to the model "
+                 "selector; the Instructions, Skills, Sources and Workspace tabs "
+                 "edit the active agent. Each conversation remembers its agent.",
+            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
+            wraplength=740, justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        lb = self._make_listbox(tab)
+        lb.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+
+        def refresh():
+            sel = lb.curselection()
+            lb.delete(0, tk.END)
+            for a in self.agents:
+                mark = "●" if a["id"] == self.active_agent_id else "  "
+                ws = a.get("workspace", "")
+                lb.insert(
+                    tk.END,
+                    f"  {mark}  {a['name']}   ·  {a.get('model') or 'current model'}"
+                    f"   ·  {len(a.get('skills', []))} skills"
+                    f"  ·  {len(a.get('sources', []))} sources"
+                    + (f"   ·  📁 {os.path.basename(ws.rstrip('/' + chr(92))) or ws}"
+                       if ws else ""),
+                )
+            for i in sel:
+                if i < lb.size():
+                    lb.selection_set(i)
+
+        def selected():
+            sel = lb.curselection()
+            return sel[0] if sel else None
+
+        def changed(agent=None):
+            """Save, and re-apply if the active agent itself was edited."""
+            if agent is not None and agent["id"] == self.active_agent_id:
+                self._apply_agent(agent)
+            self._persist()
+            self._refresh_agent_selector()
+            refresh()
+
+        def add():
+            r = self._agent_dialog("New agent", {
+                "name": "", "model": self.model_var.get(), "instructions": "",
+                "skills": [], "sources": [], "workspace": "",
+            })
+            if r:
+                self.agents.append({"id": uuid.uuid4().hex[:12], **r})
+                changed()
+
+        def edit():
+            i = selected()
+            if i is None:
+                return
+            self._sync_active_agent()    # show the active agent's latest edits
+            agent = self.agents[i]
+            r = self._agent_dialog("Edit agent", agent)
+            if r:
+                agent.update(r)
+                changed(agent)
+
+        def duplicate():
+            i = selected()
+            if i is None:
+                return
+            self._sync_active_agent()
+            copy_ = copy.deepcopy(self.agents[i])
+            copy_["id"] = uuid.uuid4().hex[:12]
+            copy_["name"] = f"{copy_['name']} copy"
+            self.agents.insert(i + 1, copy_)
+            changed()
+            lb.selection_clear(0, tk.END)
+            lb.selection_set(i + 1)
+
+        def delete():
+            i = selected()
+            if i is None:
+                return
+            agent = self.agents[i]
+            if agent["id"] == DEFAULT_AGENT_ID:
+                messagebox.showinfo(
+                    "Default agent", "The Default agent can't be deleted.",
+                    parent=tab.winfo_toplevel())
+                return
+            if not messagebox.askyesno(
+                    "Delete agent",
+                    f"Delete the agent '{agent['name']}'?\nIts conversations "
+                    "will open with the Default agent.",
+                    parent=tab.winfo_toplevel()):
+                return
+            if agent["id"] == self.active_agent_id:
+                self._select_agent(DEFAULT_AGENT_ID)
+            self.agents.remove(agent)
+            changed()
+
+        lb.bind("<Double-Button-1>", lambda e: edit())
+        bar = tk.Frame(tab, bg=self.BG)
+        bar.pack(fill=tk.X, padx=12, pady=(0, 10))
+        ttk.Button(bar, text="Add…", command=add).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Edit…", command=edit).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="Duplicate", command=duplicate).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Delete", command=delete).pack(side=tk.RIGHT)
+        self._settings_refreshers.append(refresh)
+        refresh()
+
+    def _agent_dialog(self, title, agent):
+        """Modal editor for an agent. Returns its new fields, or None."""
+        self._ensure_item_ids()
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=self.BG)
+        dlg.geometry("700x640")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        result = {}
+
+        def label(parent, text, **pack):
+            tk.Label(parent, text=text, bg=self.BG, fg=self.TEXT_FG,
+                     font=("Segoe UI", 10, "bold")).pack(anchor="w", **pack)
+
+        # name + model
+        row = tk.Frame(dlg, bg=self.BG)
+        row.pack(fill=tk.X, padx=14, pady=(14, 0))
+        left = tk.Frame(row, bg=self.BG)
+        left.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        label(left, "Name", pady=(0, 2))
+        name_entry = tk.Entry(
+            left, bg=self.INPUT_BG, fg=self.TEXT_FG,
+            insertbackground=self.TEXT_FG, relief=tk.SOLID, borderwidth=1,
+            font=("Segoe UI", 11),
+        )
+        name_entry.pack(fill=tk.X)
+        name_entry.insert(0, agent.get("name", ""))
+        self._add_edit_menu(name_entry)
+        right = tk.Frame(row, bg=self.BG)
+        right.pack(side=tk.LEFT, padx=(12, 0))
+        label(right, "Model", pady=(0, 2))
+        models = list(self.model_combo["values"])
+        if agent.get("model") and agent["model"] not in models:
+            models.append(agent["model"])    # keep a model that isn't installed
+        model_var = tk.StringVar(value=agent.get("model") or KEEP_MODEL_LABEL)
+        ttk.Combobox(right, textvariable=model_var, state="readonly", width=26,
+                     values=[KEEP_MODEL_LABEL] + models).pack()
+
+        # workspace
+        label(dlg, "Workspace folder (empty = none)", padx=14, pady=(10, 2))
+        wrow = tk.Frame(dlg, bg=self.BG)
+        wrow.pack(fill=tk.X, padx=14)
+        ws_var = tk.StringVar(value=agent.get("workspace", ""))
+        ws_entry = tk.Entry(
+            wrow, textvariable=ws_var, bg=self.INPUT_BG, fg=self.TEXT_FG,
+            insertbackground=self.TEXT_FG, relief=tk.SOLID, borderwidth=1,
+            font=("Segoe UI", 10),
+        )
+        ws_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._add_edit_menu(ws_entry)
+
+        def browse():
+            path = filedialog.askdirectory(parent=dlg, title="Choose workspace folder")
+            if path:
+                ws_var.set(path)
+
+        ttk.Button(wrow, text="Browse…", command=browse).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(wrow, text="Clear", command=lambda: ws_var.set("")).pack(
+            side=tk.LEFT, padx=(6, 0))
+
+        # instructions
+        label(dlg, "Instructions", padx=14, pady=(10, 2))
+        instr = self._make_textbox(dlg, height=7)
+        instr.pack(fill=tk.BOTH, expand=True, padx=14)
+        instr.insert("1.0", agent.get("instructions", ""))
+
+        # skills + sources (multi-select lists; selected = enabled)
+        lists = tk.Frame(dlg, bg=self.BG)
+        lists.pack(fill=tk.BOTH, padx=14, pady=(10, 0))
+        boxes = {}
+        for col, (key, items, heading) in enumerate((
+                ("skills", self.skills, "Skills (click to select)"),
+                ("sources", self.sources, "Sources (click to select)"))):
+            frame = tk.Frame(lists, bg=self.BG)
+            frame.grid(row=0, column=col, sticky="nsew",
+                       padx=(0, 8) if col == 0 else (8, 0))
+            lists.columnconfigure(col, weight=1)
+            label(frame, heading, pady=(0, 2))
+            box = self._make_listbox(frame)
+            box.configure(selectmode=tk.MULTIPLE, exportselection=False, height=6)
+            box.pack(fill=tk.BOTH, expand=True)
+            wanted = set(agent.get(key, []))
+            for i, item in enumerate(items):
+                box.insert(tk.END, f"  {item.get('name', '(unnamed)')}")
+                if item.get("id") in wanted:
+                    box.selection_set(i)
+            if not items:
+                box.insert(tk.END, f"  (no {key} yet — add them in the "
+                                   f"{key.capitalize()} tab)")
+                box.configure(state=tk.DISABLED)
+            boxes[key] = (box, items)
+
+        bar = tk.Frame(dlg, bg=self.BG)
+        bar.pack(fill=tk.X, padx=14, pady=10)
+
+        def ok():
+            name = name_entry.get().strip()
+            if not name:
+                messagebox.showwarning("Name required", "Please enter a name.",
+                                       parent=dlg)
+                return
+            ws = ws_var.get().strip()
+            if ws and not os.path.isdir(ws):
+                if not messagebox.askyesno(
+                        "Folder not found",
+                        f"The workspace folder doesn't exist:\n{ws}\n\n"
+                        "Save it anyway?", parent=dlg):
+                    return
+            model = model_var.get()
+            result.update({
+                "name": name,
+                "model": "" if model == KEEP_MODEL_LABEL else model,
+                "instructions": instr.get("1.0", tk.END).strip(),
+                "workspace": ws,
+            })
+            for key, (box, items) in boxes.items():
+                result[key] = [items[i]["id"] for i in box.curselection()
+                               if i < len(items)] if items else []
+            dlg.destroy()
+
+        ttk.Button(bar, text="Save", command=ok).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8))
+        name_entry.focus_set()
+        dlg.wait_window()
+        return result or None
+
     def _build_instructions_tab(self, nb):
         tab = tk.Frame(nb, bg=self.BG)
         nb.add(tab, text="Instructions")
         tk.Label(
             tab,
-            text="Custom instructions the model follows in every chat "
+            text="Custom instructions the active agent follows in every chat "
                  "(system prompt).",
             bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
             wraplength=520, justify="left",
@@ -2077,6 +2499,15 @@ class OllamaChatApp:
         editor.insert("1.0", self.system_prompt)
         editor.focus_set()
         self._instr_editor = editor  # so auto-update can refresh the text live
+
+        def reload_editor():
+            # show the new agent's instructions; this also keeps autosave from
+            # writing the previous agent's text into the new agent
+            if editor.get("1.0", tk.END).strip() != self.system_prompt:
+                editor.delete("1.0", tk.END)
+                editor.insert("1.0", self.system_prompt)
+
+        self._settings_refreshers.append(reload_editor)
 
         bar = tk.Frame(tab, bg=self.BG)
         bar.pack(fill=tk.X, padx=12, pady=(0, 6))
@@ -2235,8 +2666,8 @@ class OllamaChatApp:
         nb.add(tab, text="Skills")
         tk.Label(
             tab,
-            text="Reusable instruction sets. Enabled skills are added to "
-                 "every chat.",
+            text="Reusable instruction sets. On/Off chooses the skills the "
+                 "active agent adds to every chat.",
             bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=12, pady=(12, 6))
@@ -2300,6 +2731,7 @@ class OllamaChatApp:
         ttk.Button(bar, text="Edit", command=edit).pack(side=tk.LEFT, padx=6)
         ttk.Button(bar, text="On/Off", command=toggle).pack(side=tk.LEFT)
         ttk.Button(bar, text="Delete", command=delete).pack(side=tk.RIGHT)
+        self._settings_refreshers.append(refresh)
         refresh()
 
     def _build_sources_tab(self, nb):
@@ -2311,7 +2743,8 @@ class OllamaChatApp:
                  "pasted text. Sources are split into chunks and indexed with "
                  f"the Ollama '{EMBED_MODEL}' model; each message sends only the "
                  f"{TOP_K_CHUNKS} most relevant chunks. Files are re-indexed "
-                 f"when they change. Needs: ollama pull {EMBED_MODEL}",
+                 f"when they change. On/Off chooses the active agent's sources. "
+                 f"Needs: ollama pull {EMBED_MODEL}",
             bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=12, pady=(12, 6))
@@ -2439,6 +2872,7 @@ class OllamaChatApp:
         ttk.Button(bar, text="On/Off", command=toggle).pack(side=tk.LEFT, padx=6)
         ttk.Button(bar, text="Re-index", command=reindex).pack(side=tk.LEFT)
         ttk.Button(bar, text="Delete", command=delete).pack(side=tk.RIGHT)
+        self._settings_refreshers.append(refresh)
         refresh()
 
     def _build_voice_tab(self, nb):
@@ -2614,7 +3048,7 @@ class OllamaChatApp:
             self._start_agent(model, query)
             return
 
-        self._append(f"{model}\n", "bot")
+        self._append(f"{self._agent_prefix()}{model}\n", "bot")
 
         # mark where the assistant reply begins so we can reformat it on done
         self.chat.configure(state=tk.NORMAL)
@@ -2707,16 +3141,27 @@ class OllamaChatApp:
                 elif kind == "agent_done":
                     self._finish_agent(payload)
                 elif kind == "instructions_updated":
-                    self.system_prompt = payload
-                    self._persist()
+                    agent_id, new_text = payload
                     self._updating_instructions = False
-                    if self._instr_editor is not None:
-                        try:
-                            self._instr_editor.delete("1.0", tk.END)
-                            self._instr_editor.insert("1.0", payload)
-                        except tk.TclError:
-                            self._instr_editor = None
-                    self.set_status("Instructions updated from chat")
+                    if agent_id != self.active_agent_id:
+                        # the user switched agents meanwhile: update only the
+                        # agent the conversation was using
+                        target = self._agent(agent_id)
+                        if target is not None:
+                            target["instructions"] = new_text
+                            self._persist()
+                            self.set_status(
+                                f"Instructions of '{target['name']}' updated from chat")
+                    else:
+                        self.system_prompt = new_text
+                        self._persist()
+                        if self._instr_editor is not None:
+                            try:
+                                self._instr_editor.delete("1.0", tk.END)
+                                self._instr_editor.insert("1.0", new_text)
+                            except tk.TclError:
+                                self._instr_editor = None
+                        self.set_status("Instructions updated from chat")
                 elif kind == "instructions_idle":
                     self._updating_instructions = False
                     self.set_status("Ready")
@@ -3220,10 +3665,7 @@ class OllamaChatApp:
         )
         if not path:
             return
-        self.workspace = path
-        self.config["workspace"] = path
-        save_config(self.config)
-        self._update_ws_label()
+        self._set_workspace(path)
         self.set_status(f"Workspace: {path}")
 
     def clear_workspace(self):
@@ -3234,10 +3676,7 @@ class OllamaChatApp:
             "Stop giving the model access to the working folder?",
         ):
             return
-        self.workspace = ""
-        self.config["workspace"] = ""
-        save_config(self.config)
-        self._update_ws_label()
+        self._set_workspace("")
         self.set_status("Workspace disabled")
 
     def _update_ws_label(self):
@@ -3252,7 +3691,8 @@ class OllamaChatApp:
         nb.add(tab, text="Workspace")
         tk.Label(
             tab,
-            text="Working folder — the model can read and write files in this folder.",
+            text="Working folder of the active agent — the model can read and "
+                 "write files in this folder.",
             bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=12, pady=(12, 6))
@@ -3283,10 +3723,7 @@ class OllamaChatApp:
                 messagebox.showwarning("Not found", f"Directory not found:\n{p}",
                                        parent=tab.winfo_toplevel())
                 return
-            self.workspace = p
-            self.config["workspace"] = p
-            save_config(self.config)
-            self._update_ws_label()
+            self._set_workspace(p)
             ws_name = os.path.basename(p.rstrip("/\\")) if p else ""
             self.set_status(f"📁 Workspace active: {ws_name}" if p else "Workspace disabled")
 
@@ -3311,6 +3748,9 @@ class OllamaChatApp:
 
         _update_ind()
         path_var.trace_add("write", lambda *_: _update_ind())
+        # show the new agent's folder when the active agent changes
+        self._settings_refreshers.append(
+            lambda: path_var.set(self.workspace or self._ws_unavailable))
 
         # write mode
         tk.Frame(tab, bg=self.BORDER, height=1).pack(fill=tk.X, padx=12, pady=8)
@@ -3575,8 +4015,13 @@ class OllamaChatApp:
             wraplength=540, justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 4))
 
+    def _agent_prefix(self):
+        """'Name · ' for the reply header, unless the Default agent is active."""
+        agent = self._active_agent()
+        return "" if agent["id"] == DEFAULT_AGENT_ID else f"{agent['name']}  ·  "
+
     def _start_agent(self, model, query=""):
-        self._append(f"{model}  ·  📁 workspace\n", "bot")
+        self._append(f"{self._agent_prefix()}{model}  ·  📁 workspace\n", "bot")
         self.streaming = True
         self.stop_event.clear()
         self._set_busy(True)
@@ -3888,8 +4333,9 @@ class OllamaChatApp:
             self.messages.append({"role": "assistant", "content": text})
         self.streaming = False
         self._set_busy(False)
-        
+
         self.set_status("Ready")
+        self._save_to_history()   # like normal replies: keep it with its agent
         self._maybe_auto_update()
         if self.tts_auto and text.strip():
             self._speak(text)
@@ -3958,11 +4404,12 @@ class OllamaChatApp:
         self.set_status("Updating instructions…")
         threading.Thread(
             target=self._auto_update_worker,
-            args=(model, self.system_prompt, list(self.messages)),
+            args=(model, self.system_prompt, list(self.messages),
+                  self.active_agent_id),
             daemon=True,
         ).start()
 
-    def _auto_update_worker(self, model, current, convo):
+    def _auto_update_worker(self, model, current, convo, agent_id=DEFAULT_AGENT_ID):
         try:
             transcript = "\n".join(
                 f"{m.get('role', '').upper()}: {m.get('content', '')}"
@@ -3980,7 +4427,7 @@ class OllamaChatApp:
                 resp.get("message", {}).get("content", "")
             )
             if new_text:
-                self.ui_queue.put(("instructions_updated", new_text))
+                self.ui_queue.put(("instructions_updated", (agent_id, new_text)))
             else:
                 self.ui_queue.put(("instructions_idle", None))
         except Exception:  # noqa: BLE001 - keep old instructions on failure

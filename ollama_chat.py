@@ -7,16 +7,21 @@ Requirements:
     - Ollama running locally (default: http://localhost:11434)
     - For Sources: `ollama pull bge-m3` (embeddings); optional `pip install
       pypdf python-docx` for PDF and Word files
+    - For MCP servers: optional `pip install mcp` (Python 3.10+)
 
 Run:
     python ollama_chat.py
 """
 
 import array
+import asyncio
+import atexit
 import base64
+import concurrent.futures
 import copy
 import hashlib
 import heapq
+import importlib.util
 import json
 import operator
 import os
@@ -24,6 +29,7 @@ import platform
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -564,6 +570,315 @@ class SourceIndex:
 
 
 # --------------------------------------------------------------------------- #
+# MCP (Model Context Protocol) client: stdio servers on a background loop
+# --------------------------------------------------------------------------- #
+MCP_START_TIMEOUT = 60          # seconds for a server to start and list tools
+MCP_CALL_TIMEOUT = REQUEST_TIMEOUT
+_MCP = {}                       # SDK pieces, filled in by _mcp_sdk()
+
+
+def _mcp_sdk():
+    """Import the MCP SDK on first use (it's optional and slow to import).
+
+    Returns a dict of the pieces used here; raises ImportError if the
+    package is missing or can't load (it needs Python 3.10+).
+    """
+    if not _MCP:
+        try:
+            import anyio
+            import mcp.types as mcp_types
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except Exception as exc:  # noqa: BLE001 - missing, or wrong Python
+            raise ImportError(str(exc)) from exc
+        _MCP.update(anyio=anyio, types=mcp_types, Session=ClientSession,
+                    Params=StdioServerParameters, stdio_client=stdio_client)
+    return _MCP
+
+
+def mcp_available():
+    """(True, "") if the MCP SDK can be used, else (False, reason)."""
+    try:
+        _mcp_sdk()
+        return True, ""
+    except ImportError as exc:
+        return False, str(exc)
+
+
+def _attr(obj, *names):
+    """First non-None attribute among names (SDK 2.x snake_case, 1.x camelCase)."""
+    for name in names:
+        value = getattr(obj, name, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _mcp_error_text(exc, errlog=None):
+    """Readable message for an MCP failure, plus the server's last stderr lines."""
+    while getattr(exc, "exceptions", None):          # unwrap exception groups
+        exc = exc.exceptions[0]
+    if isinstance(exc, ImportError):
+        msg = f"can't load the mcp package ({exc}); install it: pip install mcp"
+    elif isinstance(exc, FileNotFoundError):
+        msg = f"command not found: {exc.filename or exc}"
+    elif isinstance(exc, TimeoutError):
+        msg = "no response from the server"
+    else:
+        msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    if errlog is not None:
+        try:
+            errlog.seek(0)
+            tail = [ln.strip() for ln in errlog.read().splitlines() if ln.strip()]
+            if tail:
+                msg += " | " + " / ".join(tail[-3:])
+        except (OSError, ValueError):
+            pass
+    return msg
+
+
+def _mcp_result_text(result):
+    """Turn an MCP CallToolResult into the text returned to the model."""
+    content = getattr(result, "content", None)
+    if content is None:      # e.g. a 2.x InputRequiredResult
+        return "Error: the tool asked for more input, which this app can't provide."
+    parts = []
+    for item in content:
+        kind = getattr(item, "type", "")
+        if kind == "text":
+            parts.append(item.text)
+        elif kind == "resource":
+            res = item.resource
+            parts.append(getattr(res, "text", None) or f"[resource {getattr(res, 'uri', '')}]")
+        elif kind == "resource_link":
+            parts.append(f"[resource link: {getattr(item, 'uri', '')}]")
+        else:                # image / audio: not passed on to the model
+            parts.append(f"[{kind} content: {_attr(item, 'mime_type', 'mimeType') or ''}]")
+    if not parts:
+        structured = _attr(result, "structured_content", "structuredContent")
+        if structured is not None:
+            parts.append(json.dumps(structured, ensure_ascii=False))
+    text = "\n".join(str(p) for p in parts) or "(no output)"
+    if _attr(result, "is_error", "isError"):
+        text = "Error: " + text
+    if len(text) > MAX_READ_CHARS:
+        text = text[:MAX_READ_CHARS] + "\n...[truncated]"
+    return text
+
+
+def _mcp_safe_name(name):
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name)
+
+
+class MCPManager:
+    """Runs MCP stdio servers on an asyncio loop in a background thread.
+
+    Each server lives in one task that keeps its stdio_client/ClientSession
+    open until it is stopped. Public methods are thread-safe and never block
+    the caller, except call_tool(), which is meant for worker threads.
+    on_change() is called from the loop thread when a server's status or
+    tools change.
+    """
+
+    def __init__(self, on_change):
+        self.on_change = on_change
+        self.lock = threading.Lock()
+        self.servers = {}    # name -> {"status", "error", "tools", "session", "stop", "task"}
+        self.loop = None
+
+    def _ensure_loop(self):
+        if self.loop is None:
+            self.loop = asyncio.new_event_loop()
+            threading.Thread(target=self.loop.run_forever, daemon=True,
+                             name="mcp-loop").start()
+
+    def _submit(self, coro):
+        self._ensure_loop()
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def _set(self, name, owner=None, **fields):
+        """Update a server's state; with owner (its stop event), only if that
+        is still the current instance — a restarted server's old task can't
+        overwrite the new one."""
+        with self.lock:
+            st = self.servers.get(name)
+            if st is None or (owner is not None and st["stop"] is not owner):
+                return
+            st.update(fields)
+        self.on_change()
+
+    # -- public API ------------------------------------------------------- #
+    def start(self, name, cfg):
+        """(Re)start server `name` with cfg {"command", "args", "env"}."""
+        self._submit(self._restart(name, dict(cfg)))
+
+    def stop(self, name):
+        if self.loop is not None:
+            self._submit(self._stop(name))
+
+    def snapshot(self):
+        """{name: {"status", "error", "tools"}} — a copy, safe to read."""
+        with self.lock:
+            return {n: {"status": s["status"], "error": s["error"],
+                        "tools": list(s["tools"])}
+                    for n, s in self.servers.items()}
+
+    def has_running(self):
+        with self.lock:
+            return any(s["status"] == "running" for s in self.servers.values())
+
+    def ollama_tools(self):
+        """Tools of running servers in Ollama's format, named <server>__<tool>,
+        and a route {that name: (server, tool)}."""
+        defs, route = [], {}
+        with self.lock:
+            running = [(n, list(s["tools"])) for n, s in self.servers.items()
+                       if s["status"] == "running"]
+        for server, tools in running:
+            for tool in tools:
+                name = f"{_mcp_safe_name(server)}__{_mcp_safe_name(tool['name'])}"
+                if name in route:
+                    continue
+                route[name] = (server, tool["name"])
+                schema = tool["schema"] if isinstance(tool["schema"], dict) \
+                    and tool["schema"] else {"type": "object", "properties": {}}
+                desc = f"[{server}] {tool['description']}".strip()
+                defs.append({"type": "function", "function": {
+                    "name": name, "description": desc, "parameters": schema}})
+        return defs, route
+
+    def call_tool(self, server, tool, args, timeout=MCP_CALL_TIMEOUT):
+        """Call a tool and return its result as text (blocks; worker threads)."""
+        fut = self._submit(self._call(server, tool, args))
+        try:
+            return fut.result(timeout)
+        except concurrent.futures.TimeoutError:
+            fut.cancel()
+            return f"Error: the tool did not answer within {timeout} s."
+
+    def shutdown(self, timeout=5.0):
+        """Stop every server (so child processes exit) — used at app exit."""
+        if self.loop is None:
+            return
+        with self.lock:
+            names = list(self.servers)
+        futs = [self._submit(self._stop(n)) for n in names]
+        concurrent.futures.wait(futs, timeout=timeout)
+
+    # -- loop-thread side ------------------------------------------------- #
+    async def _restart(self, name, cfg):
+        await self._stop(name)
+        stop = asyncio.Event()
+        with self.lock:
+            self.servers[name] = {"status": "starting", "error": "", "tools": [],
+                                  "session": None, "stop": stop, "task": None}
+        task = asyncio.ensure_future(self._serve(name, cfg, stop))
+        self._set(name, task=task)
+
+    async def _stop(self, name):
+        with self.lock:
+            st = self.servers.pop(name, None)
+        if st and st["task"] is not None and not st["task"].done():
+            st["stop"].set()
+            try:
+                await asyncio.wait_for(asyncio.shield(st["task"]), 10)
+            except Exception:  # noqa: BLE001 - didn't exit cleanly: cancel it
+                st["task"].cancel()
+        self.on_change()
+
+    async def _serve(self, name, cfg, stop):
+        errlog = tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace")
+        try:
+            sdk = _mcp_sdk()
+            params = sdk["Params"](command=cfg.get("command", ""),
+                                   args=[str(a) for a in cfg.get("args") or []],
+                                   env={str(k): str(v) for k, v in
+                                        (cfg.get("env") or {}).items()} or None)
+            async with sdk["stdio_client"](params, errlog=errlog) as (read, write):
+                async with sdk["Session"](read, write) as session:
+                    with sdk["anyio"].fail_after(MCP_START_TIMEOUT):
+                        await session.initialize()
+                        tools = await self._list_tools(session)
+                    self._set(name, owner=stop, status="running",
+                              session=session, tools=tools)
+                    await stop.wait()
+        except Exception as exc:  # noqa: BLE001 - shown in the MCP tab
+            self._set(name, owner=stop, status="error", session=None, tools=[],
+                      error=_mcp_error_text(exc, errlog))
+        finally:
+            errlog.close()
+
+    @staticmethod
+    async def _list_tools(session):
+        tools, cursor, pages = [], None, 0
+        while True:
+            if cursor is None:
+                result = await session.list_tools()
+            else:
+                result = await session.list_tools(
+                    params=_MCP["types"].PaginatedRequestParams(cursor=cursor))
+            for t in result.tools:
+                tools.append({"name": t.name,
+                              "description": (t.description or "").strip(),
+                              "schema": _attr(t, "input_schema", "inputSchema") or {}})
+            cursor = _attr(result, "next_cursor", "nextCursor")
+            pages += 1
+            if not cursor or pages >= 20:
+                return tools
+
+    async def _call(self, server, tool, args):
+        with self.lock:
+            st = self.servers.get(server)
+            session = st["session"] if st else None
+        if session is None:
+            return f"Error: the MCP server '{server}' is not running."
+        try:
+            result = await session.call_tool(tool, args)
+        except Exception as exc:  # noqa: BLE001
+            msg = _mcp_error_text(exc)
+            # an error reply from a live server is just a failed call; if the
+            # server no longer answers a ping, mark it as failed
+            try:
+                with _MCP["anyio"].fail_after(5):
+                    await session.send_ping()
+            except Exception:  # noqa: BLE001
+                self._set(server, owner=st["stop"], status="error", session=None,
+                          tools=[], error=f"server stopped responding: {msg}")
+                st["stop"].set()
+            return f"Error: {msg}"
+        return _mcp_result_text(result)
+
+
+def parse_mcp_servers(text):
+    """Parse Claude Desktop style JSON — {"mcpServers": {...}} or just the
+    inner {...} — into ({name: {"command", "args", "env", "enabled"}},
+    [skipped server descriptions]). Raises ValueError for bad JSON."""
+    data = json.loads(text)
+    if isinstance(data, dict) and isinstance(data.get("mcpServers"), dict):
+        data = data["mcpServers"]
+    if not isinstance(data, dict):
+        raise ValueError('expected an object like {"mcpServers": {...}}')
+    servers, skipped = {}, []
+    for name, spec in data.items():
+        if not isinstance(spec, dict) or not spec.get("command"):
+            kind = (spec.get("type") or ("url" if spec.get("url") else "")) \
+                if isinstance(spec, dict) else ""
+            skipped.append(f"{name} (not a stdio server{': ' + kind if kind else ''})")
+            continue
+        args, env = spec.get("args") or [], spec.get("env") or {}
+        if not isinstance(args, list) or not isinstance(env, dict):
+            skipped.append(f"{name} (args must be a list and env an object)")
+            continue
+        servers[str(name)] = {
+            "command": str(spec["command"]),
+            "args": [str(a) for a in args],
+            "env": {str(k): str(v) for k, v in env.items()},
+            "enabled": not spec.get("disabled", False),
+        }
+    return servers, skipped
+
+
+# --------------------------------------------------------------------------- #
 # TTS worker (runs pyttsx3 in a dedicated thread to avoid blocking the UI)
 # --------------------------------------------------------------------------- #
 class _TTSWorker:
@@ -701,6 +1016,12 @@ class OllamaChatApp:
         self.stop_event = threading.Event()
         self.worker = None
         self.streaming = False
+        # MCP servers (config["mcp_servers"]) run on a background asyncio loop
+        self._mcp = MCPManager(
+            on_change=lambda: self.ui_queue.put(("ui_call", self._mcp_changed)))
+        self._mcp_listeners = []           # MCP tab refreshers while it's open
+        self._mcp_seen = {}                # last status per server (for alerts)
+        atexit.register(self._mcp.shutdown)
 
         self._build_ui()
         self._apply_agent(self._active_agent())
@@ -708,6 +1029,7 @@ class OllamaChatApp:
         self._load_history()
         self._poll_queue()
         self.refresh_models()
+        self._mcp_start_enabled()
 
     # ----- layout --------------------------------------------------------- #
     def _build_ui(self):
@@ -2199,7 +2521,7 @@ class OllamaChatApp:
         win = tk.Toplevel(self.root)
         win.title("Settings")
         win.configure(bg=self.BG)
-        win.geometry("780x560")   # wide enough for all tabs and button rows
+        win.geometry("860x580")   # wide enough for all tabs and button rows
         win.transient(self.root)
         win.grab_set()
 
@@ -2218,6 +2540,7 @@ class OllamaChatApp:
         nb = ttk.Notebook(win)
         nb.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 4))
         self._settings_refreshers = []
+        self._mcp_listeners = []
         self._build_agents_tab(nb)
         self._build_instructions_tab(nb)
         self._build_skills_tab(nb)
@@ -2226,6 +2549,7 @@ class OllamaChatApp:
         self._build_workspace_tab(nb)
         self._build_cuda_tab(nb)
         self._build_model_tab(nb)
+        self._build_mcp_tab(nb)
 
         def close_settings():
             # flush any pending instruction edits before closing
@@ -2243,6 +2567,7 @@ class OllamaChatApp:
             self._instr_editor = None
             self._instr_autosave = None
             self._settings_refreshers = []
+            self._mcp_listeners = []
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", close_settings)
@@ -3068,7 +3393,8 @@ class OllamaChatApp:
         query = self._source_query(text or content)
         self._reply_sources = None
 
-        if self.workspace:
+        # tool loop: built-in file tools (workspace) and/or MCP server tools
+        if self.workspace or self._mcp.has_running():
             self._start_agent(model, query)
             return
 
@@ -3162,6 +3488,24 @@ class OllamaChatApp:
                     if not holder["approved"]:
                         self.set_status("Write rejected by user")
                     event.set()
+                elif kind == "confirm_mcp":
+                    server, tool, args, event, holder = payload
+                    self.root.lift()
+                    self.root.focus_force()
+                    approved, always = self._ask_mcp_approval(server, tool, args)
+                    holder["approved"] = approved
+                    if approved and always:
+                        allowed = self.config.setdefault("mcp_always_allow", {})
+                        allowed.setdefault(server, [])
+                        if tool not in allowed[server]:
+                            allowed[server].append(tool)
+                        save_config(self.config)
+                        self._mcp_changed()     # refresh the MCP tab if open
+                    if not approved:
+                        self.set_status("MCP tool call denied")
+                    event.set()
+                elif kind == "tool_note":
+                    self._append(f"     ↳ {payload}\n", "tool")
                 elif kind == "agent_done":
                     self._finish_agent(payload)
                 elif kind == "instructions_updated":
@@ -4044,8 +4388,475 @@ class OllamaChatApp:
         agent = self._active_agent()
         return "" if agent["id"] == DEFAULT_AGENT_ID else f"{agent['name']}  ·  "
 
+    # ----- MCP ------------------------------------------------------------ #
+    def _mcp_servers(self):
+        """Configured servers: {name: {"command", "args", "env", "enabled"}}."""
+        return self.config.setdefault("mcp_servers", {})
+
+    @staticmethod
+    def _mcp_installed():
+        return importlib.util.find_spec("mcp") is not None
+
+    def _mcp_start_enabled(self):
+        if not self._mcp_installed():
+            return    # the MCP tab explains how to install it
+        for name, cfg in self._mcp_servers().items():
+            if cfg.get("enabled", True):
+                self._mcp.start(name, cfg)
+
+    def _mcp_apply(self, name):
+        """Start/restart or stop server `name` to match its config."""
+        cfg = self._mcp_servers().get(name)
+        if cfg and cfg.get("enabled", True) and self._mcp_installed():
+            self._mcp.start(name, cfg)
+        else:
+            self._mcp.stop(name)
+
+    def _mcp_changed(self):
+        """UI thread: a server's status or tools changed. Alert on new
+        failures and refresh the MCP tab if it is open."""
+        snap = self._mcp.snapshot()
+        for name, st in snap.items():
+            if st["status"] == "error" and self._mcp_seen.get(name) != "error":
+                self.set_status(f"MCP server '{name}' failed: {st['error'][:150]}")
+        self._mcp_seen = {n: s["status"] for n, s in snap.items()}
+        for fn in list(self._mcp_listeners):
+            try:
+                fn()
+            except tk.TclError:   # its Settings window was closed
+                self._mcp_listeners.remove(fn)
+
+    def _run_mcp_tool(self, name, route, args):
+        """Worker thread: show the call, get approval, run it on its server."""
+        server, tool = route
+        shown = json.dumps(args, ensure_ascii=False)
+        if len(shown) > 160:
+            shown = shown[:157] + "…"
+        self.ui_queue.put(("tool_call", f"{name}({shown})"))
+        if tool not in self.config.get("mcp_always_allow", {}).get(server, []):
+            event, holder = threading.Event(), {}
+            self.ui_queue.put(("confirm_mcp", (server, tool, args, event, holder)))
+            event.wait()
+            if not holder.get("approved"):
+                self.ui_queue.put(("tool_note", "denied"))
+                return "The user denied this tool call."
+        self.ui_queue.put(("ui_call", lambda: self.set_status(f"Running {name}…")))
+        result = self._mcp.call_tool(server, tool, args)
+        self.ui_queue.put(("ui_call", lambda: self.set_status(self._tool_status())))
+        if result.startswith("Error:"):
+            self.ui_queue.put(("tool_note", result[:200]))
+        return result
+
+    def _ask_mcp_approval(self, server, tool, args):
+        """Modal "Allow this MCP tool call?" dialog -> (approved, always)."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Allow MCP tool call?")
+        dlg.configure(bg=self.BG)
+        dlg.geometry("560x420")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        answer = {"approved": False, "always": False}
+        tk.Label(
+            dlg, text=f"The model wants to run the tool “{tool}” from the MCP "
+                      f"server “{server}”.",
+            bg=self.BG, fg=self.TEXT_FG, font=("Segoe UI", 10, "bold"),
+            wraplength=520, justify="left",
+        ).pack(anchor="w", padx=14, pady=(14, 6))
+        tk.Label(dlg, text="Arguments", bg=self.BG, fg=self.MUTED_FG,
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=14)
+        box = self._make_textbox(dlg, height=10)
+        box.pack(fill=tk.BOTH, expand=True, padx=14)
+        box.insert("1.0", json.dumps(args, indent=2, ensure_ascii=False))
+        box.configure(state=tk.DISABLED)
+        always = tk.BooleanVar(master=dlg, value=False)
+        tk.Checkbutton(
+            dlg, text="Always allow this tool", variable=always,
+            bg=self.BG, fg=self.TEXT_FG, activebackground=self.BG,
+            selectcolor=self.PANEL, font=("Segoe UI", 10), anchor="w",
+        ).pack(anchor="w", padx=14, pady=(8, 0))
+        bar = tk.Frame(dlg, bg=self.BG)
+        bar.pack(fill=tk.X, padx=14, pady=10)
+
+        def decide(ok):
+            answer["approved"], answer["always"] = ok, ok and always.get()
+            dlg.destroy()
+
+        ttk.Button(bar, text="Allow", command=lambda: decide(True)).pack(side=tk.RIGHT)
+        deny = ttk.Button(bar, text="Deny", command=lambda: decide(False))
+        deny.pack(side=tk.RIGHT, padx=(0, 8))
+        deny.focus_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: decide(False))
+        dlg.bind("<Escape>", lambda e: decide(False))
+        dlg.wait_window()
+        return answer["approved"], answer["always"]
+
+    def _build_mcp_tab(self, nb):
+        tab = tk.Frame(nb, bg=self.BG)
+        nb.add(tab, text="MCP")
+        tk.Label(
+            tab,
+            text="MCP servers give the model extra tools (stdio transport). "
+                 "Enabled servers start with the app. Their tools are offered "
+                 "to the model as <server>__<tool>, and every call asks for your "
+                 "approval unless you chose “Always allow this tool”.",
+            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
+            wraplength=740, justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        installed = self._mcp_installed()
+        if not installed:
+            tk.Label(
+                tab,
+                text="The MCP package isn't installed, so servers can't start. "
+                     "Install it with:   pip install mcp   (it needs Python "
+                     f"3.10+; this is Python {platform.python_version()}), then "
+                     "restart the app. Everything else keeps working.",
+                bg=self.BG, fg="#dc2626", font=("Segoe UI", 9, "bold"),
+                wraplength=740, justify="left",
+            ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        servers_lb = self._make_listbox(tab)
+        servers_lb.configure(height=5, exportselection=False)
+        servers_lb.pack(fill=tk.X, padx=12, pady=(4, 4))
+        status_lbl = tk.Label(tab, text="", bg=self.BG, fg=self.MUTED_FG,
+                              font=("Segoe UI", 9), wraplength=740,
+                              justify="left", anchor="w")
+        status_lbl.pack(fill=tk.X, padx=12)
+        tk.Label(tab, text="Tools", bg=self.BG, fg=self.TEXT_FG,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=12,
+                                                     pady=(6, 2))
+        tools_lb = self._make_listbox(tab)
+        tools_lb.configure(exportselection=False, height=6)
+        tools_lb.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 6))
+
+        def names():
+            return list(self._mcp_servers())
+
+        def selected():
+            sel = servers_lb.curselection()
+            return sel[0] if sel and sel[0] < len(names()) else None
+
+        def state_of(name, snap):
+            cfg = self._mcp_servers()[name]
+            st = snap.get(name)
+            if not installed:
+                return "mcp package not installed", "error"
+            if not cfg.get("enabled", True):
+                return "disabled", "off"
+            if st is None:
+                return "stopped", "off"
+            if st["status"] == "running":
+                return f"running · {len(st['tools'])} tools", "ok"
+            if st["status"] == "starting":
+                return "starting…", "off"
+            return f"error: {st['error']}", "error"
+
+        def show_details():
+            tools_lb.delete(0, tk.END)
+            i = selected()
+            if i is None:
+                status_lbl.configure(
+                    text="Select a server to see its status and tools.",
+                    fg=self.MUTED_FG)
+                return
+            name = names()[i]
+            cfg = self._mcp_servers()[name]
+            snap = self._mcp.snapshot()
+            state, kind = state_of(name, snap)
+            command = " ".join([cfg.get("command", "")] + cfg.get("args", []))
+            status_lbl.configure(
+                text=f"{name}: {state}\nCommand: {command}",
+                fg={"ok": self.BOT_FG, "error": "#dc2626"}.get(kind, self.MUTED_FG))
+            allowed = self.config.get("mcp_always_allow", {}).get(name, [])
+            st = snap.get(name)
+            for t in (st["tools"] if st else []):
+                desc = t["description"].splitlines()[0] if t["description"] else ""
+                mark = "   ✓ always allowed" if t["name"] in allowed else ""
+                tools_lb.insert(tk.END, f"  {t['name']}{mark}   —  {desc[:110]}")
+
+        def refresh():
+            sel = selected()
+            snap = self._mcp.snapshot()
+            servers_lb.delete(0, tk.END)
+            for name, cfg in self._mcp_servers().items():
+                state = state_of(name, snap)[0]
+                if len(state) > 90:
+                    state = state[:89] + "…"
+                mark = "✓" if cfg.get("enabled", True) else "○"
+                servers_lb.insert(tk.END, f"  {mark}  {name}   ·  {state}")
+            if sel is not None and sel < servers_lb.size():
+                servers_lb.selection_set(sel)
+            show_details()
+
+        def save(name=None):
+            save_config(self.config)
+            if name is not None:
+                self._mcp_apply(name)
+            refresh()
+
+        def add():
+            r = self._mcp_server_dialog("Add MCP server", "", {
+                "command": "", "args": [], "env": {}, "enabled": True})
+            if r:
+                name, cfg = r
+                self._mcp_servers()[name] = cfg
+                save(name)
+                servers_lb.selection_clear(0, tk.END)
+                servers_lb.selection_set(names().index(name))
+                show_details()
+
+        def edit():
+            i = selected()
+            if i is None:
+                return
+            old = names()[i]
+            r = self._mcp_server_dialog("Edit MCP server", old,
+                                        self._mcp_servers()[old])
+            if not r:
+                return
+            new, cfg = r
+            servers = self._mcp_servers()
+            if new != old:     # rename: keep its position and approvals
+                self._mcp.stop(old)
+                items = [(new, cfg) if k == old else (k, v) for k, v in servers.items()]
+                servers.clear()
+                servers.update(items)
+                allowed = self.config.get("mcp_always_allow", {})
+                if old in allowed:
+                    allowed[new] = allowed.pop(old)
+            else:
+                servers[old] = cfg
+            save(new)
+
+        def toggle():
+            i = selected()
+            if i is None:
+                return
+            name = names()[i]
+            cfg = self._mcp_servers()[name]
+            cfg["enabled"] = not cfg.get("enabled", True)
+            save(name)
+
+        def restart():
+            i = selected()
+            if i is not None:
+                save(names()[i])
+
+        def delete():
+            i = selected()
+            if i is None:
+                return
+            name = names()[i]
+            if not messagebox.askyesno("Delete MCP server",
+                                       f"Delete the MCP server '{name}'?",
+                                       parent=tab.winfo_toplevel()):
+                return
+            self._mcp.stop(name)
+            del self._mcp_servers()[name]
+            self.config.get("mcp_always_allow", {}).pop(name, None)
+            save()
+
+        def import_json():
+            r = self._mcp_import_dialog()
+            if not r:
+                return
+            servers, skipped = r
+            existing = self._mcp_servers()
+            replaced = [n for n in servers if n in existing]
+            existing.update(servers)
+            save_config(self.config)
+            for name in servers:
+                self._mcp_apply(name)
+            refresh()
+            lines = [f"Imported {len(servers)} server(s)."]
+            if replaced:
+                lines.append("Replaced: " + ", ".join(replaced))
+            if skipped:
+                lines.append("Skipped: " + ", ".join(skipped))
+            messagebox.showinfo("Import MCP servers", "\n".join(lines),
+                                parent=tab.winfo_toplevel())
+
+        def forget():
+            i = selected()
+            if i is not None:
+                self.config.get("mcp_always_allow", {}).pop(names()[i], None)
+                save()
+
+        servers_lb.bind("<<ListboxSelect>>", lambda e: show_details())
+        servers_lb.bind("<Double-Button-1>", lambda e: edit())
+        # both button rows sit at the bottom and get their space before the
+        # lists do, so they can't be pushed out of the window
+        bar2 = tk.Frame(tab, bg=self.BG)
+        bar2.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 10),
+                  before=servers_lb)
+        bar = tk.Frame(tab, bg=self.BG)
+        bar.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 4),
+                 before=servers_lb)
+        ttk.Button(bar, text="Add…", command=add).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Edit…", command=edit).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="On/Off", command=toggle).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Restart", command=restart).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="Delete", command=delete).pack(side=tk.RIGHT)
+        ttk.Button(bar2, text="Import JSON…", command=import_json).pack(side=tk.LEFT)
+        ttk.Button(bar2, text="Forget approvals", command=forget).pack(
+            side=tk.LEFT, padx=6)
+        self._mcp_listeners.append(refresh)
+        refresh()
+
+    def _mcp_server_dialog(self, title, name, cfg):
+        """Modal editor for one server. Returns (name, cfg) or None."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=self.BG)
+        dlg.geometry("600x560")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        result = {}
+
+        def label(text, hint=""):
+            row = tk.Frame(dlg, bg=self.BG)
+            row.pack(fill=tk.X, padx=14, pady=(10, 2))
+            tk.Label(row, text=text, bg=self.BG, fg=self.TEXT_FG,
+                     font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT)
+            if hint:
+                tk.Label(row, text=hint, bg=self.BG, fg=self.MUTED_FG,
+                         font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(8, 0))
+
+        def entry(value):
+            e = tk.Entry(dlg, bg=self.INPUT_BG, fg=self.TEXT_FG,
+                         insertbackground=self.TEXT_FG, relief=tk.SOLID,
+                         borderwidth=1, font=("Segoe UI", 11))
+            e.pack(fill=tk.X, padx=14)
+            e.insert(0, value)
+            self._add_edit_menu(e)
+            return e
+
+        label("Name", "used as the tool prefix, e.g. files__read_file")
+        name_e = entry(name)
+        label("Command", "e.g. npx, uvx, python")
+        cmd_e = entry(cfg.get("command", ""))
+        label("Arguments", "one per line")
+        args_t = self._make_textbox(dlg, height=5)
+        args_t.pack(fill=tk.BOTH, expand=True, padx=14)
+        args_t.insert("1.0", "\n".join(cfg.get("args", [])))
+        label("Environment", "KEY=value, one per line")
+        env_t = self._make_textbox(dlg, height=4)
+        env_t.pack(fill=tk.BOTH, expand=True, padx=14)
+        env_t.insert("1.0", "\n".join(f"{k}={v}" for k, v in cfg.get("env", {}).items()))
+        enabled = tk.BooleanVar(master=dlg, value=cfg.get("enabled", True))
+        tk.Checkbutton(dlg, text="Enabled (start this server)", variable=enabled,
+                       bg=self.BG, fg=self.TEXT_FG, activebackground=self.BG,
+                       selectcolor=self.PANEL, font=("Segoe UI", 10),
+                       anchor="w").pack(anchor="w", padx=14, pady=(8, 0))
+        bar = tk.Frame(dlg, bg=self.BG)
+        bar.pack(fill=tk.X, padx=14, pady=10)
+
+        def ok():
+            new = name_e.get().strip()
+            command = cmd_e.get().strip()
+            if not new or not command:
+                messagebox.showwarning("Missing fields",
+                                       "Please enter a name and a command.",
+                                       parent=dlg)
+                return
+            if new != name and new in self._mcp_servers():
+                messagebox.showwarning("Name taken",
+                                       f"There is already a server named '{new}'.",
+                                       parent=dlg)
+                return
+            env = {}
+            for line in env_t.get("1.0", tk.END).splitlines():
+                if not line.strip():
+                    continue
+                if "=" not in line:
+                    messagebox.showwarning(
+                        "Environment", f"Use KEY=value on each line:\n{line}",
+                        parent=dlg)
+                    return
+                key, value = line.split("=", 1)
+                env[key.strip()] = value.strip()
+            args = [a.strip() for a in args_t.get("1.0", tk.END).splitlines()
+                    if a.strip()]
+            result["value"] = (new, {"command": command, "args": args,
+                                     "env": env, "enabled": enabled.get()})
+            dlg.destroy()
+
+        ttk.Button(bar, text="Save", command=ok).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8))
+        name_e.focus_set()
+        dlg.wait_window()
+        return result.get("value")
+
+    def _mcp_import_dialog(self):
+        """Paste or load Claude Desktop "mcpServers" JSON.
+        Returns (servers, skipped) or None."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Import MCP servers")
+        dlg.configure(bg=self.BG)
+        dlg.geometry("620x480")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        result = {}
+        tk.Label(
+            dlg,
+            text='Paste the "mcpServers" JSON (the format of Claude Desktop\'s '
+                 "claude_desktop_config.json), or load the file. Servers with "
+                 "the same name are replaced.",
+            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
+            wraplength=580, justify="left",
+        ).pack(anchor="w", padx=14, pady=(14, 6))
+        box = self._make_textbox(dlg)
+        box.configure(font=("Consolas", 10))
+        box.pack(fill=tk.BOTH, expand=True, padx=14)
+        box.insert("1.0", '{\n  "mcpServers": {\n    \n  }\n}')
+        bar = tk.Frame(dlg, bg=self.BG)
+        bar.pack(fill=tk.X, padx=14, pady=10)
+
+        def load():
+            path = filedialog.askopenfilename(
+                parent=dlg, title="Choose a JSON file",
+                filetypes=[("JSON", "*.json"), ("All files", "*.*")])
+            if path:
+                try:
+                    with open(path, "r", encoding="utf-8") as fh:
+                        text = fh.read()
+                except OSError as exc:
+                    messagebox.showerror("Import", str(exc), parent=dlg)
+                    return
+                box.delete("1.0", tk.END)
+                box.insert("1.0", text)
+
+        def do_import():
+            try:
+                servers, skipped = parse_mcp_servers(box.get("1.0", tk.END))
+            except ValueError as exc:
+                messagebox.showerror("Import", f"Not valid MCP JSON:\n{exc}",
+                                     parent=dlg)
+                return
+            if not servers:
+                messagebox.showwarning(
+                    "Import", "No stdio servers found."
+                    + ("\nSkipped: " + ", ".join(skipped) if skipped else ""),
+                    parent=dlg)
+                return
+            result["value"] = (servers, skipped)
+            dlg.destroy()
+
+        ttk.Button(bar, text="Load file…", command=load).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Import", command=do_import).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(
+            side=tk.RIGHT, padx=(0, 8))
+        dlg.wait_window()
+        return result.get("value")
+
+    def _tool_status(self):
+        return "Working in workspace…" if self.workspace else "Using MCP tools…"
+
     def _start_agent(self, model, query=""):
-        self._append(f"{self._agent_prefix()}{model}  ·  📁 workspace\n", "bot")
+        where = (["📁 workspace"] if self.workspace else []) + \
+                (["🔌 MCP"] if self._mcp.has_running() else [])
+        self._append(f"{self._agent_prefix()}{model}  ·  {'  ·  '.join(where)}\n",
+                     "bot")
         # a Thinking block, if any, goes here: above the tool steps and answer
         self.chat.configure(state=tk.NORMAL)
         self.chat.mark_set("reply_start", "end-1c")
@@ -4058,10 +4869,16 @@ class OllamaChatApp:
         self.streaming = True
         self.stop_event.clear()
         self._set_busy(True)
-        
-        self.set_status("Working in workspace…")
+
+        self.set_status(self._tool_status())
 
         system = self.build_system_prompt()
+        if not self.workspace:   # MCP tools only: no file-tool rules
+            convo = [{"role": "system", "content": system}] + list(self.messages)
+            self.worker = threading.Thread(
+                target=self._run_agent, args=(model, convo, query), daemon=True)
+            self.worker.start()
+            return
         ws_note = (
             f"WORKSPACE FOLDER: {self.workspace}\n"
             "You have access to the user's workspace folder via these tools: "
@@ -4094,7 +4911,7 @@ class OllamaChatApp:
             block, cites, warning = "", [], f"Sources skipped: {exc}"
         self.ui_queue.put(("sources_used", (cites, warning)))
         self.ui_queue.put(
-            ("ui_call", lambda: self.set_status("Working in workspace…")))
+            ("ui_call", lambda: self.set_status(self._tool_status())))
         if block:
             convo[0]["content"] = f"{convo[0]['content']}\n\n{block}"
         # Everything appended past this point is new this turn (assistant
@@ -4104,6 +4921,10 @@ class OllamaChatApp:
         base_len = len(convo)
         wrote_any = False  # did the model actually call write_file this turn?
         thought = False    # has this turn shown any thinking yet?
+        # tools for this turn: the built-in file tools only with a workspace,
+        # plus the tools of running MCP servers (named <server>__<tool>)
+        mcp_defs, mcp_route = self._mcp.ollama_tools()
+        tools = (list(TOOLS) if self.workspace else []) + mcp_defs
         try:
             for _ in range(MAX_AGENT_STEPS):
                 if self.stop_event.is_set():
@@ -4111,7 +4932,7 @@ class OllamaChatApp:
                         ("agent_done", ("(Stopped.)", convo[base_len:]))
                     )
                     return
-                resp = agent_chat_once(OLLAMA_HOST, model, convo, TOOLS,
+                resp = agent_chat_once(OLLAMA_HOST, model, convo, tools,
                                        self.num_ctx)
                 msg = resp.get("message", {}) or {}
                 # Thinking (the "thinking" field and leading <think> spans) is
@@ -4135,7 +4956,7 @@ class OllamaChatApp:
                     # just print the code instead of calling write_file, so no
                     # file gets created. If nothing was written this turn,
                     # extract any code blocks from the reply and save them.
-                    if not wrote_any:
+                    if not wrote_any and self.workspace:
                         self._save_code_blocks_from_text(text, convo)
                     self.ui_queue.put(("agent_done", (text, convo[base_len:])))
                     return
@@ -4149,7 +4970,21 @@ class OllamaChatApp:
                             args = json.loads(args)
                         except ValueError:
                             args = {}
+                    if not isinstance(args, dict):
+                        args = {}
+                    if name in mcp_route:
+                        result = self._run_mcp_tool(name, mcp_route[name], args)
+                        convo.append(
+                            {"role": "tool", "content": result, "tool_name": name}
+                        )
+                        continue
                     self.ui_queue.put(("tool_call", self._format_call(name, args)))
+                    if not self.workspace:
+                        # file tools aren't offered without a workspace; never
+                        # run them (they would resolve against the app's cwd)
+                        convo.append({"role": "tool", "tool_name": name,
+                                      "content": f"Unknown tool: {name}"})
+                        continue
                     # show the file content being written, as a code block
                     if name == "write_file":
                         wrote_any = True
@@ -4165,6 +5000,13 @@ class OllamaChatApp:
                 ("agent_done",
                  ("(Reached the tool-step limit.)", convo[base_len:]))
             )
+        except urllib.error.HTTPError as exc:
+            # e.g. 400 "model does not support tools": show Ollama's message
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+            except Exception:  # noqa: BLE001
+                detail = ""
+            self.ui_queue.put(("error", f"Agent error: {detail or exc}"))
         except urllib.error.URLError as exc:
             self.ui_queue.put(("error", f"Connection error: {exc.reason}"))
         except Exception as exc:  # noqa: BLE001

@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 ollama_chat_config.json
+ollama_chat_sources_index.json
+ollama_chat_sources_index.json.tmp

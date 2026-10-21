@@ -5,12 +5,19 @@ Ollama Chat - a minimal desktop chat client for locally installed Ollama models.
 Requirements:
     - Python 3.8+ (uses only the standard library: tkinter, urllib, json, threading)
     - Ollama running locally (default: http://localhost:11434)
+    - For Sources: `ollama pull bge-m3` (embeddings); optional `pip install
+      pypdf python-docx` for PDF and Word files
 
 Run:
     python ollama_chat.py
 """
 
+import array
+import base64
+import hashlib
+import heapq
 import json
+import operator
 import os
 import platform
 import queue
@@ -33,6 +40,18 @@ try:
     _STT_AVAILABLE = True
 except ImportError:
     _STT_AVAILABLE = False
+
+try:
+    from pypdf import PdfReader as _PdfReader
+    _PDF_AVAILABLE = True
+except ImportError:
+    _PDF_AVAILABLE = False
+
+try:
+    import docx as _docx
+    _DOCX_AVAILABLE = True
+except ImportError:
+    _DOCX_AVAILABLE = False
 
 OLLAMA_HOST = "http://localhost:11434"
 REQUEST_TIMEOUT = 300  # seconds
@@ -236,6 +255,289 @@ def safe_join(workspace, rel):
 
 
 # --------------------------------------------------------------------------- #
+# Sources: text extraction, chunking, embeddings and a local vector index
+# --------------------------------------------------------------------------- #
+EMBED_MODEL = "bge-m3"
+CHUNK_CHARS = 1200        # target chunk size, in characters
+CHUNK_OVERLAP = 200       # characters shared by consecutive chunks
+TOP_K_CHUNKS = 5          # chunks sent with each message
+EMBED_BATCH = 16          # texts per /api/embed request
+TEXT_SOURCE_EXTS = ("*.txt *.md *.py *.js *.ts *.json *.csv *.html *.css "
+                    "*.java *.c *.cpp *.go *.rs *.yml *.yaml *.xml *.log *.ini")
+
+
+class EmbeddingError(RuntimeError):
+    """The embedding model could not be reached or used."""
+
+
+def embed_texts(host, model, texts):
+    """Return one embedding vector per text, using Ollama's /api/embed."""
+    vectors = []
+    for i in range(0, len(texts), EMBED_BATCH):
+        batch = texts[i:i + EMBED_BATCH]
+        payload = json.dumps({"model": model, "input": batch}).encode("utf-8")
+        req = urllib.request.Request(
+            f"{host}/api/embed", data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+            except Exception:  # noqa: BLE001 - best effort error detail
+                detail = ""
+            raise EmbeddingError(detail or f"HTTP {exc.code}") from exc
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise EmbeddingError(str(getattr(exc, "reason", exc))) from exc
+        got = data.get("embeddings") or []
+        if len(got) != len(batch):
+            raise EmbeddingError(data.get("error") or "unexpected response")
+        vectors.extend(got)
+    return vectors
+
+
+def _unit(vec):
+    """Return vec scaled to length 1, as a compact float32 array."""
+    norm = sum(x * x for x in vec) ** 0.5 or 1.0
+    return array.array("f", (x / norm for x in vec))
+
+
+def extract_source_text(path):
+    """Return [(page_number_or_None, text), ...] for a file source.
+
+    PDFs (pypdf) come back page by page; Word .docx (python-docx) and plain
+    text files as one part. Raises ValueError with a readable message.
+    """
+    if not os.path.isfile(path):
+        raise ValueError("file not found")
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        if not _PDF_AVAILABLE:
+            raise ValueError("PDF support needs pypdf: pip install pypdf")
+        try:
+            reader = _PdfReader(path)
+            if reader.is_encrypted:
+                reader.decrypt("")
+            return [(i + 1, page.extract_text() or "")
+                    for i, page in enumerate(reader.pages)]
+        except Exception as exc:  # noqa: BLE001 - pypdf raises many types
+            raise ValueError(f"cannot read PDF: {exc}") from exc
+    if ext == ".docx":
+        if not _DOCX_AVAILABLE:
+            raise ValueError(
+                "Word support needs python-docx: pip install python-docx")
+        try:
+            doc = _docx.Document(path)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"cannot read Word file: {exc}") from exc
+        lines = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                lines.append(" | ".join(c.text.strip() for c in row.cells))
+        return [(None, "\n".join(lines))]
+    if ext == ".doc":
+        raise ValueError("old .doc files aren't supported; save it as .docx")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return [(None, fh.read())]
+    except OSError as exc:
+        raise ValueError(f"cannot read file: {exc}") from exc
+
+
+def chunk_text(text, size=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
+    """Split text into ~size-character chunks that overlap by ~overlap.
+
+    Each chunk ends at the last paragraph, line, sentence or word break in
+    its second half, so chunks rarely cut a sentence in two.
+    """
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n\s*", "\n\n", text).strip()
+    chunks, start, n = [], 0, len(text)
+    while start < n:
+        end = min(start + size, n)
+        if end < n:
+            window = text[start:end]
+            for sep in ("\n\n", "\n", ". ", " "):
+                cut = window.rfind(sep, size // 2)
+                if cut != -1:
+                    end = start + cut + len(sep)
+                    break
+        piece = text[start:end].strip()
+        if piece:
+            chunks.append(piece)
+        if end >= n:
+            break
+        nxt = max(end - overlap, start + 1)
+        space = text.find(" ", nxt, end)   # start the next chunk on a word
+        start = space + 1 if space != -1 else nxt
+    return chunks
+
+
+class SourceIndex:
+    """Chunk embeddings for the user's sources, kept in a local JSON file.
+
+    Entries are keyed per source (a file path, or a hash of pasted text) and
+    rebuilt when a file changes. The lock serialises indexing and search, so
+    a message waits for an index that is still being built. status() takes
+    no lock, so the UI thread can call it without blocking.
+    """
+
+    def __init__(self, path, model=EMBED_MODEL):
+        self.path = path
+        self.model = model
+        self.lock = threading.RLock()
+        self.entries = {}   # key -> {"sig": [mtime, size] | None, "chunks": [...]}
+        self.busy = set()   # keys being indexed right now
+        self.errors = {}    # key -> last indexing error (not saved)
+        self._load()
+
+    @staticmethod
+    def key(src):
+        if src.get("type") == "text":
+            content = src.get("content", "").encode("utf-8")
+            return "text:" + hashlib.sha1(content).hexdigest()
+        return "file:" + os.path.abspath(src.get("path", ""))
+
+    @staticmethod
+    def signature(src):
+        """What must stay the same for an entry to be current (files only)."""
+        if src.get("type") == "text":
+            return None   # the key already hashes the content
+        try:
+            st = os.stat(src.get("path", ""))
+        except OSError:
+            return None
+        return [st.st_mtime, st.st_size]
+
+    def is_current(self, src):
+        entry = self.entries.get(self.key(src))
+        return entry is not None and entry["sig"] == self.signature(src)
+
+    def status(self, src):
+        """Short index state for the Sources list."""
+        k = self.key(src)
+        if k in self.busy:
+            return "indexing…"
+        if k in self.errors:
+            return f"error: {self.errors[k]}"
+        entry = self.entries.get(k)
+        if entry is None:
+            return "not indexed"
+        if entry["sig"] != self.signature(src):
+            return "changed, re-indexes on next message"
+        n = len(entry["chunks"])
+        return f"{n} chunk{'s' if n != 1 else ''}" if n else "no text found"
+
+    def ensure(self, srcs, force=False, progress=None):
+        """Index every source in srcs that is missing or out of date.
+
+        Returns [(source_name, error), ...] for sources that couldn't be
+        read. Raises EmbeddingError if the embedding model can't be used.
+        """
+        problems = []
+        with self.lock:
+            for src in srcs:
+                if not force and self.is_current(src):
+                    continue
+                k, name = self.key(src), src.get("name", "source")
+                sig = self.signature(src)
+                self.busy.add(k)
+                try:
+                    chunks = self._build(src, name, progress)
+                except ValueError as exc:
+                    self.entries.pop(k, None)
+                    self.errors[k] = str(exc)
+                    problems.append((name, str(exc)))
+                    continue
+                finally:
+                    self.busy.discard(k)
+                self.entries[k] = {"sig": sig, "chunks": chunks}
+                self.errors.pop(k, None)
+                self._save()
+        return problems
+
+    def _build(self, src, name, progress):
+        if src.get("type") == "text":
+            parts = [(None, src.get("content", ""))]
+        else:
+            parts = extract_source_text(src.get("path", ""))
+        pieces = [(page, c) for page, text in parts for c in chunk_text(text)]
+        chunks = []
+        for i in range(0, len(pieces), EMBED_BATCH):
+            if progress:
+                progress(f"Indexing {name}… {i}/{len(pieces)} chunks")
+            batch = pieces[i:i + EMBED_BATCH]
+            vecs = embed_texts(OLLAMA_HOST, self.model, [t for _, t in batch])
+            chunks.extend({"t": t, "p": p, "v": _unit(v)}
+                          for (p, t), v in zip(batch, vecs))
+        return chunks
+
+    def prune(self, srcs):
+        """Forget entries for sources that are no longer in srcs."""
+        keep = {self.key(s) for s in srcs}
+        with self.lock:
+            stale = [k for k in self.entries if k not in keep]
+            for k in stale:
+                del self.entries[k]
+            if stale:
+                self._save()
+
+    def search(self, query_vec, srcs, k=TOP_K_CHUNKS):
+        """Return the k best (score, src, chunk) matches across srcs."""
+        q = _unit(query_vec)
+        with self.lock:
+            candidates = [
+                (src, ch) for src in srcs
+                for ch in self.entries.get(self.key(src), {}).get("chunks", [])
+            ]
+        return heapq.nlargest(
+            k,
+            ((sum(map(operator.mul, q, ch["v"])), src, ch)
+             for src, ch in candidates),
+            key=lambda hit: hit[0],
+        )
+
+    def _load(self):
+        try:
+            with open(self.path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if data.get("model") != self.model:
+            return   # built with another embedding model: rebuild lazily
+        for k, entry in (data.get("entries") or {}).items():
+            try:
+                chunks = [{"t": c["t"], "p": c.get("p"),
+                           "v": array.array("f", base64.b64decode(c["v"]))}
+                          for c in entry.get("chunks", [])]
+            except (KeyError, TypeError, ValueError):
+                continue
+            self.entries[k] = {"sig": entry.get("sig"), "chunks": chunks}
+
+    def _save(self):
+        data = {
+            "version": 1,
+            "model": self.model,
+            "entries": {
+                k: {"sig": e["sig"], "chunks": [
+                    {"t": c["t"], "p": c["p"],
+                     "v": base64.b64encode(c["v"].tobytes()).decode("ascii")}
+                    for c in e["chunks"]]}
+                for k, e in self.entries.items()
+            },
+        }
+        tmp = self.path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass
+
+
+# --------------------------------------------------------------------------- #
 # TTS worker (runs pyttsx3 in a dedicated thread to avoid blocking the UI)
 # --------------------------------------------------------------------------- #
 class _TTSWorker:
@@ -329,6 +631,9 @@ class OllamaChatApp:
         self.system_prompt = self.config.get("instructions", "")
         self.skills = self.config.get("skills", [])    # reusable instruction sets
         self.sources = self.config.get("sources", [])  # reference material
+        self._src_index = SourceIndex(os.path.join(
+            os.path.dirname(CONFIG_PATH), "ollama_chat_sources_index.json"))
+        self._reply_sources = None   # (cites, warning) for the current reply
         self.workspace = self.config.get("workspace", "") or ""
         if self.workspace and not os.path.isdir(self.workspace):
             self.workspace = ""
@@ -577,6 +882,11 @@ class OllamaChatApp:
             "think_body", foreground="#6b7280", background="#f0f0f0",
             font=("Segoe UI", 9, "italic"), lmargin1=12, lmargin2=12,
             rmargin=12, spacing1=2, spacing3=2,
+        )
+        # "Sources used" line under an answer
+        self.chat.tag_configure(
+            "src_note", foreground=self.MUTED_FG, font=("Segoe UI", 8),
+            spacing1=4,
         )
 
         self._add_context_menu(self.chat)
@@ -1491,20 +1801,23 @@ class OllamaChatApp:
         save_config(self.config)
 
     def _read_source(self, src):
-        """Return the text content of a source, reading files fresh each time."""
+        """Return the full text of a source (fallback when embeddings fail)."""
         if src.get("type") == "text":
             return src.get("content", "").strip()
         path = src.get("path")
         if path and os.path.isfile(path):
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                    return fh.read().strip()
-            except OSError:
+                return "\n\n".join(t for _, t in extract_source_text(path)).strip()
+            except ValueError:
                 return ""
         return ""
 
     def build_system_prompt(self):
-        """Combine instructions + enabled skills + enabled sources."""
+        """Combine instructions + enabled skills.
+
+        Sources are not included here: the most relevant chunks are added per
+        message by _retrieve_sources(), in the worker thread.
+        """
         parts = []
         if self.system_prompt.strip():
             parts.append(self.system_prompt.strip())
@@ -1513,26 +1826,175 @@ class OllamaChatApp:
                 parts.append(
                     f"## Skill: {sk.get('name', 'Skill')}\n{sk['content'].strip()}"
                 )
-        src_blocks = []
-        for src in self.sources:
-            if not src.get("enabled"):
-                continue
-            text = self._read_source(src)
-            if text:
-                src_blocks.append(f"### Source: {src.get('name', 'source')}\n{text}")
-        if src_blocks:
-            parts.append(
-                "Use the following reference sources to answer the user:\n\n"
-                + "\n\n".join(src_blocks)
-            )
         return "\n\n".join(parts)
+
+    def _source_query(self, text):
+        """Search text for this message: it, plus the previous user turn
+        so that short follow-ups ("and the second one?") still match."""
+        prev = next((m.get("content", "") for m in reversed(self.messages[:-1])
+                     if m.get("role") == "user"), "")
+        query = text.strip()[:2000]
+        if query and prev.strip():
+            query += "\n" + prev.strip()[:300]
+        return query
+
+    def _retrieve_sources(self, query):
+        """Worker thread: find the source chunks most relevant to query.
+
+        Returns (prompt_block, cites, warning). cites describes each chunk
+        sent, as {"tag": "S1", "name": ..., "page": ...}. If the embedding
+        model can't be used, falls back to sending the sources in full.
+        """
+        srcs = [s for s in self.sources if s.get("enabled")]
+        if not srcs or not query:
+            return "", [], None
+
+        def status(msg):
+            self.ui_queue.put(("ui_call", lambda: self.set_status(msg)))
+
+        status("Searching sources…")
+        try:
+            problems = self._src_index.ensure(srcs, progress=status)
+            qvec = embed_texts(OLLAMA_HOST, EMBED_MODEL, [query])[0]
+            hits = self._src_index.search(qvec, srcs)
+        except EmbeddingError as exc:
+            return self._full_sources_block(srcs, exc)
+        warning = "; ".join(f"{n}: {e}" for n, e in problems) or None
+        if not hits:
+            return "", [], warning
+        cites, blocks = [], []
+        for i, (_score, src, ch) in enumerate(hits, 1):
+            name = src.get("name", "source")
+            page = ch.get("p")
+            cites.append({"tag": f"S{i}", "name": name, "page": page})
+            label = f"{name} (p. {page})" if page else name
+            blocks.append(f"[S{i}] {label}\n{ch['t']}")
+        block = (
+            "Excerpts from the user's reference sources that may help answer "
+            "the latest message. When you use an excerpt, cite its tag, e.g. "
+            "[S1]. Ignore excerpts that are not relevant.\n\n"
+            + "\n\n".join(blocks)
+        )
+        return block, cites, warning
+
+    def _full_sources_block(self, srcs, exc):
+        """Fallback when embeddings are unavailable: send sources in full,
+        capped at about half the context window."""
+        budget = self.num_ctx * 2          # characters (~4 chars per token)
+        blocks, cites, used, truncated = [], [], 0, False
+        for src in srcs:
+            text = self._read_source(src)
+            if not text:
+                continue
+            room = budget - used
+            if room <= 0:
+                truncated = True
+                break
+            if len(text) > room:
+                text, truncated = text[:room], True
+            used += len(text)
+            name = src.get("name", "source")
+            blocks.append(f"### Source: {name}\n{text}")
+            cites.append({"tag": "", "name": name, "page": None})
+        warning = (
+            f"Couldn't use the embedding model '{EMBED_MODEL}' ({exc}), so "
+            f"sources were sent in full{' (truncated)' if truncated else ''}. "
+            f"Run: ollama pull {EMBED_MODEL}"
+        )
+        if not blocks:
+            return "", [], warning
+        block = ("Use the following reference sources to answer the user:\n\n"
+                 + "\n\n".join(blocks))
+        return block, cites, warning
+
+    def _stream_worker(self, model, system, messages, query):
+        """Worker thread: add relevant source chunks, then stream the reply."""
+        try:
+            block, cites, warning = self._retrieve_sources(query)
+        except Exception as exc:  # noqa: BLE001 - never block chat on sources
+            block, cites, warning = "", [], f"Sources skipped: {exc}"
+        self.ui_queue.put(("sources_used", (cites, warning)))
+        self.ui_queue.put(("ui_call", lambda: self.set_status("Generating...")))
+        system = "\n\n".join(p for p in (system, block) if p)
+        outgoing = list(messages)
+        if system:
+            outgoing = [{"role": "system", "content": system}] + outgoing
+        chat_stream(
+            OLLAMA_HOST, model, outgoing, self.stop_event,
+            lambda c: self.ui_queue.put(("chunk", c)),
+            lambda: self.ui_queue.put(("done", None)),
+            lambda e: self.ui_queue.put(("error", e)),
+            self.num_ctx,
+            lambda t: self.ui_queue.put(("think_chunk", t)),
+        )
+
+    def _index_sources_async(self, srcs, force=False, on_update=None):
+        """Index sources in a worker thread; on_update runs on the UI thread
+        whenever progress is made (e.g. to refresh the Sources list)."""
+        def ui(fn):
+            self.ui_queue.put(("ui_call", fn))
+
+        def progress(msg):
+            ui(lambda: self.set_status(msg))
+            if on_update:
+                ui(on_update)
+
+        def work():
+            try:
+                problems = self._src_index.ensure(
+                    srcs, force=force, progress=progress)
+                msg = ("Sources indexed" if not problems else
+                       "Source problems: "
+                       + "; ".join(f"{n}: {e}" for n, e in problems))
+            except EmbeddingError as exc:
+                msg = (f"Can't index sources with {EMBED_MODEL} ({exc}). "
+                       f"Run: ollama pull {EMBED_MODEL}")
+            ui(lambda: self.set_status(msg))
+            if on_update:
+                ui(on_update)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _render_sources_footer(self, answer):
+        """Show, under an answer, which sources it drew on."""
+        info, self._reply_sources = self._reply_sources, None
+        if not info:
+            return
+        cites, warning = info
+        lines = []
+        if cites:
+            tags = {t for inner in re.findall(r"\[([^\]]*)\]", answer)
+                    for t in re.findall(r"S\d+", inner)}
+            cited = [c for c in cites if c["tag"] and c["tag"] in tags]
+            if cited:
+                lines.append("📚 Sources used: " + " · ".join(
+                    f"[{c['tag']}] {self._cite_label(c['name'], [c['page']])}"
+                    for c in cited))
+            else:
+                pages = {}
+                for c in cites:
+                    pages.setdefault(c["name"], []).append(c["page"])
+                lines.append("📚 Sources provided: " + " · ".join(
+                    self._cite_label(n, p) for n, p in pages.items()))
+        if warning:
+            lines.append(f"⚠ {warning}")
+        if lines:
+            self.chat.configure(state=tk.NORMAL)
+            self.chat.insert(tk.END, "\n" + "\n".join(lines), "src_note")
+            self.chat.configure(state=tk.DISABLED)
+            self.chat.see(tk.END)
+
+    @staticmethod
+    def _cite_label(name, pages):
+        nums = sorted({p for p in pages if p})
+        return f"{name} (p. {', '.join(map(str, nums))})" if nums else name
 
     # ----- settings: window ----------------------------------------------- #
     def open_settings(self):
         win = tk.Toplevel(self.root)
         win.title("Settings")
         win.configure(bg=self.BG)
-        win.geometry("600x540")
+        win.geometry("780x560")   # wide enough for all tabs and button rows
         win.transient(self.root)
         win.grab_set()
 
@@ -1845,8 +2307,11 @@ class OllamaChatApp:
         nb.add(tab, text="Sources")
         tk.Label(
             tab,
-            text="Reference material (files or pasted text) given to the "
-                 "model as context. Files are re-read on each message.",
+            text="Reference material: text, PDF and Word (.docx) files, or "
+                 "pasted text. Sources are split into chunks and indexed with "
+                 f"the Ollama '{EMBED_MODEL}' model; each message sends only the "
+                 f"{TOP_K_CHUNKS} most relevant chunks. Files are re-indexed "
+                 f"when they change. Needs: ollama pull {EMBED_MODEL}",
             bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=12, pady=(12, 6))
@@ -1855,48 +2320,66 @@ class OllamaChatApp:
         lb.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
 
         def refresh():
+            if not lb.winfo_exists():
+                return
+            sel = lb.curselection()
             lb.delete(0, tk.END)
             for src in self.sources:
                 mark = "✓" if src.get("enabled") else "○"
                 kind = src.get("type", "text")
+                if kind == "file":
+                    kind = os.path.splitext(src.get("path", ""))[1].lstrip(".") \
+                        or "file"
                 lb.insert(
                     tk.END,
-                    f"  {mark}   {src.get('name', '(unnamed)')}   ·  {kind}",
+                    f"  {mark}   {src.get('name', '(unnamed)')}   ·  {kind}"
+                    f"   ·  {self._src_index.status(src)}",
                 )
+            for i in sel:
+                if i < lb.size():
+                    lb.selection_set(i)
 
         def selected():
             sel = lb.curselection()
             return sel[0] if sel else None
 
+        def index(srcs, force=False):
+            self._index_sources_async(srcs, force=force, on_update=refresh)
+
+        def prune():
+            threading.Thread(target=self._src_index.prune,
+                             args=(list(self.sources),), daemon=True).start()
+
         def add_file():
             path = filedialog.askopenfilename(
                 parent=tab.winfo_toplevel(),
-                title="Choose a text file",
+                title="Choose a source file",
                 filetypes=[
-                    ("Text files",
-                     "*.txt *.md *.py *.js *.ts *.json *.csv *.html *.css "
-                     "*.java *.c *.cpp *.go *.rs *.yml *.yaml *.xml *.log *.ini"),
+                    ("Supported files", "*.pdf *.docx " + TEXT_SOURCE_EXTS),
+                    ("PDF", "*.pdf"),
+                    ("Word", "*.docx"),
+                    ("Text files", TEXT_SOURCE_EXTS),
                     ("All files", "*.*"),
                 ],
             )
             if not path:
                 return
-            self.sources.append(
-                {"name": os.path.basename(path), "type": "file",
-                 "path": path, "enabled": True}
-            )
+            src = {"name": os.path.basename(path), "type": "file",
+                   "path": path, "enabled": True}
+            self.sources.append(src)
             self._persist()
             refresh()
+            index([src])
 
         def add_text():
             r = self._item_dialog("Add text source", content_label="Source text")
             if r:
-                self.sources.append(
-                    {"name": r["name"], "type": "text",
-                     "content": r["content"], "enabled": True}
-                )
+                src = {"name": r["name"], "type": "text",
+                       "content": r["content"], "enabled": True}
+                self.sources.append(src)
                 self._persist()
                 refresh()
+                index([src])
 
         def edit():
             i = selected()
@@ -1912,11 +2395,14 @@ class OllamaChatApp:
                     src["name"], src["content"] = r["name"], r["content"]
                     self._persist()
                     refresh()
+                    prune()        # drop the index of the old text
+                    index([src])
             else:
                 messagebox.showinfo(
                     "File source",
                     f"Path:\n{src.get('path')}\n\n"
-                    "This file is read fresh each time you send a message.",
+                    f"Index: {self._src_index.status(src)}\n\n"
+                    "The file is re-indexed automatically when it changes.",
                     parent=tab.winfo_toplevel(),
                 )
 
@@ -1935,6 +2421,12 @@ class OllamaChatApp:
             del self.sources[i]
             self._persist()
             refresh()
+            prune()
+
+        def reindex():
+            i = selected()
+            index([self.sources[i]] if i is not None else list(self.sources),
+                  force=True)
 
         lb.bind("<Double-Button-1>", lambda e: edit())
         bar = tk.Frame(tab, bg=self.BG)
@@ -1945,6 +2437,7 @@ class OllamaChatApp:
         )
         ttk.Button(bar, text="Edit", command=edit).pack(side=tk.LEFT)
         ttk.Button(bar, text="On/Off", command=toggle).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bar, text="Re-index", command=reindex).pack(side=tk.LEFT)
         ttk.Button(bar, text="Delete", command=delete).pack(side=tk.RIGHT)
         refresh()
 
@@ -2113,8 +2606,12 @@ class OllamaChatApp:
         self._attachments = []
         self._render_attachments()
 
+        # sources are searched with the typed text (attachments as fallback)
+        query = self._source_query(text or content)
+        self._reply_sources = None
+
         if self.workspace:
-            self._start_agent(model)
+            self._start_agent(model, query)
             return
 
         self._append(f"{model}\n", "bot")
@@ -2138,21 +2635,10 @@ class OllamaChatApp:
         self._tag_buf = ""
         self._start_thinking_anim()
 
-        outgoing = list(self.messages)
-        system = self.build_system_prompt()
-        if system:
-            outgoing = [{"role": "system", "content": system}] + outgoing
-
+        # retrieval (embedding the query) runs in the worker, off the UI thread
         self.worker = threading.Thread(
-            target=chat_stream,
-            args=(
-                OLLAMA_HOST, model, outgoing, self.stop_event,
-                lambda c: self.ui_queue.put(("chunk", c)),
-                lambda: self.ui_queue.put(("done", None)),
-                lambda e: self.ui_queue.put(("error", e)),
-                self.num_ctx,
-                lambda t: self.ui_queue.put(("think_chunk", t)),
-            ),
+            target=self._stream_worker,
+            args=(model, self.build_system_prompt(), list(self.messages), query),
             daemon=True,
         )
         self.worker.start()
@@ -2189,6 +2675,8 @@ class OllamaChatApp:
                             self._answer_append(seg)
                 elif kind == "think_chunk":
                     self._think_append(payload)
+                elif kind == "sources_used":
+                    self._reply_sources = payload   # shown under the answer
                 elif kind == "done":
                     self._finish_reply()
                 elif kind == "tool_call":
@@ -2264,6 +2752,8 @@ class OllamaChatApp:
         self._stop_thinking_anim()   # no-op if already stopped by first chunk
         if not error:
             self._render_reply(self._bot_reply)
+            self._render_sources_footer(self._bot_reply)
+        self._reply_sources = None
         if self._bot_reply.strip():
             self.messages.append(
                 {"role": "assistant", "content": self._bot_reply}
@@ -3085,7 +3575,7 @@ class OllamaChatApp:
             wraplength=540, justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 4))
 
-    def _start_agent(self, model):
+    def _start_agent(self, model, query=""):
         self._append(f"{model}  ·  📁 workspace\n", "bot")
         self.streaming = True
         self.stop_event.clear()
@@ -3113,12 +3603,22 @@ class OllamaChatApp:
         convo = [{"role": "system", "content": system}] + list(self.messages)
 
         self.worker = threading.Thread(
-            target=self._run_agent, args=(model, convo), daemon=True
+            target=self._run_agent, args=(model, convo, query), daemon=True
         )
         self.worker.start()
 
-    def _run_agent(self, model, convo):
+    def _run_agent(self, model, convo, query=""):
         """Worker thread: loop over tool calls until the model gives an answer."""
+        # add the most relevant source chunks to the system prompt
+        try:
+            block, cites, warning = self._retrieve_sources(query)
+        except Exception as exc:  # noqa: BLE001 - never block chat on sources
+            block, cites, warning = "", [], f"Sources skipped: {exc}"
+        self.ui_queue.put(("sources_used", (cites, warning)))
+        self.ui_queue.put(
+            ("ui_call", lambda: self.set_status("Working in workspace…")))
+        if block:
+            convo[0]["content"] = f"{convo[0]['content']}\n\n{block}"
         # Everything appended past this point is new this turn (assistant
         # tool-call messages, tool results, and the final answer). We hand it
         # back so it can be kept in the conversation history — otherwise the
@@ -3376,6 +3876,7 @@ class OllamaChatApp:
             )
             self.chat.window_create(tk.END, window=speak_btn)
         self.chat.configure(state=tk.DISABLED)
+        self._render_sources_footer(text)
         self._append("\n\n", "spacer")
         self.chat.see(tk.END)
         # Persist the full agent exchange (tool calls + results + final answer)

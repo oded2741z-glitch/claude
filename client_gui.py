@@ -59,6 +59,7 @@ class Theme:
     MUTED: str = "#888888"
     ACCENT: str = "#ff6600"
     DANGER: str = "#ff0000"
+    OK: str = "#00ff00"
 
     FONT_TITLE: Tuple[str, int, str] = ("Consolas", 13, "bold")
     FONT_LABEL: Tuple[str, int, str] = ("Arial", 10, "bold")
@@ -83,8 +84,7 @@ class IntercomClientGUI:
         self.root = root
         self.root.withdraw()
         self.root.title("Intercom Client")
-        self.root.geometry("500x680")
-        self.root.minsize(460, 600)
+        self.root.minsize(500, 1)
         self.root.configure(bg=Theme.BG)
         self._clear_icon()
 
@@ -188,9 +188,10 @@ class IntercomClientGUI:
     def _build(self) -> None:
         tk.Label(self.root, text="Intercom Client", font=Theme.FONT_TITLE, bg=Theme.BG,
                  fg=Theme.ACCENT).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Frame(self.root, bg=Theme.BTN, height=1).pack(fill="x", padx=16, pady=(8, 10))
+        tk.Frame(self.root, bg=Theme.BTN, height=1).pack(fill="x", padx=16, pady=(8, 4))
 
-        conn = tk.Frame(self.root, bg=Theme.BG)
+        settings = tk.Frame(self.root, bg=Theme.BG)
+        conn = tk.Frame(settings, bg=Theme.BG)
         conn.pack(fill="x", padx=16)
         self.ip_entry = self._entry(conn, 18)
         self.port_entry = self._entry(conn, 7)
@@ -208,9 +209,9 @@ class IntercomClientGUI:
             entry.bind("<FocusOut>", lambda _e: self._apply_fields())
             entry.bind("<Return>", lambda _e: self._apply_fields())
 
-        tk.Frame(self.root, bg=Theme.BTN, height=1).pack(fill="x", padx=16, pady=10)
+        tk.Frame(settings, bg=Theme.BTN, height=1).pack(fill="x", padx=16, pady=10)
 
-        audio = tk.Frame(self.root, bg=Theme.BG)
+        audio = tk.Frame(settings, bg=Theme.BG)
         audio.pack(fill="x", padx=16)
         audio.columnconfigure(1, weight=1)
 
@@ -227,6 +228,7 @@ class IntercomClientGUI:
                                      activebackground=Theme.BTN, activeforeground=Theme.ACCENT,
                                      disabledforeground=Theme.MUTED, command=self._refresh_devices)
         self.refresh_btn.grid(row=2, column=1, sticky="w", padx=6, pady=(2, 8))
+        self._collapsible("SETTINGS", settings, {"fill": "x"})
 
         self.status_lbl = tk.Label(self.root, text="STATUS: IDLE", font=Theme.FONT_LABEL,
                                    bg=Theme.BG, fg=Theme.MUTED)
@@ -258,7 +260,29 @@ class IntercomClientGUI:
         self.log_text = tk.Text(self.root, height=6, bg=Theme.PANEL, fg=Theme.FG,
                                 font=Theme.FONT_LOG, relief="flat", highlightthickness=0,
                                 wrap="word", state="disabled", insertbackground=Theme.FG)
-        self.log_text.pack(fill="both", expand=True, padx=16, pady=(6, 2))
+        self._collapsible("LOG", self.log_text,
+                          {"fill": "both", "expand": True, "padx": 16, "pady": (2, 2)})
+
+    def _collapsible(self, title: str, body: tk.Widget, pack_opts: Dict[str, Any]) -> None:
+        header = tk.Label(self.root, font=Theme.FONT_LABEL, bg=Theme.BG, fg=Theme.MUTED,
+                          cursor="hand2", anchor="w")
+        header.pack(fill="x", padx=16, pady=(6, 2))
+        shown = {"open": False}
+
+        def render() -> None:
+            header.config(text=f"{'▾' if shown['open'] else '▸'} {title}")
+            if shown["open"]:
+                body.pack(after=header, **pack_opts)
+            else:
+                body.pack_forget()
+
+        def toggle(_e: tk.Event) -> None:
+            shown["open"] = not shown["open"]
+            render()
+            self.root.geometry("")
+
+        header.bind("<Button-1>", toggle)
+        render()
 
     def log(self, msg: str) -> None:
         self._events.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
@@ -721,7 +745,7 @@ class IntercomClientGUI:
     def _refresh_rows(self) -> None:
         target = f"{self.server_ip}:{self.server_port}"
         if self._server_online:
-            self._set_row("SERVER", Theme.ACCENT, f"connected  ·  {target}", Theme.FG)
+            self._set_row("SERVER", Theme.OK, f"connected  ·  {target}", Theme.FG)
         elif self._last_ack == 0.0:
             self._set_row("SERVER", Theme.MUTED, f"trying {target}...", Theme.MUTED)
         else:
@@ -731,18 +755,18 @@ class IntercomClientGUI:
         if state == "idle":
             self._set_row("CALL", Theme.BTN, "idle  ·  press CALL to ring the server", Theme.MUTED)
         elif state == "incoming":
-            blink = Theme.ACCENT if int(time.time() * 2) % 2 == 0 else Theme.BTN
+            blink = Theme.OK if int(time.time() * 2) % 2 == 0 else Theme.BTN
             who = self._incoming_from or "server"
             self._set_row("CALL", blink, f"incoming call from {who}  ·  press ANSWER", Theme.FG)
         elif state == "ringing":
-            blink = Theme.ACCENT if int(time.time() * 2) % 2 == 0 else Theme.BTN
+            blink = Theme.OK if int(time.time() * 2) % 2 == 0 else Theme.BTN
             self._set_row("CALL", blink, "ringing the server  ·  waiting for an answer", Theme.FG)
         elif state == "connecting":
             self._set_row("CALL", Theme.MUTED, "connecting...", Theme.FG)
         elif state == "in_call":
             secs = int(time.time() - self._call_started) if self._call_started else 0
             who = self.peer_id or "server"
-            self._set_row("CALL", Theme.ACCENT, f"{who}  ·  {secs // 60:02d}:{secs % 60:02d}", Theme.FG)
+            self._set_row("CALL", Theme.OK, f"{who}  ·  {secs // 60:02d}:{secs % 60:02d}", Theme.FG)
         else:
             self._set_row("CALL", Theme.MUTED, "ending...", Theme.MUTED)
 

@@ -746,8 +746,10 @@ class IntercomGUI:
             ip1 = self._visible_ip(addr1[0], ext_ip, use_local)
             ip2 = self._visible_ip(addr2[0], ext_ip, use_local)
 
-            reply1 = json.dumps({"peer_ip": ip2, "peer_port": addr2[1], "peer_id": peer2_id}).encode('utf-8')
-            reply2 = json.dumps({"peer_ip": ip1, "peer_port": addr1[1], "peer_id": peer1_id}).encode('utf-8')
+            reply1 = json.dumps({"peer_ip": ip2, "peer_port": addr2[1], "peer_id": peer2_id,
+                                 "sample_rate": SAMPLE_RATE}).encode('utf-8')
+            reply2 = json.dumps({"peer_ip": ip1, "peer_port": addr1[1], "peer_id": peer1_id,
+                                 "sample_rate": SAMPLE_RATE}).encode('utf-8')
             for _ in range(MATCH_RETRIES):
                 server_sock.sendto(reply1, addr1)
                 server_sock.sendto(reply2, addr2)

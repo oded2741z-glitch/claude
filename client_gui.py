@@ -14,7 +14,7 @@ import numpy as np
 import sounddevice as sd
 
 SETTINGS_FILE: str = "settings_gui.txt"
-DEFAULT_SAMPLE_RATE: int = 24000
+DEFAULT_SAMPLE_RATE: int = 16000
 ALLOWED_RATES: Tuple[int, ...] = (16000, 24000, 48000)
 RATE_LABELS: Dict[int, str] = {16000: "16k Narrow", 24000: "24k Balanced", 48000: "48k Wide"}
 CHANNELS: int = 1

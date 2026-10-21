@@ -249,6 +249,28 @@ def clean_instructions(text):
     return text
 
 
+def split_think(content):
+    """Split a complete reply into (thinking, answer).
+
+    Same rule as the streaming parser: <think>...</think> spans only count
+    at the start of the reply (an unclosed one runs to the end), so a
+    literal "<think>" later in an answer is left alone.
+    """
+    thoughts, rest = [], content
+    while rest.lstrip().startswith("<think>"):
+        rest = rest.lstrip()[len("<think>"):]
+        end = rest.find("</think>")
+        if end == -1:
+            thoughts.append(rest)
+            rest = ""
+            break
+        thoughts.append(rest[:end])
+        rest = rest[end + len("</think>"):]
+    if not thoughts:
+        return "", content
+    return "\n\n".join(t.strip() for t in thoughts if t.strip()), rest.lstrip()
+
+
 def safe_join(workspace, rel):
     """Resolve rel against workspace, refusing anything outside it."""
     full = os.path.realpath(os.path.join(workspace, rel or "."))
@@ -660,6 +682,8 @@ class OllamaChatApp:
         self._tag_buf = ""               # held-back partial <think> tag
         self._think_count = 0            # block id counter
         self._think_state = {}           # block id -> collapsed?
+        self._thinking_anim_id = None    # dots animation (none running yet)
+        self._thinking_line = None
         self.tts_auto = bool(self.config.get("tts_auto", False))
         self.tts_rate = int(self.config.get("tts_rate", 175))
         self.stt_lang = self.config.get("stt_lang", "he-IL")
@@ -4022,6 +4046,15 @@ class OllamaChatApp:
 
     def _start_agent(self, model, query=""):
         self._append(f"{self._agent_prefix()}{model}  ·  📁 workspace\n", "bot")
+        # a Thinking block, if any, goes here: above the tool steps and answer
+        self.chat.configure(state=tk.NORMAL)
+        self.chat.mark_set("reply_start", "end-1c")
+        self.chat.mark_gravity("reply_start", "left")
+        self.chat.configure(state=tk.DISABLED)
+        self._bot_reply = ""
+        self._think_n = None
+        self._think_seen = False
+        self._think_autocollapsed = False
         self.streaming = True
         self.stop_event.clear()
         self._set_busy(True)
@@ -4070,6 +4103,7 @@ class OllamaChatApp:
         # model forgets which files it created and can't update them later.
         base_len = len(convo)
         wrote_any = False  # did the model actually call write_file this turn?
+        thought = False    # has this turn shown any thinking yet?
         try:
             for _ in range(MAX_AGENT_STEPS):
                 if self.stop_event.is_set():
@@ -4080,6 +4114,19 @@ class OllamaChatApp:
                 resp = agent_chat_once(OLLAMA_HOST, model, convo, TOOLS,
                                        self.num_ctx)
                 msg = resp.get("message", {}) or {}
+                # Thinking (the "thinking" field and leading <think> spans) is
+                # display-only: remove it before msg joins convo/history, and
+                # show it in this reply's Thinking block.
+                field = (msg.pop("thinking", "") or "").strip()
+                tagged, answer = split_think(msg.get("content", "") or "")
+                if tagged:
+                    msg["content"] = answer
+                thinking = "\n\n".join(t for t in (field, tagged) if t)
+                if thinking:
+                    # blank line between the thinking of successive rounds
+                    self.ui_queue.put(
+                        ("think_chunk", ("\n\n" if thought else "") + thinking))
+                    thought = True
                 calls = msg.get("tool_calls") or []
                 if not calls:
                     convo.append(msg)  # keep the final answer in history
@@ -4301,6 +4348,11 @@ class OllamaChatApp:
             text, new_msgs = payload
         else:
             text, new_msgs = payload, None
+        if self._think_n is not None:   # the answer starts: collapse thinking
+            self._think_trim_tail(self._think_n)
+            if not self._think_autocollapsed:
+                self._think_autocollapsed = True
+                self._set_think_collapsed(self._think_n, True)
         self._append("\n", "spacer")
         self.chat.configure(state=tk.NORMAL)
         self._insert_markdown(text)

@@ -13,6 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import sounddevice as sd
 
+try:
+    import winsound
+except ImportError:
+    winsound = None
+
 SETTINGS_FILE: str = "settings_gui.txt"
 SAMPLE_RATE: int = 16000
 CHUNK_SIZE: int = 512
@@ -35,6 +40,10 @@ AUDIO_QUEUE_MAX: int = 64
 STREAM_CLOSE_WAIT: float = 5.0
 UI_TICK_MS: int = 200
 LOG_MAX_LINES: int = 400
+RING_TIMEOUT: float = 3.0
+RING_INTERVAL: float = 1.5
+RING_FREQ: int = 1000
+RING_MS: int = 200
 
 DEFAULT_DEVICE: str = "Default"
 NOISE_KEYWORDS: Tuple[str, ...] = (
@@ -65,6 +74,7 @@ STATUS: Dict[str, Tuple[str, str]] = {
     "connecting": ("CONNECTING...", Theme.FG),
     "in_call": ("IN CALL", Theme.ACCENT),
     "ending": ("ENDING...", Theme.MUTED),
+    "incoming": ("INCOMING CALL", Theme.ACCENT),
 }
 
 
@@ -105,6 +115,8 @@ class IntercomClientGUI:
         self._events: deque = deque(maxlen=300)
         self._save_job: Optional[str] = None
         self._ui_state: str = ""
+        self._incoming_until: float = 0.0
+        self._incoming_from: str = ""
 
         self.call_thread: Optional[threading.Thread] = None
         self.rx_audio_thread: Optional[threading.Thread] = None
@@ -468,6 +480,12 @@ class IntercomClientGUI:
                     else:
                         self.log(f"Ignored shutdown command from {addr[0]}:{addr[1]}.")
                     continue
+                if info.get("cmd") == "ring":
+                    if self._from_server(addr):
+                        caller = info.get("from")
+                        self._incoming_from = caller.strip() if isinstance(caller, str) else ""
+                        self._incoming_until = time.time() + RING_TIMEOUT
+                    continue
                 self._last_ack = time.time()
                 if "peer_ip" in info and "peer_port" in info:
                     self._peer_q.put(info)
@@ -512,7 +530,7 @@ class IntercomClientGUI:
                 return
 
     def toggle_call(self) -> None:
-        if self.state == "idle":
+        if self.state in ("idle", "incoming"):
             self.start_call()
         elif self.state in ("ringing", "connecting", "in_call"):
             self.hang_up()
@@ -545,6 +563,7 @@ class IntercomClientGUI:
         self._drain(self._audio_q)
         self._drain(self._peer_q)
 
+        self._incoming_until = 0.0
         self.calling = True
         self.state = "ringing"
         self._report_hp(REPORT_REPEATS)
@@ -645,6 +664,7 @@ class IntercomClientGUI:
         self._drain(self._audio_q)
         self._drain(self._peer_q)
         self._call_started = 0.0
+        self._incoming_until = 0.0
         if ended_by_other_side:
             self.calling = False
             self._report_hp(REPORT_REPEATS)
@@ -710,6 +730,10 @@ class IntercomClientGUI:
         state = self.state
         if state == "idle":
             self._set_row("CALL", Theme.BTN, "idle  ·  press CALL to ring the server", Theme.MUTED)
+        elif state == "incoming":
+            blink = Theme.ACCENT if int(time.time() * 2) % 2 == 0 else Theme.BTN
+            who = self._incoming_from or "server"
+            self._set_row("CALL", blink, f"incoming call from {who}  ·  press ANSWER", Theme.FG)
         elif state == "ringing":
             blink = Theme.ACCENT if int(time.time() * 2) % 2 == 0 else Theme.BTN
             self._set_row("CALL", blink, "ringing the server  ·  waiting for an answer", Theme.FG)
@@ -727,9 +751,10 @@ class IntercomClientGUI:
         if state == self._ui_state:
             return
         self._ui_state = state
-        idle = state == "idle"
+        idle = state in ("idle", "incoming")
         if idle:
-            self.call_btn.config(text="CALL", bg=Theme.ACCENT, fg=Theme.BG,
+            self.call_btn.config(text="ANSWER" if state == "incoming" else "CALL",
+                                 bg=Theme.ACCENT, fg=Theme.BG,
                                  activebackground=Theme.ACCENT, activeforeground=Theme.BG,
                                  state="normal")
         elif state == "ending":
@@ -763,12 +788,32 @@ class IntercomClientGUI:
         self.log_text.see("end")
         self.log_text.config(state="disabled")
 
+    def _check_incoming(self) -> None:
+        ringing = time.time() < self._incoming_until
+        if self.state == "idle" and ringing:
+            self.state = "incoming"
+            self.log(f"Incoming call from {self._incoming_from or 'server'}.")
+            threading.Thread(target=self._ring_loop, daemon=True).start()
+        elif self.state == "incoming" and not ringing:
+            self.state = "idle"
+            self.log("Missed call.")
+
+    def _ring_loop(self) -> None:
+        while self.state == "incoming" and not self.shutdown_event.is_set():
+            if winsound is not None:
+                try:
+                    winsound.Beep(RING_FREQ, RING_MS)
+                except Exception:
+                    pass
+            self.shutdown_event.wait(RING_INTERVAL)
+
     def _ui_tick(self) -> None:
         if self._closing:
             return
         if self._remote_close:
             self.on_close()
             return
+        self._check_incoming()
         try:
             self._flush_log()
             self._refresh_rows()

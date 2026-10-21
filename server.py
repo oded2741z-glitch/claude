@@ -55,6 +55,7 @@ HP_REPORT_TTL: float = 5.0        # אין דיווח מהלקוח מעבר לז
 RING_INTERVAL: float = 1.5        # מרווח בין ביפים
 RING_FREQ: int = 1000             # Hz
 RING_MS: int = 200                # אורך הביפ. Beep חוסם, אז קצר = השתקה מיידית
+RING_NOTIFY_GAP: float = 1.0      # מרווח בין פקודות צלצול ללקוח שעוד לא ענה
 
 
 class Theme:
@@ -140,6 +141,7 @@ class IntercomGUI:
         self._ring_stop: threading.Event = threading.Event()
         self._ring_thread: Optional[threading.Thread] = None
         self._ringing: bool = False
+        self._ring_sent: Dict[str, float] = {}
 
         # הסוקט של השרת הפנימי. פקודות ללקוח חייבות לצאת ממנו, כי הלקוח
         # מקבל פקודות רק מכתובת השרת שהוא רשום אליה.
@@ -426,6 +428,8 @@ class IntercomGUI:
 
     def start_ring(self) -> None:
         """Repeats a short beep until someone acknowledges it."""
+        if self.is_running:
+            return  # כבר יזמנו שיחה מהצד הזה - הלקוח רק עונה
         with self._ring_lock:
             if self._ringing:
                 return
@@ -739,6 +743,9 @@ class IntercomGUI:
             self.log(f"[Server] {client_id}: registered, waiting for a match.", "purple")
         clients[client_id] = (addr, now)
 
+        if len(clients) == 1:
+            self._notify_ring(server_sock, client_id, clients, now)
+
         if len(clients) == 2:
             (peer1_id, (addr1, _)), (peer2_id, (addr2, _)) = clients.items()
             self.log(f"[Server] Matched {peer1_id} <---> {peer2_id}.", "green")
@@ -754,6 +761,23 @@ class IntercomGUI:
                 time.sleep(MATCH_RETRY_DELAY)
 
             clients.clear()
+
+    def _notify_ring(self, server_sock: socket.socket, caller_id: str,
+                     clients: Dict[str, Tuple[Tuple[str, int], float]], now: float) -> None:
+        """Makes every other live client ring while the caller waits for a match."""
+        with self._hp_lock:
+            targets = [(cid, e[3]) for cid, e in self._remote_clients.items()
+                       if cid != caller_id and cid not in clients and e[3] is not None
+                       and now - e[2] <= HP_REPORT_TTL]
+        payload = json.dumps({"cmd": "ring", "from": caller_id}).encode('utf-8')
+        for cid, addr in targets:
+            if now - self._ring_sent.get(cid, 0.0) < RING_NOTIFY_GAP:
+                continue
+            self._ring_sent[cid] = now
+            try:
+                server_sock.sendto(payload, addr)
+            except OSError:
+                pass
 
     def _run_internal_server(self, port: int, ext_ip: str, use_local: bool) -> None:
         """UDP Signalling server for peer registration and matching."""

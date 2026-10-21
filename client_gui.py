@@ -14,9 +14,8 @@ import numpy as np
 import sounddevice as sd
 
 SETTINGS_FILE: str = "settings_gui.txt"
-DEFAULT_SAMPLE_RATE: int = 16000
-ALLOWED_RATES: Tuple[int, ...] = (16000, 24000, 48000)
-RATE_LABELS: Dict[int, str] = {16000: "16k Narrow", 24000: "24k Balanced", 48000: "48k Wide"}
+SAMPLE_RATE: int = 16000
+CHUNK_SIZE: int = 512
 CHANNELS: int = 1
 DTYPE: str = "int16"
 BUFFER_SIZE: int = 65535
@@ -41,24 +40,6 @@ DEFAULT_DEVICE: str = "Default"
 NOISE_KEYWORDS: Tuple[str, ...] = (
     "sound mapper", "primary sound", "stereo mix", "wave out mix", "what u hear",
 )
-
-
-def chunk_for(rate: int) -> int:
-    return max(256, rate // 32)
-
-
-def clamp_gain(value: Any) -> float:
-    try:
-        return max(0.0, min(2.0, float(value)))
-    except (TypeError, ValueError):
-        return 1.0
-
-
-def apply_gain(block: np.ndarray, factor: float) -> np.ndarray:
-    if factor == 1.0:
-        return block
-    scaled = block.astype(np.int32) * factor
-    return np.clip(scaled, -32768, 32767).astype(np.int16)
 
 
 class Theme:
@@ -92,8 +73,8 @@ class IntercomClientGUI:
         self.root = root
         self.root.withdraw()
         self.root.title("Intercom Client")
-        self.root.geometry("500x800")
-        self.root.minsize(460, 720)
+        self.root.geometry("500x680")
+        self.root.minsize(460, 600)
         self.root.configure(bg=Theme.BG)
         self._clear_icon()
 
@@ -134,10 +115,6 @@ class IntercomClientGUI:
         self.server_ip: str = "192.168.1.11"
         self.server_port: int = 9999
         self.my_id: str = "node_B"
-        self.sample_rate: int = DEFAULT_SAMPLE_RATE
-        self.chunk_size: int = chunk_for(DEFAULT_SAMPLE_RATE)
-        self.gain: float = 1.0
-        self.level: float = 1.0
         self.input_name: str = DEFAULT_DEVICE
         self.output_name: str = DEFAULT_DEVICE
         self._load_settings()
@@ -196,11 +173,6 @@ class IntercomClientGUI:
                             activeforeground=Theme.BG, font=Theme.FONT_TEXT)
         return menu
 
-    def _scale(self, parent: tk.Widget, command) -> tk.Scale:
-        return tk.Scale(parent, from_=0, to=200, orient="horizontal", showvalue=False,
-                        command=command, bg=Theme.BG, fg=Theme.FG, troughcolor=Theme.BTN,
-                        highlightthickness=0, sliderrelief="flat", activebackground=Theme.ACCENT)
-
     def _build(self) -> None:
         tk.Label(self.root, text="Intercom Client", font=Theme.FONT_TITLE, bg=Theme.BG,
                  fg=Theme.ACCENT).pack(anchor="w", padx=16, pady=(14, 2))
@@ -243,33 +215,6 @@ class IntercomClientGUI:
                                      activebackground=Theme.BTN, activeforeground=Theme.ACCENT,
                                      disabledforeground=Theme.MUTED, command=self._refresh_devices)
         self.refresh_btn.grid(row=2, column=1, sticky="w", padx=6, pady=(2, 8))
-
-        self._label(audio, "Quality:").grid(row=3, column=0, sticky="w", pady=3)
-        rates = tk.Frame(audio, bg=Theme.BG)
-        rates.grid(row=3, column=1, sticky="w", padx=6, pady=3)
-        self.rate_var = tk.IntVar(value=self.sample_rate)
-        self.rate_buttons: List[tk.Radiobutton] = []
-        for rate in ALLOWED_RATES:
-            button = tk.Radiobutton(rates, text=RATE_LABELS[rate], value=rate,
-                                    variable=self.rate_var, command=self._on_rate,
-                                    bg=Theme.BG, fg=Theme.FG, selectcolor=Theme.BTN,
-                                    activebackground=Theme.BG, activeforeground=Theme.ACCENT,
-                                    disabledforeground=Theme.MUTED, highlightthickness=0,
-                                    font=Theme.FONT_TEXT)
-            button.pack(side="left", padx=(0, 8))
-            self.rate_buttons.append(button)
-
-        self.gain_lbl = self._label(audio, "")
-        self.gain_lbl.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        self.gain_scale = self._scale(audio, self._on_gain)
-        self.gain_scale.grid(row=5, column=0, columnspan=2, sticky="ew")
-        self.level_lbl = self._label(audio, "")
-        self.level_lbl.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.level_scale = self._scale(audio, self._on_level)
-        self.level_scale.grid(row=7, column=0, columnspan=2, sticky="ew")
-        self.gain_scale.set(int(round(self.gain * 100)))
-        self.level_scale.set(int(round(self.level * 100)))
-        self._update_vol_labels()
 
         self.status_lbl = tk.Label(self.root, text="STATUS: IDLE", font=Theme.FONT_LABEL,
                                    bg=Theme.BG, fg=Theme.MUTED)
@@ -322,14 +267,6 @@ class IntercomClientGUI:
         except (TypeError, ValueError):
             pass
         self.my_id = str(data.get("my_id", self.my_id)).strip() or self.my_id
-        try:
-            rate = int(data.get("sample_rate", self.sample_rate))
-        except (TypeError, ValueError):
-            rate = DEFAULT_SAMPLE_RATE
-        self.sample_rate = rate if rate in ALLOWED_RATES else DEFAULT_SAMPLE_RATE
-        self.chunk_size = chunk_for(self.sample_rate)
-        self.gain = clamp_gain(data.get("gain", self.gain))
-        self.level = clamp_gain(data.get("level", self.level))
         self.input_name = str(data.get("input_device", self.input_name)) or DEFAULT_DEVICE
         self.output_name = str(data.get("output_device", self.output_name)) or DEFAULT_DEVICE
 
@@ -339,9 +276,6 @@ class IntercomClientGUI:
             "ip": self.server_ip,
             "port": str(self.server_port),
             "my_id": self.my_id,
-            "sample_rate": self.sample_rate,
-            "gain": round(self.gain, 2),
-            "level": round(self.level, 2),
             "input_device": self.input_name,
             "output_device": self.output_name,
         }
@@ -378,30 +312,6 @@ class IntercomClientGUI:
             self._save_settings()
             self.log(f"Target set to {ip}:{port} as {my_id}.")
         return True
-
-    def _on_rate(self) -> None:
-        rate = self.rate_var.get()
-        if rate not in ALLOWED_RATES:
-            rate = DEFAULT_SAMPLE_RATE
-            self.rate_var.set(rate)
-        self.sample_rate = rate
-        self.chunk_size = chunk_for(rate)
-        self._schedule_save()
-        self.log(f"Audio quality set to {RATE_LABELS[rate]} - must match the server.")
-
-    def _on_gain(self, value: str) -> None:
-        self.gain = clamp_gain(int(float(value)) / 100.0)
-        self._update_vol_labels()
-        self._schedule_save()
-
-    def _on_level(self, value: str) -> None:
-        self.level = clamp_gain(int(float(value)) / 100.0)
-        self._update_vol_labels()
-        self._schedule_save()
-
-    def _update_vol_labels(self) -> None:
-        self.gain_lbl.config(text=f"Microphone gain: {int(round(self.gain * 100))}%")
-        self.level_lbl.config(text=f"Speaker level: {int(round(self.level * 100))}%")
 
     @staticmethod
     def _device_list() -> List[Dict[str, Any]]:
@@ -617,12 +527,12 @@ class IntercomClientGUI:
             self.log("Selected audio device is not available - press Refresh devices.")
             return
         try:
-            sd.check_input_settings(device=in_idx, samplerate=self.sample_rate,
+            sd.check_input_settings(device=in_idx, samplerate=SAMPLE_RATE,
                                     channels=CHANNELS, dtype=DTYPE)
-            sd.check_output_settings(device=out_idx, samplerate=self.sample_rate,
+            sd.check_output_settings(device=out_idx, samplerate=SAMPLE_RATE,
                                      channels=CHANNELS, dtype=DTYPE)
         except Exception as e:
-            self.log(f"Audio device cannot run at {self.sample_rate} Hz: {e}")
+            self.log(f"Audio device cannot run at {SAMPLE_RATE} Hz: {e}")
             return
 
         self.input_index, self.output_index = in_idx, out_idx
@@ -670,10 +580,6 @@ class IntercomClientGUI:
                 continue
             peer_id = info.get("peer_id")
             self.peer_id = peer_id.strip() if isinstance(peer_id, str) else ""
-            peer_rate = info.get("sample_rate")
-            if isinstance(peer_rate, int) and peer_rate != self.sample_rate:
-                self.log(f"WARNING: server quality is {peer_rate} Hz, mine is "
-                         f"{self.sample_rate} Hz - audio will sound distorted.")
             return peer
         return None
 
@@ -748,7 +654,7 @@ class IntercomClientGUI:
     def _audio_player(self) -> None:
         try:
             with self._counted_stream(
-                    lambda: sd.OutputStream(device=self.output_index, samplerate=self.sample_rate,
+                    lambda: sd.OutputStream(device=self.output_index, samplerate=SAMPLE_RATE,
                                             channels=CHANNELS, dtype=DTYPE)) as stream:
                 while self.in_call and not self.shutdown_event.is_set():
                     try:
@@ -759,8 +665,7 @@ class IntercomClientGUI:
                             self.in_call = False
                             break
                         continue
-                    block = apply_gain(np.frombuffer(payload, dtype=np.int16), self.level)
-                    stream.write(block.reshape(-1, CHANNELS))
+                    stream.write(np.frombuffer(payload, dtype=np.int16).reshape(-1, CHANNELS))
         except Exception as e:
             if self.in_call:
                 self.log(f"Speaker error: {e}")
@@ -769,16 +674,14 @@ class IntercomClientGUI:
     def _audio_sender(self) -> None:
         try:
             with self._counted_stream(
-                    lambda: sd.InputStream(device=self.input_index, samplerate=self.sample_rate,
+                    lambda: sd.InputStream(device=self.input_index, samplerate=SAMPLE_RATE,
                                            channels=CHANNELS, dtype=DTYPE,
-                                           blocksize=self.chunk_size)) as stream:
+                                           blocksize=CHUNK_SIZE)) as stream:
                 while self.in_call and not self.shutdown_event.is_set():
-                    data, _ = stream.read(self.chunk_size)
+                    data, _ = stream.read(CHUNK_SIZE)
                     sock, peer = self.sock, self.tx_peer
                     if sock is None or peer is None:
                         break
-                    if self.gain != 1.0:
-                        data = apply_gain(data.reshape(-1), self.gain)
                     try:
                         sock.sendto(AUDIO_TAG + data.tobytes(), peer)
                     except ConnectionResetError:
@@ -837,7 +740,7 @@ class IntercomClientGUI:
                                  state="normal")
         lock = "normal" if idle else "disabled"
         for widget in (self.ip_entry, self.port_entry, self.id_entry, self.refresh_btn,
-                       self.mic_menu, self.spk_menu, *self.rate_buttons):
+                       self.mic_menu, self.spk_menu):
             widget.config(state=lock)
         text, color = STATUS.get(state, ("", Theme.MUTED))
         self.status_lbl.config(text=f"STATUS: {text}", fg=color)

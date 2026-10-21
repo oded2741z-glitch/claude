@@ -69,7 +69,8 @@ def list_models(host=OLLAMA_HOST):
     return sorted(models)
 
 
-def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb):
+def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb,
+                num_ctx=None):
     """
     Stream a chat completion from Ollama.
 
@@ -77,9 +78,10 @@ def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb):
     and error_cb(message) on failure. Honors stop_event to abort early.
     """
     url = f"{host}/api/chat"
-    payload = json.dumps(
-        {"model": model, "messages": messages, "stream": True}
-    ).encode("utf-8")
+    body = {"model": model, "messages": messages, "stream": True}
+    if num_ctx:
+        body["options"] = {"num_ctx": num_ctx}
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url, data=payload, headers={"Content-Type": "application/json"}
     )
@@ -169,11 +171,13 @@ TOOLS = [
 ]
 
 
-def agent_chat_once(host, model, messages, tools):
+def agent_chat_once(host, model, messages, tools, num_ctx=None):
     """Single non-streaming chat call that may return tool_calls."""
-    payload = json.dumps(
-        {"model": model, "messages": messages, "tools": tools, "stream": False}
-    ).encode("utf-8")
+    body = {"model": model, "messages": messages, "tools": tools,
+            "stream": False}
+    if num_ctx:
+        body["options"] = {"num_ctx": num_ctx}
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{host}/api/chat", data=payload,
         headers={"Content-Type": "application/json"},
@@ -182,11 +186,12 @@ def agent_chat_once(host, model, messages, tools):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def chat_complete(host, model, messages):
+def chat_complete(host, model, messages, num_ctx=None):
     """Single non-streaming chat call with no tools (used for meta tasks)."""
-    payload = json.dumps(
-        {"model": model, "messages": messages, "stream": False}
-    ).encode("utf-8")
+    body = {"model": model, "messages": messages, "stream": False}
+    if num_ctx:
+        body["options"] = {"num_ctx": num_ctx}
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{host}/api/chat", data=payload,
         headers={"Content-Type": "application/json"},
@@ -323,6 +328,7 @@ class OllamaChatApp:
         if self.workspace and not os.path.isdir(self.workspace):
             self.workspace = ""
         self.write_mode = self.config.get("write_mode", "free")  # confirm|readonly|free
+        self.num_ctx = int(self.config.get("num_ctx", 16384) or 16384)
         self.tts_auto = bool(self.config.get("tts_auto", False))
         self.tts_rate = int(self.config.get("tts_rate", 175))
         self.stt_lang = self.config.get("stt_lang", "he-IL")
@@ -1455,6 +1461,7 @@ class OllamaChatApp:
         self.config["tts_auto"] = self.tts_auto
         self.config["tts_rate"] = self.tts_rate
         self.config["stt_lang"] = self.stt_lang
+        self.config["num_ctx"] = self.num_ctx
         save_config(self.config)
 
     def _read_source(self, src):
@@ -1523,6 +1530,7 @@ class OllamaChatApp:
         self._build_voice_tab(nb)
         self._build_workspace_tab(nb)
         self._build_cuda_tab(nb)
+        self._build_model_tab(nb)
 
         def close_settings():
             # flush any pending instruction edits before closing
@@ -2111,6 +2119,7 @@ class OllamaChatApp:
                 lambda c: self.ui_queue.put(("chunk", c)),
                 lambda: self.ui_queue.put(("done", None)),
                 lambda e: self.ui_queue.put(("error", e)),
+                self.num_ctx,
             ),
             daemon=True,
         )
@@ -2823,6 +2832,45 @@ class OllamaChatApp:
         # run an initial check automatically when the tab opens
         check()
 
+    def _build_model_tab(self, nb):
+        tab = tk.Frame(nb, bg=self.BG)
+        nb.add(tab, text="Model")
+
+        tk.Label(
+            tab,
+            text="Context length (num_ctx) — the size of the context window "
+                 "sent to Ollama on every request. Larger values use more "
+                 "memory.",
+            bg=self.BG, fg=self.MUTED_FG, font=("Segoe UI", 9),
+            wraplength=540, justify="left",
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        row = tk.Frame(tab, bg=self.BG)
+        row.pack(anchor="w", padx=12, pady=(0, 2))
+        tk.Label(row, text="Context length:", bg=self.BG, fg=self.TEXT_FG,
+                 font=("Segoe UI", 10)).pack(side=tk.LEFT)
+        _ctx = tk.IntVar(value=self.num_ctx)
+        ctx_spin = tk.Spinbox(
+            row, from_=512, to=1048576, increment=1024, width=10,
+            textvariable=_ctx, relief=tk.SOLID, borderwidth=1,
+            bg=self.INPUT_BG, fg=self.TEXT_FG,
+        )
+        ctx_spin.pack(side=tk.LEFT, padx=6)
+        tk.Label(row, text="tokens", bg=self.BG, fg=self.MUTED_FG,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
+
+        def save_ctx(*_):
+            try:
+                self.num_ctx = max(512, int(_ctx.get()))
+            except (ValueError, tk.TclError):
+                self.num_ctx = 16384
+                _ctx.set(16384)
+            self._persist()
+
+        ctx_spin.configure(command=save_ctx)
+        ctx_spin.bind("<FocusOut>", save_ctx)
+        ctx_spin.bind("<Return>", save_ctx)
+
     def _start_agent(self, model):
         self._append(f"{model}  ·  📁 workspace\n", "bot")
         self.streaming = True
@@ -2870,7 +2918,8 @@ class OllamaChatApp:
                         ("agent_done", ("(Stopped.)", convo[base_len:]))
                     )
                     return
-                resp = agent_chat_once(OLLAMA_HOST, model, convo, TOOLS)
+                resp = agent_chat_once(OLLAMA_HOST, model, convo, TOOLS,
+                                       self.num_ctx)
                 msg = resp.get("message", {}) or {}
                 calls = msg.get("tool_calls") or []
                 if not calls:
@@ -3211,7 +3260,7 @@ class OllamaChatApp:
                     f"RECENT CONVERSATION:\n{transcript}\n\n"
                     "Return the updated instructions now."},
             ]
-            resp = chat_complete(OLLAMA_HOST, model, meta)
+            resp = chat_complete(OLLAMA_HOST, model, meta, self.num_ctx)
             new_text = clean_instructions(
                 resp.get("message", {}).get("content", "")
             )

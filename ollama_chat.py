@@ -98,6 +98,28 @@ def list_models(host=OLLAMA_HOST):
     return sorted(models)
 
 
+def is_embedding_model(host, name):
+    """True if `name` can only make embeddings and can't chat (e.g. bge-m3).
+
+    Uses the "capabilities" newer Ollama versions report in /api/show, and
+    falls back to well-known embedding model names on older versions.
+    """
+    try:
+        req = urllib.request.Request(
+            f"{host}/api/show",
+            data=json.dumps({"model": name, "name": name}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            caps = json.loads(resp.read().decode("utf-8")).get("capabilities")
+        if isinstance(caps, list) and caps:
+            return "completion" not in caps
+    except Exception:  # noqa: BLE001 - older Ollama or odd reply: use the name
+        pass
+    base = name.split(":")[0].rsplit("/", 1)[-1].lower()
+    return "embed" in base or base.startswith("bge") or "minilm" in base
+
+
 def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb,
                 num_ctx=None, thinking_cb=None):
     """
@@ -137,6 +159,13 @@ def chat_stream(host, model, messages, stop_event, chunk_cb, done_cb, error_cb,
                 if obj.get("done"):
                     break
         done_cb()
+    except urllib.error.HTTPError as exc:
+        # Ollama answered with an error (e.g. a model that can't chat)
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+        except Exception:  # noqa: BLE001
+            detail = ""
+        error_cb(f"Ollama error: {detail or exc}")
     except urllib.error.URLError as exc:
         error_cb(f"Connection error: {exc.reason}. Is Ollama running?")
     except Exception as exc:  # noqa: BLE001 - surface any failure to the UI
@@ -1617,27 +1646,38 @@ class OllamaChatApp:
 
         def work():
             try:
-                models = list_models()
-                self.ui_queue.put(("models", models))
+                names = list_models()
+                # embedding-only models (e.g. bge-m3, used by Sources) can't
+                # chat, so they are left out of the model selector
+                embed = [n for n in names if is_embedding_model(OLLAMA_HOST, n)]
+                chat = [n for n in names if n not in embed]
+                self.ui_queue.put(("models", (chat, embed)))
             except Exception as exc:  # noqa: BLE001
                 self.ui_queue.put(("models_error", str(exc)))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply_models(self, models):
+    def _apply_models(self, models, embed=()):
         if not models:
-            self.set_status("No models found - run 'ollama pull <model>'")
+            self.set_status(
+                "No chat models found - run e.g. 'ollama pull llama3.2'"
+                + (f" ({', '.join(embed)} can only make embeddings)" if embed else ""))
             self.model_combo["values"] = []
+            self.model_var.set("")
             return
         self.model_combo["values"] = models
         wanted = self._active_agent().get("model", "")
         if self.model_var.get() not in models:
             self.model_var.set(models[0])
         self.set_status(f"{len(models)} model(s) available")
-        if not wanted:
-            # remember a concrete model for an agent that had none yet
+        if not wanted or wanted in embed:
+            # remember a chat model for an agent that had none, or that had
+            # an embedding-only model (which can't chat)
             self._active_agent()["model"] = self.model_var.get()
             self._persist()
+            if wanted:
+                self.set_status(f"'{wanted}' can't chat (embedding model); "
+                                f"using {self.model_var.get()}")
         elif wanted not in models:
             self.set_status(
                 f"Agent '{self._active_agent()['name']}': model '{wanted}' "
@@ -3437,7 +3477,7 @@ class OllamaChatApp:
             while True:
                 kind, payload = self.ui_queue.get_nowait()
                 if kind == "models":
-                    self._apply_models(payload)
+                    self._apply_models(*payload)    # (chat models, embedding-only)
                 elif kind == "ui_call":
                     # payload is a zero-arg callable to run on the main thread
                     try:

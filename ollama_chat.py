@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """
 Ollama Chat - a minimal desktop chat client for locally installed Ollama models.
 

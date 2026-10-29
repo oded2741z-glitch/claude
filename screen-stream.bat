@@ -23,6 +23,7 @@ $inMode = 0
 $esc = [char]27
 $orange = "$esc[38;2;255;102;0m"
 $white = "$esc[38;2;255;255;255m"
+$green = "$esc[38;2;0;255;0m"
 $reset = "$esc[0m"
 
 $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
@@ -115,16 +116,18 @@ Write-Host "Press Ctrl+C to stop."
 $endY = [Console]::CursorTop
 [Console]::CursorVisible = $false
 $step = 0
+$lastServe = [DateTime]::MinValue
 
 while ($true) {
     while (-not $listener.Pending()) {
         try {
             [Console]::SetCursorPosition($arrowX, $arrowY)
-            [Console]::Write($orange + (' ' * $step) + '-->' + (' ' * (6 - $step)) + $reset)
+            $color = if (([DateTime]::UtcNow - $lastServe).TotalSeconds -lt 3) { $green } else { $orange }
+            [Console]::Write($color + (' ' * $step) + '-->' + (' ' * (6 - $step)) + $reset)
             [Console]::SetCursorPosition(0, $endY)
         } catch {}
         $step = ($step + 1) % 7
-        Start-Sleep -Milliseconds 150
+        Start-Sleep -Milliseconds 300
     }
     $client = $listener.AcceptTcpClient()
     try {
@@ -140,6 +143,7 @@ while ($true) {
         $path = if ($line -match '^GET (\S+)') { $matches[1] } else { '' }
 
         if ($path -like '/frame*') {
+            $lastServe = [DateTime]::UtcNow
             $now = [DateTime]::UtcNow
             if (($now - $frameTime).TotalMilliseconds -ge $interval) {
                 try {

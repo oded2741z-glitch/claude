@@ -10,8 +10,11 @@ $Width = 1280
 $Quality = 60
 
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
-Add-Type -Name Native -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int h); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out int m); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, int m);'
+Add-Type -Name Native -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int h); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out int m); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, int m); [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern IntPtr GetSystemMenu(IntPtr w, bool r); [DllImport("user32.dll")] public static extern bool DeleteMenu(IntPtr m, uint p, uint f); [DllImport("user32.dll")] public static extern bool DrawMenuBar(IntPtr w);'
 [W.Native]::SetProcessDPIAware() | Out-Null
+$hwnd = [W.Native]::GetConsoleWindow()
+[W.Native]::DeleteMenu([W.Native]::GetSystemMenu($hwnd, $false), 0xF060, 0) | Out-Null
+[W.Native]::DrawMenuBar($hwnd) | Out-Null
 $con = [W.Native]::GetStdHandle(-11)
 $mode = 0
 [W.Native]::GetConsoleMode($con, [ref]$mode) | Out-Null

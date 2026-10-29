@@ -118,11 +118,19 @@ $urls | ForEach-Object { Write-Host "${white}$_$reset" }
 Write-Host "Press Ctrl+C to stop."
 $endY = [Console]::CursorTop
 [Console]::CursorVisible = $false
+[Console]::TreatControlCAsInput = $true
 $step = 0
 $lastServe = [DateTime]::MinValue
 
 while ($true) {
     while (-not $listener.Pending()) {
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq 'C' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {
+                $listener.Stop()
+                exit
+            }
+        }
         try {
             [Console]::SetCursorPosition($arrowX, $arrowY)
             $color = if (([DateTime]::UtcNow - $lastServe).TotalSeconds -lt 3) { $green } else { $orange }

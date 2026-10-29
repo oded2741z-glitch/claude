@@ -1,0 +1,133 @@
+<# :
+@echo off
+title Screen Stream
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ([IO.File]::ReadAllText('%~f0'))"
+exit /b
+#>
+$Port = 8080
+$Fps = 2
+$Width = 1280
+$Quality = 60
+
+Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+Add-Type -Name Dpi -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
+[W.Dpi]::SetProcessDPIAware() | Out-Null
+
+$codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
+$encParams = New-Object Drawing.Imaging.EncoderParameters 1
+$encParams.Param[0] = New-Object Drawing.Imaging.EncoderParameter ([Drawing.Imaging.Encoder]::Quality), ([long]$Quality)
+$md5 = [Security.Cryptography.MD5]::Create()
+
+$b = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+if ($Width -ge $b.Width) { $Width = $b.Width }
+$Height = [int]($b.Height * $Width / $b.Width)
+$src = New-Object Drawing.Bitmap $b.Width, $b.Height
+$gs = [Drawing.Graphics]::FromImage($src)
+$dst = New-Object Drawing.Bitmap $Width, $Height
+$gd = [Drawing.Graphics]::FromImage($dst)
+$gd.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::Bilinear
+
+$interval = [int](1000 / $Fps)
+$frame = $null
+$etag = ''
+$frameTime = [DateTime]::MinValue
+$empty = New-Object byte[] 0
+
+$html = @'
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Stream</title>
+<style>
+html,body{margin:0;height:100%;background:#000}
+img{display:block;width:100%;height:100%;object-fit:contain}
+</style>
+</head>
+<body>
+<img id="i" alt="">
+<script>
+var img = document.getElementById('i'), tag = '', delay = INTERVAL;
+async function tick() {
+  if (document.hidden) { setTimeout(tick, 1000); return; }
+  try {
+    var r = await fetch('/frame', { cache: 'no-store', headers: tag ? { 'If-None-Match': tag } : {} });
+    if (r.status === 200) {
+      tag = r.headers.get('ETag') || '';
+      var u = URL.createObjectURL(await r.blob());
+      img.onload = function () { URL.revokeObjectURL(u); };
+      img.src = u;
+    }
+  } catch (e) {}
+  setTimeout(tick, delay);
+}
+tick();
+</script>
+</body>
+</html>
+'@
+$htmlBytes = [Text.Encoding]::UTF8.GetBytes(($html -replace 'INTERVAL', $interval))
+
+function Get-Frame {
+    $gs.CopyFromScreen($b.Left, $b.Top, 0, 0, $b.Size)
+    $gd.DrawImage($src, 0, 0, $Width, $Height)
+    $ms = New-Object IO.MemoryStream
+    $dst.Save($ms, $codec, $encParams)
+    $ms.ToArray()
+}
+
+function Send-Response($stream, $status, $type, [byte[]]$body, $extra) {
+    $head = "HTTP/1.1 $status`r`nContent-Type: $type`r`nContent-Length: $($body.Length)`r`nCache-Control: no-store`r`nConnection: close`r`n$extra`r`n"
+    $hb = [Text.Encoding]::ASCII.GetBytes($head)
+    $stream.Write($hb, 0, $hb.Length)
+    if ($body.Length) { $stream.Write($body, 0, $body.Length) }
+}
+
+$listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any), $Port
+$listener.Start()
+
+Write-Host "Screen Stream is running. Open in a browser on the other computer:"
+[Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { Write-Host "  http://$($_.IPAddressToString):$Port" }
+Write-Host "Press Ctrl+C to stop."
+
+while ($true) {
+    $client = $listener.AcceptTcpClient()
+    try {
+        $client.ReceiveTimeout = 3000
+        $client.SendTimeout = 5000
+        $stream = $client.GetStream()
+        $reader = New-Object IO.StreamReader $stream
+        $line = $reader.ReadLine()
+        $inm = ''
+        while (($hl = $reader.ReadLine())) {
+            if ($hl -match '^If-None-Match:\s*(.+)$') { $inm = $matches[1].Trim() }
+        }
+        $path = if ($line -match '^GET (\S+)') { $matches[1] } else { '' }
+
+        if ($path -like '/frame*') {
+            $now = [DateTime]::UtcNow
+            if (($now - $frameTime).TotalMilliseconds -ge $interval) {
+                try {
+                    $frame = Get-Frame
+                    $etag = '"' + [BitConverter]::ToString($md5.ComputeHash($frame)).Replace('-', '') + '"'
+                } catch {}
+                $frameTime = $now
+            }
+            if (-not $frame) {
+                Send-Response $stream '503 Service Unavailable' 'text/plain' $empty ''
+            } elseif ($inm -eq $etag) {
+                Send-Response $stream '304 Not Modified' 'image/jpeg' $empty "ETag: $etag`r`n"
+            } else {
+                Send-Response $stream '200 OK' 'image/jpeg' $frame "ETag: $etag`r`n"
+            }
+        } elseif ($path -eq '/' -or $path -like '/[?]*') {
+            Send-Response $stream '200 OK' 'text/html; charset=utf-8' $htmlBytes ''
+        } else {
+            Send-Response $stream '404 Not Found' 'text/plain' $empty ''
+        }
+    } catch {
+    } finally {
+        $client.Close()
+    }
+}

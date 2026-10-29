@@ -10,8 +10,16 @@ $Width = 1280
 $Quality = 60
 
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
-Add-Type -Name Dpi -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();'
-[W.Dpi]::SetProcessDPIAware() | Out-Null
+Add-Type -Name Native -Namespace W -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int h); [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out int m); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, int m);'
+[W.Native]::SetProcessDPIAware() | Out-Null
+$con = [W.Native]::GetStdHandle(-11)
+$mode = 0
+[W.Native]::GetConsoleMode($con, [ref]$mode) | Out-Null
+[W.Native]::SetConsoleMode($con, $mode -bor 4) | Out-Null
+$esc = [char]27
+$orange = "$esc[38;2;255;102;0m"
+$white = "$esc[38;2;255;255;255m"
+$reset = "$esc[0m"
 
 $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
 $encParams = New-Object Drawing.Imaging.EncoderParameters 1
@@ -87,8 +95,8 @@ function Send-Response($stream, $status, $type, [byte[]]$body, $extra) {
 $listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any), $Port
 $listener.Start()
 
-Write-Host "Screen Stream is running. Open in a browser on the other computer:"
-[Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { Write-Host "  http://$($_.IPAddressToString):$Port" }
+Write-Host "$orangeScreen Stream is running. Open in a browser on the other computer:$reset"
+[Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { Write-Host "$white  http://$($_.IPAddressToString):$Port$reset" }
 Write-Host "Press Ctrl+C to stop."
 
 while ($true) {

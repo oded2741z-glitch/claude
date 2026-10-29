@@ -95,8 +95,8 @@ function Send-Response($stream, $status, $type, [byte[]]$body, $extra) {
 $listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any), $Port
 $listener.Start()
 
-Write-Host "$orangeScreen Stream is running. Open in a browser on the other computer:$reset"
-[Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { Write-Host "$white  http://$($_.IPAddressToString):$Port$reset" }
+Write-Host "${orange}Screen Stream is running. Open in a browser on the other computer:$reset"
+[Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { Write-Host "${white}  http://$($_.IPAddressToString):$Port$reset" }
 Write-Host "Press Ctrl+C to stop."
 
 while ($true) {

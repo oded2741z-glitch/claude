@@ -16,6 +16,10 @@ $con = [W.Native]::GetStdHandle(-11)
 $mode = 0
 [W.Native]::GetConsoleMode($con, [ref]$mode) | Out-Null
 [W.Native]::SetConsoleMode($con, $mode -bor 4) | Out-Null
+$conIn = [W.Native]::GetStdHandle(-10)
+$inMode = 0
+[W.Native]::GetConsoleMode($conIn, [ref]$inMode) | Out-Null
+[W.Native]::SetConsoleMode($conIn, ($inMode -bor 0x80) -band -bnot 0x40) | Out-Null
 $esc = [char]27
 $orange = "$esc[38;2;255;102;0m"
 $white = "$esc[38;2;255;255;255m"
@@ -93,7 +97,14 @@ function Send-Response($stream, $status, $type, [byte[]]$body, $extra) {
 }
 
 $listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any), $Port
-$listener.Start()
+try {
+    $listener.Start()
+} catch {
+    Write-Host "$esc[38;2;255;0;0mCannot start on port ${Port}: $($_.Exception.InnerException.Message)$reset"
+    Write-Host "Another Screen Stream window may still be open. Close it, or change `$Port at the top of this file."
+    Read-Host "Press Enter to exit" | Out-Null
+    exit 1
+}
 
 Write-Host "${orange}Screen Stream is running. Open in a browser on the other computer:$reset"
 $urls = @([Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { "  http://$($_.IPAddressToString):$Port" })

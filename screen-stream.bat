@@ -96,10 +96,25 @@ $listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any), $Port
 $listener.Start()
 
 Write-Host "${orange}Screen Stream is running. Open in a browser on the other computer:$reset"
-[Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { Write-Host "${white}  http://$($_.IPAddressToString):$Port$reset" }
+$urls = @([Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq 'InterNetwork' } | ForEach-Object { "  http://$($_.IPAddressToString):$Port" })
+$arrowY = [Console]::CursorTop
+$arrowX = $urls[0].Length + 1
+$urls | ForEach-Object { Write-Host "${white}$_$reset" }
 Write-Host "Press Ctrl+C to stop."
+$endY = [Console]::CursorTop
+[Console]::CursorVisible = $false
+$step = 0
 
 while ($true) {
+    while (-not $listener.Pending()) {
+        try {
+            [Console]::SetCursorPosition($arrowX, $arrowY)
+            [Console]::Write($orange + (' ' * $step) + '-->' + (' ' * (6 - $step)) + $reset)
+            [Console]::SetCursorPosition(0, $endY)
+        } catch {}
+        $step = ($step + 1) % 7
+        Start-Sleep -Milliseconds 150
+    }
     $client = $listener.AcceptTcpClient()
     try {
         $client.ReceiveTimeout = 3000

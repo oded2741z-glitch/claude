@@ -1,4 +1,5 @@
 import json
+import os
 import queue
 import socket
 import sys
@@ -14,6 +15,7 @@ FG = "#ffffff"
 MUTED = "#888888"
 ACCENT = "#ff6600"
 MODES = ("stopwatch", "countdown")
+ADDR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "addresses.txt")
 
 
 def local_ip():
@@ -25,6 +27,25 @@ def local_ip():
         return "127.0.0.1"
     finally:
         s.close()
+
+
+def load_addresses():
+    result = {}
+    try:
+        with open(ADDR_FILE, encoding="utf-8") as f:
+            for line in f:
+                name, sep, ip = line.partition("=")
+                if sep and name.strip() and ip.strip():
+                    result[name.strip()] = ip.strip()
+    except OSError:
+        pass
+    return result
+
+
+def save_addresses(addresses):
+    with open(ADDR_FILE, "w", encoding="utf-8") as f:
+        for name, ip in addresses.items():
+            f.write(f"{name}={ip}\n")
 
 
 def fmt(seconds):
@@ -142,10 +163,11 @@ class App:
         self.clients = []
         self.conn = None
         self.host_ip = ""
+        self.addresses = load_addresses()
 
         root.title("Stopwatch")
         root.configure(bg=BG)
-        root.minsize(420, 320)
+        root.minsize(560, 320)
         self.icon = tk.PhotoImage(width=16, height=16)
         root.iconphoto(True, self.icon)
 
@@ -155,9 +177,22 @@ class App:
 
         self.conn_row = tk.Frame(root, bg=BG)
         self.conn_row.pack(fill="x", padx=12, pady=(0, 6))
+        self.address_var = tk.StringVar(value="Saved")
+        self.address_menu = tk.OptionMenu(self.conn_row, self.address_var, "")
+        self.address_menu.config(
+            bg=CTRL, fg=FG, activebackground=CTRL, activeforeground=ACCENT,
+            disabledforeground=MUTED, relief="flat", bd=0, highlightthickness=1,
+            highlightbackground=BG, width=10,
+        )
+        self.address_menu["menu"].config(
+            bg=CTRL, fg=FG, activebackground=ACCENT, activeforeground=FG, relief="flat", bd=0
+        )
+        self.address_menu.pack(side="left", padx=(0, 6))
+        self.refresh_addresses()
         self.ip_entry = self.entry(self.conn_row)
         self.ip_entry.insert(0, "192.168.1.")
         self.ip_entry.pack(side="left", fill="x", expand=True, ipady=4)
+        self.button(self.conn_row, "Save", self.save_address).pack(side="left", padx=(6, 0))
         self.button(self.conn_row, "Join", self.join).pack(side="left", padx=(6, 0))
         self.button(self.conn_row, "Host", self.host).pack(side="left", padx=(6, 0))
 
@@ -206,6 +241,60 @@ class App:
             parent, bg=CTRL, fg=FG, insertbackground=FG, relief="flat",
             highlightthickness=1, highlightbackground=BG, highlightcolor=ACCENT, **kw
         )
+
+    def refresh_addresses(self):
+        menu = self.address_menu["menu"]
+        menu.delete(0, "end")
+        for name in self.addresses:
+            menu.add_command(label=name, command=lambda n=name: self.pick_address(n))
+        self.address_menu.config(state="normal" if self.addresses else "disabled")
+
+    def pick_address(self, name):
+        self.address_var.set(name)
+        self.ip_entry.delete(0, "end")
+        self.ip_entry.insert(0, self.addresses[name])
+
+    def save_address(self):
+        ip = self.ip_entry.get().strip()
+        if not ip:
+            return
+        current = next((n for n, a in self.addresses.items() if a == ip), "")
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Save Address")
+        dialog.configure(bg=BG)
+        dialog.transient(self.root)
+        tk.Label(dialog, text=f"Name for {ip}", bg=BG, fg=FG).pack(anchor="w", padx=12, pady=(10, 4))
+        name_entry = self.entry(dialog, width=28)
+        name_entry.insert(0, current)
+        name_entry.pack(fill="x", padx=12, ipady=4)
+        row = tk.Frame(dialog, bg=BG)
+        row.pack(fill="x", padx=12, pady=10)
+
+        def ok():
+            name = name_entry.get().strip().replace("=", "")
+            if not name:
+                name_entry.focus_set()
+                return
+            updated = dict(self.addresses)
+            updated[name] = ip
+            try:
+                save_addresses(updated)
+            except OSError as e:
+                self.status.config(text=f"Cannot save: {e}")
+                dialog.destroy()
+                return
+            self.addresses = updated
+            self.refresh_addresses()
+            self.address_var.set(name)
+            dialog.destroy()
+
+        self.button(row, "Cancel", dialog.destroy).pack(side="right")
+        self.button(row, "Save", ok).pack(side="right", padx=(0, 6))
+        name_entry.bind("<Return>", lambda e: ok())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dark_title_bar(dialog)
+        dialog.grab_set()
+        name_entry.focus_set()
 
     def refresh_controls(self):
         for name, b in self.mode_buttons.items():

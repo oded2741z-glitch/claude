@@ -13,6 +13,7 @@ CTRL = "#333333"
 FG = "#ffffff"
 MUTED = "#888888"
 ACCENT = "#ff6600"
+MODES = ("stopwatch", "countdown")
 
 
 def local_ip():
@@ -36,11 +37,50 @@ def fmt(seconds):
     return f"{m:02d}:{s:02d}.{c:02d}"
 
 
+def fmt_duration(seconds):
+    m, s = divmod(int(seconds), 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def parse_duration(text):
+    parts = text.strip().split(":")
+    try:
+        if len(parts) == 1:
+            m, s = int(parts[0]), 0
+        elif len(parts) == 2:
+            m, s = int(parts[0]), int(parts[1])
+        else:
+            return None
+    except ValueError:
+        return None
+    if m < 0 or s < 0 or s > 59 or m * 60 + s == 0:
+        return None
+    return float(m * 60 + s)
+
+
 def send(conn, obj):
     try:
         conn.sendall((json.dumps(obj) + "\n").encode("utf-8"))
     except OSError:
         pass
+
+
+def beep(root):
+    if sys.platform == "win32":
+        try:
+            import winsound
+        except ImportError:
+            root.bell()
+            return
+
+        def run():
+            for _ in range(3):
+                winsound.Beep(1000, 300)
+                time.sleep(0.15)
+
+        threading.Thread(target=run, daemon=True).start()
+    else:
+        root.bell()
 
 
 def dark_title_bar(root):
@@ -83,12 +123,9 @@ class Watch:
         self.running = False
         self.base = 0.0
 
-    def snapshot(self):
-        return {"running": self.running, "elapsed": self.elapsed()}
-
-    def load(self, data):
-        self.base = float(data["elapsed"])
-        self.running = bool(data["running"])
+    def load(self, elapsed, running):
+        self.base = float(elapsed)
+        self.running = bool(running)
         self.started = time.monotonic()
 
 
@@ -96,6 +133,9 @@ class App:
     def __init__(self, root):
         self.root = root
         self.watch = Watch()
+        self.timer_mode = "stopwatch"
+        self.duration = 300.0
+        self.alarmed = False
         self.events = queue.Queue()
         self.mode = None
         self.server_sock = None
@@ -105,7 +145,7 @@ class App:
 
         root.title("Stopwatch")
         root.configure(bg=BG)
-        root.minsize(420, 280)
+        root.minsize(420, 320)
         self.icon = tk.PhotoImage(width=16, height=16)
         root.iconphoto(True, self.icon)
 
@@ -115,14 +155,23 @@ class App:
 
         self.conn_row = tk.Frame(root, bg=BG)
         self.conn_row.pack(fill="x", padx=12, pady=(0, 6))
-        self.ip_entry = tk.Entry(
-            self.conn_row, bg=CTRL, fg=FG, insertbackground=FG, relief="flat",
-            highlightthickness=1, highlightbackground=BG, highlightcolor=ACCENT,
-        )
+        self.ip_entry = self.entry(self.conn_row)
         self.ip_entry.insert(0, "192.168.1.")
         self.ip_entry.pack(side="left", fill="x", expand=True, ipady=4)
         self.button(self.conn_row, "Join", self.join).pack(side="left", padx=(6, 0))
         self.button(self.conn_row, "Host", self.host).pack(side="left", padx=(6, 0))
+
+        self.mode_row = tk.Frame(root, bg=BG)
+        self.mode_row.pack(fill="x", padx=12, pady=(0, 6))
+        self.mode_buttons = {}
+        for i, name in enumerate(MODES):
+            b = self.button(self.mode_row, name.capitalize(), lambda n=name: self.action("mode", n))
+            b.pack(side="left", padx=(0 if i == 0 else 6, 0))
+            self.mode_buttons[name] = b
+        self.duration_entry = self.entry(self.mode_row, width=8, justify="center")
+        self.duration_entry.insert(0, fmt_duration(self.duration))
+        self.duration_entry.bind("<Return>", lambda e: self.commit_duration())
+        self.duration_entry.bind("<FocusOut>", lambda e: self.commit_duration())
 
         self.panel = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BG)
         self.panel.pack(fill="both", expand=True, padx=12)
@@ -133,13 +182,14 @@ class App:
         controls.pack(fill="x", padx=12, pady=10)
         for i, (text, cmd) in enumerate((("Start", "start"), ("Stop", "stop"), ("Reset", "reset"))):
             controls.columnconfigure(i, weight=1)
-            self.button(controls, text, lambda c=cmd: self.action(c)).grid(
+            self.button(controls, text, lambda c=cmd: self.press(c)).grid(
                 row=0, column=i, sticky="ew", padx=(0 if i == 0 else 6, 0), ipady=6
             )
 
         self.status = tk.Label(root, text="Not connected", bg=BG, fg=MUTED, anchor="w")
         self.status.pack(fill="x", padx=12, pady=(0, 8))
 
+        self.refresh_controls()
         root.protocol("WM_DELETE_WINDOW", self.close)
         dark_title_bar(root)
         self.poll()
@@ -150,6 +200,37 @@ class App:
             activebackground=CTRL, activeforeground=ACCENT, relief="flat", bd=0,
             highlightthickness=1, highlightbackground=BG, padx=14, pady=4,
         )
+
+    def entry(self, parent, **kw):
+        return tk.Entry(
+            parent, bg=CTRL, fg=FG, insertbackground=FG, relief="flat",
+            highlightthickness=1, highlightbackground=BG, highlightcolor=ACCENT, **kw
+        )
+
+    def refresh_controls(self):
+        for name, b in self.mode_buttons.items():
+            b.config(fg=ACCENT if name == self.timer_mode else FG)
+        if self.timer_mode == "countdown":
+            self.duration_entry.pack(side="right", ipady=4)
+        else:
+            self.duration_entry.pack_forget()
+        if self.root.focus_get() is not self.duration_entry:
+            self.duration_entry.delete(0, "end")
+            self.duration_entry.insert(0, fmt_duration(self.duration))
+
+    def commit_duration(self):
+        value = parse_duration(self.duration_entry.get())
+        if value is None:
+            self.duration_entry.delete(0, "end")
+            self.duration_entry.insert(0, fmt_duration(self.duration))
+            return
+        if value != self.duration:
+            self.action("duration", value)
+
+    def press(self, cmd):
+        if cmd == "start" and self.timer_mode == "countdown":
+            self.commit_duration()
+        self.action(cmd)
 
     def host(self):
         if self.mode:
@@ -214,24 +295,73 @@ class App:
     def update_host_status(self):
         self.status.config(text=f"Hosting on {self.host_ip}  |  {len(self.clients)} connected")
 
-    def action(self, cmd):
-        if self.mode == "client":
-            send(self.conn, {"cmd": cmd})
-        else:
-            self.apply(cmd)
+    def snapshot(self):
+        return {
+            "running": self.watch.running,
+            "elapsed": self.watch.elapsed(),
+            "mode": self.timer_mode,
+            "duration": self.duration,
+        }
 
-    def apply(self, cmd):
+    def load(self, data):
+        if data["mode"] not in MODES:
+            return
+        duration = float(data["duration"])
+        self.watch.load(data["elapsed"], data["running"])
+        self.timer_mode = data["mode"]
+        self.duration = duration
+        self.refresh_controls()
+
+    def action(self, cmd, value=None):
+        if self.mode == "client":
+            send(self.conn, {"cmd": cmd, "value": value})
+        else:
+            self.apply(cmd, value)
+
+    def apply(self, cmd, value=None):
         if cmd == "start":
+            if self.timer_mode == "countdown" and self.watch.elapsed() >= self.duration:
+                return
             self.watch.start()
         elif cmd == "stop":
             self.watch.stop()
         elif cmd == "reset":
             self.watch.reset()
+        elif cmd == "mode":
+            if value not in MODES or value == self.timer_mode:
+                return
+            self.watch.reset()
+            self.timer_mode = value
+        elif cmd == "duration":
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return
+            if value <= 0 or self.watch.running or self.watch.elapsed() > 0:
+                self.refresh_controls()
+                return
+            self.duration = value
         else:
             return
-        snap = self.watch.snapshot()
+        self.refresh_controls()
+        snap = self.snapshot()
         for c in list(self.clients):
             send(c, snap)
+
+    def update_display(self):
+        if self.timer_mode == "countdown":
+            remaining = max(0.0, self.duration - self.watch.elapsed())
+            finished = self.watch.running and remaining <= 0
+            self.time_label.config(text=fmt(remaining))
+        else:
+            finished = False
+            self.time_label.config(text=fmt(self.watch.elapsed()))
+        if finished and not self.alarmed:
+            beep(self.root)
+        self.alarmed = finished
+        color = ACCENT if finished and int(time.monotonic() * 2) % 2 == 0 else PANEL
+        self.panel.config(bg=color)
+        self.time_label.config(bg=color)
 
     def poll(self):
         while True:
@@ -241,7 +371,7 @@ class App:
                 break
             if kind == "join":
                 self.clients.append(conn)
-                send(conn, self.watch.snapshot())
+                send(conn, self.snapshot())
                 self.update_host_status()
             elif kind == "connected":
                 if self.mode:
@@ -256,10 +386,10 @@ class App:
                     self.status.config(text=f"Connection failed: {data}")
             elif kind == "msg":
                 if self.mode == "host" and conn in self.clients and isinstance(data, dict):
-                    self.apply(data.get("cmd"))
+                    self.apply(data.get("cmd"), data.get("value"))
                 elif self.mode == "client" and conn is self.conn:
                     try:
-                        self.watch.load(data)
+                        self.load(data)
                     except (KeyError, TypeError, ValueError):
                         pass
             elif kind == "lost":
@@ -271,9 +401,9 @@ class App:
                     conn.close()
                     self.conn = None
                     self.mode = None
-                    self.conn_row.pack(fill="x", padx=12, pady=(0, 6), before=self.panel)
+                    self.conn_row.pack(fill="x", padx=12, pady=(0, 6), before=self.mode_row)
                     self.status.config(text="Disconnected")
-        self.time_label.config(text=fmt(self.watch.elapsed()))
+        self.update_display()
         self.root.after(30, self.poll)
 
     def close(self):

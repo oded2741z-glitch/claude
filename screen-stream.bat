@@ -70,8 +70,10 @@ $gd.TextRenderingHint = [Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 $wmText = 'oT'
 $wmFont = New-Object Drawing.Font 'Segoe UI', ([float][Math]::Max(10, $Height / 36)), ([Drawing.FontStyle]::Bold), ([Drawing.GraphicsUnit]::Pixel)
 $wmSize = $gd.MeasureString($wmText, $wmFont)
-$wmX = [float]($Width - $wmSize.Width - 10)
-$wmY = [float]($Height - $wmSize.Height - 8)
+$wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$scale = $Width / $b.Width
+$wmX = [float](($wa.Right - $b.Left) * $scale - $wmSize.Width - 10)
+$wmY = [float](($wa.Bottom - $b.Top) * $scale - $wmSize.Height - 8)
 $wmShadow = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(110, 0, 0, 0))
 $wmBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(140, 255, 255, 255))
 

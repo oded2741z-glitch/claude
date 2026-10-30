@@ -66,6 +66,14 @@ $gs = [Drawing.Graphics]::FromImage($src)
 $dst = New-Object Drawing.Bitmap $Width, $Height
 $gd = [Drawing.Graphics]::FromImage($dst)
 $gd.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::Bilinear
+$gd.TextRenderingHint = [Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+$wmText = 'oT'
+$wmFont = New-Object Drawing.Font 'Segoe UI', ([float][Math]::Max(10, $Height / 36)), ([Drawing.FontStyle]::Bold), ([Drawing.GraphicsUnit]::Pixel)
+$wmSize = $gd.MeasureString($wmText, $wmFont)
+$wmX = [float]($Width - $wmSize.Width - 10)
+$wmY = [float]($Height - $wmSize.Height - 8)
+$wmShadow = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(110, 0, 0, 0))
+$wmBrush = New-Object Drawing.SolidBrush ([Drawing.Color]::FromArgb(140, 255, 255, 255))
 
 $interval = [int](1000 / $Fps)
 $frame = $null
@@ -112,6 +120,8 @@ $htmlBytes = [Text.Encoding]::UTF8.GetBytes(($html -replace 'INTERVAL', $interva
 function Get-Frame {
     $gs.CopyFromScreen($b.Left, $b.Top, 0, 0, $b.Size)
     $gd.DrawImage($src, 0, 0, $Width, $Height)
+    $gd.DrawString($wmText, $wmFont, $wmShadow, $wmX + 1, $wmY + 1)
+    $gd.DrawString($wmText, $wmFont, $wmBrush, $wmX, $wmY)
     $ms = New-Object IO.MemoryStream
     $dst.Save($ms, $codec, $encParams)
     $ms.ToArray()

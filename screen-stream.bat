@@ -28,6 +28,7 @@ $orange = "$esc[38;2;255;102;0m"
 $white = "$esc[38;2;255;255;255m"
 $green = "$esc[38;2;0;255;0m"
 $gray = "$esc[38;2;136;136;136m"
+$red = "$esc[38;2;255;0;0m"
 $reset = "$esc[0m"
 
 $ConfigPath = [IO.Path]::ChangeExtension($BatPath, '.ini')
@@ -141,7 +142,7 @@ $listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any), $Port
 try {
     $listener.Start()
 } catch {
-    Write-Host "$esc[38;2;255;0;0mCannot start on port ${Port}: $($_.Exception.InnerException.Message)$reset"
+    Write-Host "${red}Cannot start on port ${Port}: $($_.Exception.InnerException.Message)$reset"
     Write-Host "Another Screen Stream window may still be open. Close it, or change Port in $(Split-Path -Leaf $ConfigPath)."
     Read-Host "Press Enter to exit" | Out-Null
     exit 1
@@ -160,6 +161,7 @@ $step = 0
 $lastServe = [DateTime]::MinValue
 $wmLastCol = -1
 $wmLastRow = -1
+$nextTick = [DateTime]::MinValue
 
 while ($true) {
     while (-not $listener.Pending()) {
@@ -170,28 +172,31 @@ while ($true) {
                 exit
             }
         }
-        try {
-            [Console]::SetCursorPosition($arrowX, $arrowY)
-            $color = if (([DateTime]::UtcNow - $lastServe).TotalSeconds -lt 3) { $green } else { $orange }
-            [Console]::Write($color + (' ' * $step) + '-->' + (' ' * (6 - $step)) + $reset)
-            $wmCol = [Console]::WindowWidth - 3
-            $wmRow = [Console]::WindowTop + [Console]::WindowHeight - 1
-            if ($wmCol -ne $wmLastCol -or $wmRow -ne $wmLastRow) {
-                if ($wmLastRow -ge 0) {
-                    try {
-                        [Console]::SetCursorPosition($wmLastCol, $wmLastRow)
-                        [Console]::Write('  ')
-                    } catch {}
+        if ([DateTime]::UtcNow -ge $nextTick) {
+            try {
+                [Console]::SetCursorPosition($arrowX, $arrowY)
+                $color = if (([DateTime]::UtcNow - $lastServe).TotalSeconds -lt 3) { $green } else { $orange }
+                [Console]::Write($color + (' ' * $step) + '-->' + (' ' * (6 - $step)) + $reset)
+                $wmCol = [Console]::WindowWidth - $wmText.Length - 1
+                $wmRow = [Console]::WindowTop + [Console]::WindowHeight - 1
+                if ($wmCol -ne $wmLastCol -or $wmRow -ne $wmLastRow) {
+                    if ($wmLastRow -ge 0) {
+                        try {
+                            [Console]::SetCursorPosition($wmLastCol, $wmLastRow)
+                            [Console]::Write(' ' * $wmText.Length)
+                        } catch {}
+                    }
+                    $wmLastCol = $wmCol
+                    $wmLastRow = $wmRow
                 }
-                $wmLastCol = $wmCol
-                $wmLastRow = $wmRow
-            }
-            [Console]::SetCursorPosition($wmCol, $wmRow)
-            [Console]::Write($gray + 'oT' + $reset)
-            [Console]::SetCursorPosition(0, $endY)
-        } catch {}
-        $step = ($step + 1) % 7
-        Start-Sleep -Milliseconds 300
+                [Console]::SetCursorPosition($wmCol, $wmRow)
+                [Console]::Write($gray + $wmText + $reset)
+                [Console]::SetCursorPosition(0, $endY)
+            } catch {}
+            $step = ($step + 1) % 7
+            $nextTick = [DateTime]::UtcNow.AddMilliseconds(300)
+        }
+        Start-Sleep -Milliseconds 20
     }
     $client = $listener.AcceptTcpClient()
     try {
@@ -207,8 +212,8 @@ while ($true) {
         $path = if ($line -match '^GET (\S+)') { $matches[1] } else { '' }
 
         if ($path -like '/frame*') {
-            $lastServe = [DateTime]::UtcNow
             $now = [DateTime]::UtcNow
+            $lastServe = $now
             if (($now - $frameTime).TotalMilliseconds -ge $interval) {
                 try {
                     $frame = Get-Frame

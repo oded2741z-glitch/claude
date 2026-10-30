@@ -184,8 +184,10 @@ class App:
                 row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0), ipady=4
             )
 
-        self.mode_row = tk.Frame(root, bg=BG)
-        self.mode_row.pack(fill="x", padx=8, pady=(0, 6))
+        self.options = tk.Frame(root, bg=BG)
+        self.options.pack(fill="x", padx=8)
+        self.mode_row = tk.Frame(self.options, bg=BG)
+        self.mode_row.pack(fill="x", pady=(0, 6))
         self.mode_buttons = {}
         for i, name in enumerate(MODES):
             b = self.button(self.mode_row, name.capitalize(), lambda n=name: self.action("mode", n))
@@ -196,8 +198,8 @@ class App:
         self.duration_entry.bind("<Return>", lambda e: self.commit_duration())
         self.duration_entry.bind("<FocusOut>", lambda e: self.commit_duration())
 
-        self.conn_row = tk.Frame(root, bg=BG)
-        self.conn_row.pack(fill="x", padx=8, pady=(0, 6))
+        self.conn_row = tk.Frame(self.options, bg=BG)
+        self.conn_row.pack(fill="x", pady=(0, 6))
         ip_row = tk.Frame(self.conn_row, bg=BG)
         ip_row.pack(fill="x")
         self.address_var = tk.StringVar(value="Saved")
@@ -221,11 +223,20 @@ class App:
             btn_row.columnconfigure(i, weight=1)
             self.button(btn_row, text, command).grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0))
 
-        self.status = tk.Label(root, text="Not connected", bg=BG, fg=MUTED, anchor="w")
-        self.status.pack(fill="x", padx=8, pady=(0, 6))
+        self.status_row = tk.Frame(root, bg=BG)
+        self.status_row.pack(fill="x", padx=8, pady=(0, 6))
+        self.status = tk.Label(self.status_row, text="Not connected", bg=BG, fg=MUTED, anchor="w")
+        self.status.pack(side="left", fill="x", expand=True)
+        self.options_button = self.button(self.status_row, "", self.toggle_options)
+        self.options_button.config(pady=0)
+        self.options_button.pack(side="right")
+        self.set_options(True)
 
         self.refresh_controls()
-        root.protocol("WM_DELETE_WINDOW", self.close)
+        root.protocol("WM_DELETE_WINDOW", lambda: None)
+        root.bind_all("<Control-c>", lambda e: self.close())
+        root.bind_all("<Control-C>", lambda e: self.close())
+        root.bind_all("<F2>", lambda e: self.toggle_options())
         dark_title_bar(root)
         self.poll()
 
@@ -241,6 +252,17 @@ class App:
             parent, bg=CTRL, fg=FG, insertbackground=FG, relief="flat",
             highlightthickness=1, highlightbackground=BG, highlightcolor=ACCENT, **kw
         )
+
+    def set_options(self, visible):
+        self.options_visible = visible
+        if visible:
+            self.options.pack(fill="x", padx=8, before=self.status_row)
+        else:
+            self.options.pack_forget()
+        self.options_button.config(text="Options \u25b4" if visible else "Options \u25be")
+
+    def toggle_options(self):
+        self.set_options(not self.options_visible)
 
     def refresh_addresses(self):
         menu = self.address_menu["menu"]
@@ -336,6 +358,7 @@ class App:
         self.mode = "host"
         self.host_ip = local_ip()
         self.conn_row.pack_forget()
+        self.set_options(False)
         self.update_host_status()
         threading.Thread(target=self.accept_loop, daemon=True).start()
 
@@ -469,6 +492,7 @@ class App:
                 self.mode = "client"
                 self.conn = conn
                 self.conn_row.pack_forget()
+                self.set_options(False)
                 self.status.config(text=f"Connected to {data}")
             elif kind == "failed":
                 if not self.mode:
@@ -490,7 +514,8 @@ class App:
                     conn.close()
                     self.conn = None
                     self.mode = None
-                    self.conn_row.pack(fill="x", padx=8, pady=(0, 6), before=self.status)
+                    self.conn_row.pack(fill="x", pady=(0, 6))
+                    self.set_options(True)
                     self.status.config(text="Disconnected")
         self.update_display()
         self.root.after(30, self.poll)

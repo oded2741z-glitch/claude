@@ -1,7 +1,7 @@
 <# :
 @echo off
 title Screen Stream
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iex ([IO.File]::ReadAllText('%~f0'))"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$BatPath = '%~f0'; iex ([IO.File]::ReadAllText($BatPath))"
 exit /b
 #>
 $Port = 8080
@@ -28,6 +28,30 @@ $orange = "$esc[38;2;255;102;0m"
 $white = "$esc[38;2;255;255;255m"
 $green = "$esc[38;2;0;255;0m"
 $reset = "$esc[0m"
+
+$ConfigPath = [IO.Path]::ChangeExtension($BatPath, '.ini')
+if (-not (Test-Path -LiteralPath $ConfigPath)) {
+    @(
+        '; Screen Stream settings. Restart Screen Stream after changing them.'
+        '; Port: 1-65535, Fps: 1-30, Width: 160-7680, Quality: 1-100'
+        "Port=$Port"
+        "Fps=$Fps"
+        "Width=$Width"
+        "Quality=$Quality"
+    ) | Set-Content -LiteralPath $ConfigPath -Encoding ASCII
+}
+$Limits = @{ Port = 1, 65535; Fps = 1, 30; Width = 160, 7680; Quality = 1, 100 }
+foreach ($l in Get-Content -LiteralPath $ConfigPath) {
+    if ($l -match '^\s*(\w+)\s*=\s*(.*?)\s*$' -and $Limits.ContainsKey($matches[1])) {
+        $name = $matches[1]
+        $value = 0
+        if ([int]::TryParse($matches[2], [ref]$value) -and $value -ge $Limits[$name][0] -and $value -le $Limits[$name][1]) {
+            Set-Variable -Name $name -Value $value
+        } else {
+            Write-Host "${orange}Invalid $name in $(Split-Path -Leaf $ConfigPath), using $(Get-Variable -Name $name -ValueOnly)$reset"
+        }
+    }
+}
 
 $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
 $encParams = New-Object Drawing.Imaging.EncoderParameters 1
@@ -105,7 +129,7 @@ try {
     $listener.Start()
 } catch {
     Write-Host "$esc[38;2;255;0;0mCannot start on port ${Port}: $($_.Exception.InnerException.Message)$reset"
-    Write-Host "Another Screen Stream window may still be open. Close it, or change `$Port at the top of this file."
+    Write-Host "Another Screen Stream window may still be open. Close it, or change Port in $(Split-Path -Leaf $ConfigPath)."
     Read-Host "Press Enter to exit" | Out-Null
     exit 1
 }

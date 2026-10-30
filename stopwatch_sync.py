@@ -167,18 +167,41 @@ class App:
 
         root.title("Stopwatch")
         root.configure(bg=BG)
-        root.minsize(560, 320)
+        root.minsize(380, 0)
         self.icon = tk.PhotoImage(width=16, height=16)
         root.iconphoto(True, self.icon)
 
-        header = tk.Frame(root, bg=BG)
-        header.pack(fill="x", padx=12, pady=(10, 6))
-        tk.Label(header, text="Stopwatch", bg=BG, fg=ACCENT, font=("Segoe UI", 14, "bold")).pack(side="left")
+        self.panel = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BG)
+        self.panel.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self.time_label = tk.Label(self.panel, text=fmt(0), bg=PANEL, fg=FG, font=("Consolas", 36))
+        self.time_label.pack(expand=True, pady=12)
+
+        controls = tk.Frame(root, bg=BG)
+        controls.pack(fill="x", padx=8, pady=6)
+        for i, (text, cmd) in enumerate((("Start", "start"), ("Stop", "stop"), ("Reset", "reset"))):
+            controls.columnconfigure(i, weight=1)
+            self.button(controls, text, lambda c=cmd: self.press(c)).grid(
+                row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0), ipady=4
+            )
+
+        self.mode_row = tk.Frame(root, bg=BG)
+        self.mode_row.pack(fill="x", padx=8, pady=(0, 6))
+        self.mode_buttons = {}
+        for i, name in enumerate(MODES):
+            b = self.button(self.mode_row, name.capitalize(), lambda n=name: self.action("mode", n))
+            b.pack(side="left", padx=(0 if i == 0 else 4, 0))
+            self.mode_buttons[name] = b
+        self.duration_entry = self.entry(self.mode_row, width=7, justify="center")
+        self.duration_entry.insert(0, fmt_duration(self.duration))
+        self.duration_entry.bind("<Return>", lambda e: self.commit_duration())
+        self.duration_entry.bind("<FocusOut>", lambda e: self.commit_duration())
 
         self.conn_row = tk.Frame(root, bg=BG)
-        self.conn_row.pack(fill="x", padx=12, pady=(0, 6))
+        self.conn_row.pack(fill="x", padx=8, pady=(0, 6))
+        ip_row = tk.Frame(self.conn_row, bg=BG)
+        ip_row.pack(fill="x")
         self.address_var = tk.StringVar(value="Saved")
-        self.address_menu = tk.OptionMenu(self.conn_row, self.address_var, "")
+        self.address_menu = tk.OptionMenu(ip_row, self.address_var, "")
         self.address_menu.config(
             bg=CTRL, fg=FG, activebackground=CTRL, activeforeground=ACCENT,
             disabledforeground=MUTED, relief="flat", bd=0, highlightthickness=1,
@@ -187,42 +210,19 @@ class App:
         self.address_menu["menu"].config(
             bg=CTRL, fg=FG, activebackground=ACCENT, activeforeground=FG, relief="flat", bd=0
         )
-        self.address_menu.pack(side="left", padx=(0, 6))
+        self.address_menu.pack(side="left", padx=(0, 4))
         self.refresh_addresses()
-        self.ip_entry = self.entry(self.conn_row)
+        self.ip_entry = self.entry(ip_row, width=14)
         self.ip_entry.insert(0, "192.168.1.")
         self.ip_entry.pack(side="left", fill="x", expand=True, ipady=4)
-        self.button(self.conn_row, "Save", self.save_address).pack(side="left", padx=(6, 0))
-        self.button(self.conn_row, "Join", self.join).pack(side="left", padx=(6, 0))
-        self.button(self.conn_row, "Host", self.host).pack(side="left", padx=(6, 0))
-
-        self.mode_row = tk.Frame(root, bg=BG)
-        self.mode_row.pack(fill="x", padx=12, pady=(0, 6))
-        self.mode_buttons = {}
-        for i, name in enumerate(MODES):
-            b = self.button(self.mode_row, name.capitalize(), lambda n=name: self.action("mode", n))
-            b.pack(side="left", padx=(0 if i == 0 else 6, 0))
-            self.mode_buttons[name] = b
-        self.duration_entry = self.entry(self.mode_row, width=8, justify="center")
-        self.duration_entry.insert(0, fmt_duration(self.duration))
-        self.duration_entry.bind("<Return>", lambda e: self.commit_duration())
-        self.duration_entry.bind("<FocusOut>", lambda e: self.commit_duration())
-
-        self.panel = tk.Frame(root, bg=PANEL, highlightthickness=1, highlightbackground=BG)
-        self.panel.pack(fill="both", expand=True, padx=12)
-        self.time_label = tk.Label(self.panel, text=fmt(0), bg=PANEL, fg=FG, font=("Consolas", 48))
-        self.time_label.pack(expand=True)
-
-        controls = tk.Frame(root, bg=BG)
-        controls.pack(fill="x", padx=12, pady=10)
-        for i, (text, cmd) in enumerate((("Start", "start"), ("Stop", "stop"), ("Reset", "reset"))):
-            controls.columnconfigure(i, weight=1)
-            self.button(controls, text, lambda c=cmd: self.press(c)).grid(
-                row=0, column=i, sticky="ew", padx=(0 if i == 0 else 6, 0), ipady=6
-            )
+        btn_row = tk.Frame(self.conn_row, bg=BG)
+        btn_row.pack(fill="x", pady=(4, 0))
+        for i, (text, command) in enumerate((("Save", self.save_address), ("Join", self.join), ("Host", self.host))):
+            btn_row.columnconfigure(i, weight=1)
+            self.button(btn_row, text, command).grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0))
 
         self.status = tk.Label(root, text="Not connected", bg=BG, fg=MUTED, anchor="w")
-        self.status.pack(fill="x", padx=12, pady=(0, 8))
+        self.status.pack(fill="x", padx=8, pady=(0, 6))
 
         self.refresh_controls()
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -233,7 +233,7 @@ class App:
         return tk.Button(
             parent, text=text, command=command, bg=CTRL, fg=FG,
             activebackground=CTRL, activeforeground=ACCENT, relief="flat", bd=0,
-            highlightthickness=1, highlightbackground=BG, padx=14, pady=4,
+            highlightthickness=1, highlightbackground=BG, padx=10, pady=4,
         )
 
     def entry(self, parent, **kw):
@@ -490,7 +490,7 @@ class App:
                     conn.close()
                     self.conn = None
                     self.mode = None
-                    self.conn_row.pack(fill="x", padx=12, pady=(0, 6), before=self.mode_row)
+                    self.conn_row.pack(fill="x", padx=8, pady=(0, 6), before=self.status)
                     self.status.config(text="Disconnected")
         self.update_display()
         self.root.after(30, self.poll)

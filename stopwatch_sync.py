@@ -156,6 +156,7 @@ class App:
         self.timer_mode = "stopwatch"
         self.duration = 300.0
         self.alarmed = False
+        self.clock_offset = None
         self.events = queue.Queue()
         self.mode = None
         self.server_sock = None
@@ -414,6 +415,7 @@ class App:
             "elapsed": self.watch.elapsed(),
             "mode": self.timer_mode,
             "duration": self.duration,
+            "clock": time.time() + time.localtime().tm_gmtoff,
         }
 
     def load(self, data):
@@ -423,6 +425,7 @@ class App:
         self.watch.load(data["elapsed"], data["running"])
         self.timer_mode = data["mode"]
         self.duration = duration
+        self.clock_offset = float(data["clock"]) - time.time()
         self.refresh_controls()
 
     def action(self, cmd, value=None):
@@ -475,7 +478,11 @@ class App:
         color = ACCENT if finished and int(time.monotonic() * 2) % 2 == 0 else PANEL
         self.panel.config(bg=color)
         self.time_label.config(bg=color)
-        self.clock_label.config(bg=color, text=time.strftime("%H:%M"))
+        if self.clock_offset is None:
+            clock = time.strftime("%H:%M")
+        else:
+            clock = time.strftime("%H:%M", time.gmtime(time.time() + self.clock_offset))
+        self.clock_label.config(bg=color, text=clock)
 
     def poll(self):
         while True:
@@ -516,6 +523,7 @@ class App:
                     conn.close()
                     self.conn = None
                     self.mode = None
+                    self.clock_offset = None
                     self.conn_row.pack(fill="x", pady=(0, 6))
                     self.set_options(True)
                     self.status.config(text="Disconnected")

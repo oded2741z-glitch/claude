@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import queue
 import socket
@@ -49,13 +50,11 @@ def save_addresses(addresses):
 
 
 def fmt(seconds):
-    cs = int(seconds * 100)
-    h, rem = divmod(cs, 360000)
-    m, rem = divmod(rem, 6000)
-    s, c = divmod(rem, 100)
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
     if h:
-        return f"{h}:{m:02d}:{s:02d}.{c:02d}"
-    return f"{m:02d}:{s:02d}.{c:02d}"
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 
 def fmt_duration(seconds):
@@ -175,6 +174,8 @@ class App:
         self.panel.pack(fill="both", expand=True, padx=8, pady=(8, 0))
         self.time_label = tk.Label(self.panel, text=fmt(0), bg=PANEL, fg=FG, font=("Consolas", 36))
         self.time_label.pack(expand=True, pady=12)
+        self.clock_label = tk.Label(self.panel, bg=PANEL, fg=MUTED, font=("Segoe UI", 9))
+        self.clock_label.place(x=6, y=4)
 
         controls = tk.Frame(root, bg=BG)
         controls.pack(fill="x", padx=8, pady=6)
@@ -464,7 +465,7 @@ class App:
         if self.timer_mode == "countdown":
             remaining = max(0.0, self.duration - self.watch.elapsed())
             finished = self.watch.running and remaining <= 0
-            self.time_label.config(text=fmt(remaining))
+            self.time_label.config(text=fmt(math.ceil(remaining)))
         else:
             finished = False
             self.time_label.config(text=fmt(self.watch.elapsed()))
@@ -474,6 +475,7 @@ class App:
         color = ACCENT if finished and int(time.monotonic() * 2) % 2 == 0 else PANEL
         self.panel.config(bg=color)
         self.time_label.config(bg=color)
+        self.clock_label.config(bg=color, text=time.strftime("%H:%M"))
 
     def poll(self):
         while True:

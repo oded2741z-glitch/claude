@@ -165,7 +165,7 @@ class App:
         self.host_ip = ""
         self.addresses = load_addresses()
 
-        root.title("Stopwatch")
+        root.title("Stopwatch  |  Ctrl+C to close")
         root.configure(bg=BG)
         root.minsize(380, 0)
         self.icon = tk.PhotoImage(width=16, height=16)
@@ -178,13 +178,13 @@ class App:
         self.clock_label = tk.Label(self.panel, bg=PANEL, fg=MUTED, font=("Segoe UI", 9))
         self.clock_label.place(x=6, y=4)
 
-        controls = tk.Frame(root, bg=BG)
-        controls.pack(fill="x", padx=8, pady=6)
+        self.controls = tk.Frame(root, bg=BG)
+        self.controls.pack(fill="x", padx=8, pady=6)
         for i, (text, cmd) in enumerate((("Start", "start"), ("Stop", "stop"), ("Reset", "reset"))):
-            controls.columnconfigure(i, weight=1)
-            self.button(controls, text, lambda c=cmd: self.press(c)).grid(
-                row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0), ipady=4
-            )
+            self.controls.columnconfigure(i, weight=1)
+            b = self.button(self.controls, text, lambda c=cmd: self.press(c))
+            b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 4, 0), ipady=4)
+        self.reset_button = b
 
         self.options = tk.Frame(root, bg=BG)
         self.options.pack(fill="x", padx=8)
@@ -263,7 +263,25 @@ class App:
             self.options.pack_forget()
         self.options_button.config(text="Options \u25b4" if visible else "Options \u25be")
 
+    def set_client_view(self, client):
+        if client:
+            self.reset_button.grid_remove()
+            self.controls.columnconfigure(2, weight=0)
+            self.conn_row.pack_forget()
+            self.mode_row.pack_forget()
+            self.set_options(False)
+            self.options_button.pack_forget()
+        else:
+            self.reset_button.grid()
+            self.controls.columnconfigure(2, weight=1)
+            self.mode_row.pack(fill="x", pady=(0, 6))
+            self.conn_row.pack(fill="x", pady=(0, 6))
+            self.options_button.pack(side="right")
+            self.set_options(True)
+
     def toggle_options(self):
+        if self.mode == "client":
+            return
         self.set_options(not self.options_visible)
 
     def refresh_addresses(self):
@@ -500,15 +518,15 @@ class App:
                     continue
                 self.mode = "client"
                 self.conn = conn
-                self.conn_row.pack_forget()
-                self.set_options(False)
+                self.set_client_view(True)
                 self.status.config(text=f"Connected to {data}")
             elif kind == "failed":
                 if not self.mode:
                     self.status.config(text=f"Connection failed: {data}")
             elif kind == "msg":
                 if self.mode == "host" and conn in self.clients and isinstance(data, dict):
-                    self.apply(data.get("cmd"), data.get("value"))
+                    if data.get("cmd") in ("start", "stop"):
+                        self.apply(data.get("cmd"))
                 elif self.mode == "client" and conn is self.conn:
                     try:
                         self.load(data)
@@ -524,14 +542,17 @@ class App:
                     self.conn = None
                     self.mode = None
                     self.clock_offset = None
-                    self.conn_row.pack(fill="x", pady=(0, 6))
-                    self.set_options(True)
+                    self.set_client_view(False)
                     self.status.config(text="Disconnected")
         self.update_display()
         self.root.after(30, self.poll)
 
     def close(self):
         for c in self.clients + ([self.conn] if self.conn else []):
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 c.close()
             except OSError:

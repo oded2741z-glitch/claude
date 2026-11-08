@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Run as root: sudo bash setup.sh https://example.com"
+    echo "Run as root: sudo bash setup.sh http://192.168.1.10"
     exit 1
 fi
 
@@ -13,68 +13,121 @@ fi
 
 URL="$1"
 KIOSK_USER="kiosk"
-KIOSK_HOME="/home/${KIOSK_USER}"
+APT_PACKAGES="unclutter"
+OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"
+LOCAL_REPO="/var/tmp/kiosk-debs"
 
-echo "[1/8] Installing packages"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y --no-install-recommends xserver-xorg xserver-xorg-legacy xinit x11-xserver-utils unclutter
-snap install chromium
+if ! dpkg -s gdm3 >/dev/null 2>&1; then
+    echo "Ubuntu Desktop (gdm3) is required."
+    exit 1
+fi
 
-echo "[2/8] Creating user ${KIOSK_USER}"
+if [ ! -f "${OFFLINE}/snaps/order.txt" ] || [ ! -f "${OFFLINE}/debs/Packages" ]; then
+    echo "Folder not found: ${OFFLINE}"
+    echo "Run download.sh on a computer with internet first."
+    exit 1
+fi
+
+echo "[1/9] Installing snaps"
+while read -r stem; do
+    [ -z "${stem}" ] && continue
+    name="${stem%_*}"
+    rev="${stem##*_}"
+    current="$(snap list "${name}" 2>/dev/null | awk 'NR==2 {print $3}' || true)"
+    if [ -z "${current}" ] || { [[ "${current}" =~ ^[0-9]+$ ]] && [ "${rev}" -gt "${current}" ]; }; then
+        echo "  ${name}"
+        snap ack "${OFFLINE}/snaps/${stem}.assert" < /dev/null
+        snap install "${OFFLINE}/snaps/${stem}.snap" < /dev/null
+    fi
+done < "${OFFLINE}/snaps/order.txt"
+
+echo "[2/9] Installing apt packages"
+rm -rf "${LOCAL_REPO}"
+cp -r "${OFFLINE}/debs" "${LOCAL_REPO}"
+chmod -R a+rX "${LOCAL_REPO}"
+echo "deb [trusted=yes] file:${LOCAL_REPO} ./" > "${LOCAL_REPO}/local.list"
+APT_LOCAL=(-o "Dir::Etc::sourcelist=${LOCAL_REPO}/local.list" -o "Dir::Etc::sourceparts=-" -o "APT::Get::List-Cleanup=0")
+apt-get "${APT_LOCAL[@]}" update
+DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCAL[@]}" install -y ${APT_PACKAGES}
+
+echo "[3/9] Creating user ${KIOSK_USER}"
 if ! id "${KIOSK_USER}" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "${KIOSK_USER}"
-    passwd -d "${KIOSK_USER}"
 fi
+passwd -d "${KIOSK_USER}"
 
-echo "[3/8] Enabling auto-login on tty1"
-mkdir -p /etc/systemd/system/getty@tty1.service.d
-cat > /etc/systemd/system/getty@tty1.service.d/override.conf <<EOF
-[Service]
-ExecStart=
-ExecStart=-/sbin/agetty --autologin ${KIOSK_USER} --noclear --skip-login --nonewline --noissue %I \$TERM
-Restart=always
-EOF
+echo "[4/9] Saving kiosk URL"
+mkdir -p /etc/kiosk
+echo "${URL}" > /etc/kiosk/url
 
-echo "[4/8] Starting X automatically after login"
-cat > "${KIOSK_HOME}/.bash_profile" <<'EOF'
-if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
-    exec startx -- -nocursor >/dev/null 2>&1
-fi
-EOF
-
-echo "[5/8] Creating browser loop"
-cat > "${KIOSK_HOME}/.xinitrc" <<EOF
+echo "[5/9] Creating kiosk session"
+cat > /usr/local/bin/kiosk-session <<'EOF'
 #!/bin/bash
 xset s off
 xset s noblank
 xset -dpms
 unclutter -idle 1 -root &
 
-PREFS="\$HOME/snap/chromium/common/chromium/Default/Preferences"
+URL="$(cat /etc/kiosk/url)"
+PREFS="$HOME/snap/chromium/common/chromium/Default/Preferences"
 
 while true; do
-    if [ -f "\$PREFS" ]; then
-        sed -i 's/"exited_cleanly":false/"exited_cleanly":true/; s/"exit_type":"[^"]*"/"exit_type":"Normal"/' "\$PREFS"
+    if [ -f "$PREFS" ]; then
+        sed -i 's/"exited_cleanly":false/"exited_cleanly":true/; s/"exit_type":"[^"]*"/"exit_type":"Normal"/' "$PREFS"
     fi
-    /snap/bin/chromium \\
-        --kiosk \\
-        --noerrdialogs \\
-        --disable-infobars \\
-        --disable-session-crashed-bubble \\
-        --disable-features=Translate \\
-        --no-first-run \\
-        --check-for-update-interval=31536000 \\
-        --overscroll-history-navigation=0 \\
-        --disable-pinch \\
-        "${URL}"
+    /snap/bin/chromium \
+        --kiosk \
+        --noerrdialogs \
+        --disable-infobars \
+        --disable-session-crashed-bubble \
+        --disable-features=Translate \
+        --no-first-run \
+        --password-store=basic \
+        --check-for-update-interval=31536000 \
+        --overscroll-history-navigation=0 \
+        --disable-pinch \
+        "$URL"
     sleep 2
 done
 EOF
-chmod +x "${KIOSK_HOME}/.xinitrc"
-chown "${KIOSK_USER}:${KIOSK_USER}" "${KIOSK_HOME}/.bash_profile" "${KIOSK_HOME}/.xinitrc"
+chmod 755 /usr/local/bin/kiosk-session
 
-echo "[6/8] Locking browser with policies"
+cat > /usr/share/xsessions/kiosk.desktop <<'EOF'
+[Desktop Entry]
+Name=Kiosk
+Exec=/usr/local/bin/kiosk-session
+Type=Application
+EOF
+
+mkdir -p /var/lib/AccountsService/users
+cat > "/var/lib/AccountsService/users/${KIOSK_USER}" <<'EOF'
+[User]
+Session=kiosk
+XSession=kiosk
+SystemAccount=false
+EOF
+
+echo "[6/9] Enabling auto-login"
+GDM_CONF="/etc/gdm3/custom.conf"
+touch "${GDM_CONF}"
+if ! grep -q '^\[daemon\]' "${GDM_CONF}"; then
+    printf '[daemon]\n' >> "${GDM_CONF}"
+fi
+sed -i '/^#\?[[:space:]]*AutomaticLogin/d' "${GDM_CONF}"
+sed -i "/^\[daemon\]/a AutomaticLoginEnable=true\nAutomaticLogin=${KIOSK_USER}" "${GDM_CONF}"
+
+echo "[7/9] Enabling on-screen keyboard on login screen"
+mkdir -p /etc/dconf/profile /etc/dconf/db/gdm.d
+if [ ! -f /etc/dconf/profile/gdm ]; then
+    printf 'user-db:user\nsystem-db:gdm\nfile-db:/usr/share/gdm/greeter-dconf-defaults\n' > /etc/dconf/profile/gdm
+fi
+cat > /etc/dconf/db/gdm.d/90-kiosk <<'EOF'
+[org/gnome/desktop/a11y/applications]
+screen-keyboard-enabled=true
+EOF
+dconf update
+
+echo "[8/9] Locking browser and shortcuts"
 mkdir -p /etc/chromium-browser/policies/managed
 cat > /etc/chromium-browser/policies/managed/kiosk.json <<'EOF'
 {
@@ -89,7 +142,6 @@ cat > /etc/chromium-browser/policies/managed/kiosk.json <<'EOF'
 }
 EOF
 
-echo "[7/8] Blocking system shortcuts"
 mkdir -p /etc/X11/xorg.conf.d
 cat > /etc/X11/xorg.conf.d/10-kiosk.conf <<'EOF'
 Section "ServerFlags"
@@ -97,15 +149,158 @@ Section "ServerFlags"
     Option "DontZap" "true"
 EndSection
 EOF
-cat > /etc/X11/Xwrapper.config <<'EOF'
-allowed_users=console
-needs_root_rights=yes
-EOF
 systemctl mask ctrl-alt-del.target
 
-echo "[8/8] Disabling desktop environment"
-systemctl set-default multi-user.target
+echo "[9/9] Installing corner exit service"
+cat > /usr/local/bin/kiosk-corner <<'EOF'
+import fcntl
+import os
+import select
+import struct
+import subprocess
+import time
+
+KIOSK_USER = "kiosk"
+CORNER = 0.08
+HOLD = 5.0
+
+EVENT = struct.Struct("llHHi")
+EV_KEY = 1
+EV_ABS = 3
+ABS_X = 0
+ABS_Y = 1
+BTN_TOUCH = 0x14A
+INPUT_PROP_DIRECT = 1
+
+
+def ioc_read(nr, size):
+    return (2 << 30) | (size << 16) | (ord("E") << 8) | nr
+
+
+def abs_range(fd, axis):
+    buf = bytearray(24)
+    fcntl.ioctl(fd, ioc_read(0x40 + axis, 24), buf)
+    values = struct.unpack("6i", buf)
+    return values[1], values[2]
+
+
+def is_direct(fd):
+    buf = bytearray(4)
+    fcntl.ioctl(fd, ioc_read(0x09, 4), buf)
+    return bool(buf[0] & (1 << INPUT_PROP_DIRECT))
+
+
+def open_devices():
+    devices = {}
+    for name in sorted(os.listdir("/dev/input")):
+        if not name.startswith("event"):
+            continue
+        try:
+            fd = os.open("/dev/input/" + name, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            if is_direct(fd):
+                xr = abs_range(fd, ABS_X)
+                yr = abs_range(fd, ABS_Y)
+                if xr[1] > xr[0] and yr[1] > yr[0]:
+                    devices[fd] = {"x": xr, "y": yr, "px": None, "py": None,
+                                   "down": False, "since": None, "fired": False}
+                    continue
+        except OSError:
+            pass
+        os.close(fd)
+    return devices
+
+
+def in_corner(d):
+    if d["px"] is None or d["py"] is None:
+        return False
+    xlo, xhi = d["x"]
+    ylo, yhi = d["y"]
+    return (d["px"] - xlo) <= CORNER * (xhi - xlo) and (d["py"] - ylo) <= CORNER * (yhi - ylo)
+
+
+def loginctl(*args):
+    result = subprocess.run(["loginctl", *args], capture_output=True, text=True)
+    return result.stdout.strip()
+
+
+def kiosk_active():
+    session = loginctl("show-seat", "seat0", "-p", "ActiveSession", "--value")
+    if not session:
+        return False
+    return loginctl("show-session", session, "-p", "Name", "--value") == KIOSK_USER
+
+
+def watch(devices):
+    while True:
+        ready, _, _ = select.select(list(devices), [], [], 0.2)
+        for fd in ready:
+            d = devices[fd]
+            try:
+                data = os.read(fd, EVENT.size * 64)
+            except BlockingIOError:
+                continue
+            for offset in range(0, len(data) - EVENT.size + 1, EVENT.size):
+                _, _, etype, code, value = EVENT.unpack_from(data, offset)
+                if etype == EV_ABS and code == ABS_X:
+                    d["px"] = value
+                elif etype == EV_ABS and code == ABS_Y:
+                    d["py"] = value
+                elif etype == EV_KEY and code == BTN_TOUCH:
+                    d["down"] = value == 1
+        now = time.monotonic()
+        for d in devices.values():
+            if d["down"] and in_corner(d):
+                if d["since"] is None:
+                    d["since"] = now
+                elif not d["fired"] and now - d["since"] >= HOLD:
+                    d["fired"] = True
+                    if kiosk_active():
+                        subprocess.run(["loginctl", "terminate-user", KIOSK_USER])
+            else:
+                d["since"] = None
+                d["fired"] = False
+
+
+def main():
+    while True:
+        devices = open_devices()
+        if not devices:
+            time.sleep(5)
+            continue
+        try:
+            watch(devices)
+        except OSError:
+            time.sleep(1)
+        finally:
+            for fd in devices:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+main()
+EOF
+chmod 755 /usr/local/bin/kiosk-corner
+
+cat > /etc/systemd/system/kiosk-corner.service <<'EOF'
+[Unit]
+Description=Kiosk corner exit
+After=systemd-logind.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/kiosk-corner
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target
+EOF
 systemctl daemon-reload
+systemctl enable kiosk-corner.service
 
 echo
 echo "Done. Kiosk URL: ${URL}"

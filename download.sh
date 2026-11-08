@@ -6,7 +6,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-APT_PACKAGES="unclutter"
+APT_PACKAGES="unclutter evtest"
 SNAPS="snapd chromium"
 
 OUT="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"

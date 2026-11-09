@@ -28,11 +28,11 @@ mkdir -p "${DEB_DIR}" "${SNAP_DIR}"
 : > "${ORDER}"
 
 echo "[1/2] Downloading apt packages"
-apt-get update
+apt-get -o Acquire::Retries=5 update
 cd "${DEB_DIR}"
 apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances ${APT_PACKAGES} \
     | grep -E '^[a-z0-9]' | sort -u | while read -r pkg; do
-    apt-get download "${pkg}" >/dev/null 2>&1 || true
+    apt-get -o Acquire::Retries=5 download "${pkg}" >/dev/null 2>&1 || true
 done
 apt-ftparchive packages . > Packages
 for pkg in ${APT_PACKAGES}; do
@@ -49,6 +49,21 @@ snap_yaml() {
     cat "${WORK}/x/meta/snap.yaml"
 }
 
+download_snap() {
+    local name="$1"
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        rm -f "${SNAP_DIR}/${name}"_*.snap "${SNAP_DIR}/${name}"_*.assert
+        if (cd "${SNAP_DIR}" && snap download "${name}" >/dev/null); then
+            return 0
+        fi
+        echo "  retry ${attempt}/5: ${name}"
+        sleep 5
+    done
+    echo "Failed to download snap: ${name}"
+    exit 1
+}
+
 declare -A SEEN
 
 fetch_snap() {
@@ -59,7 +74,7 @@ fetch_snap() {
     fi
     SEEN[$name]=1
     echo "  ${name}"
-    (cd "${SNAP_DIR}" && snap download "${name}" >/dev/null)
+    download_snap "${name}"
     file="$(ls "${SNAP_DIR}/${name}"_*.snap | head -n 1)"
     yaml="$(snap_yaml "${file}")"
     type="$(sed -n 's/^type:[[:space:]]*//p' <<< "${yaml}" | tr -d "\"'")"
@@ -77,6 +92,8 @@ fetch_snap() {
 for s in ${SNAPS}; do
     fetch_snap "${s}"
 done
+
+touch "${OUT}/complete"
 
 echo
 echo "Done. Files saved to: ${OUT}"

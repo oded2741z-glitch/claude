@@ -159,7 +159,7 @@ EndSection
 EOF
 systemctl mask ctrl-alt-del.target
 
-echo "[9/9] Installing exit and brightness service"
+echo "[9/9] Installing kiosk buttons service"
 cat > /usr/local/bin/kiosk-corner <<'EOF'
 import fcntl
 import os
@@ -176,11 +176,14 @@ MIN_LEVEL = 0.05
 DEBOUNCE = 0.15
 
 EVENT = struct.Struct("llHHi")
+EV_SYN = 0
+SYN_REPORT = 0
 EV_KEY = 1
 EV_ABS = 3
 ABS_X = 0
 ABS_Y = 1
 BTN_TOUCH = 0x14A
+KEY_F5 = 63
 KEY_LEFTCTRL = 29
 KEY_LEFTALT = 56
 KEY_RIGHTCTRL = 97
@@ -198,6 +201,34 @@ BACKLIGHT_TYPES = ("firmware", "platform", "raw")
 
 def ioc_read(nr, size):
     return (2 << 30) | (size << 16) | (ord("E") << 8) | nr
+
+
+def ioc_write(nr, size):
+    return (1 << 30) | (size << 16) | (ord("U") << 8) | nr
+
+
+def create_keyboard():
+    try:
+        fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        fcntl.ioctl(fd, ioc_write(100, 4), EV_KEY)
+        fcntl.ioctl(fd, ioc_write(101, 4), KEY_F5)
+        name = b"kiosk-keys".ljust(80, b"\0")
+        os.write(fd, name + struct.pack("4HI", 0x06, 1, 1, 1, 0) + bytes(256 * 4))
+        fcntl.ioctl(fd, (ord("U") << 8) | 1)
+        return fd
+    except OSError:
+        return None
+
+
+def press_key(keyboard, code):
+    if keyboard is None:
+        return
+    try:
+        for value in (1, 0):
+            os.write(keyboard, EVENT.pack(0, 0, EV_KEY, code, value))
+            os.write(keyboard, EVENT.pack(0, 0, EV_SYN, SYN_REPORT, 0))
+    except OSError:
+        pass
 
 
 def abs_range(fd, axis):
@@ -221,7 +252,7 @@ def has_watched_keys(fd):
 
 def new_state(xr=None, yr=None):
     return {"x": xr, "y": yr, "px": None, "py": None, "down": False,
-            "since": None, "fired": False, "held": set()}
+            "since": None, "fired": False, "held": set(), "refresh": False}
 
 
 def open_devices():
@@ -315,7 +346,7 @@ def change_brightness(direction):
         pass
 
 
-def watch(devices):
+def watch(devices, keyboard):
     last_brightness = 0.0
     while True:
         ready, _, _ = select.select(list(devices), [], [], 0.2)
@@ -340,9 +371,13 @@ def watch(devices):
                         d["held"].add(code)
                     else:
                         d["held"].discard(code)
+                    if d["refresh"] and not d["held"]:
+                        d["refresh"] = False
+                        if kiosk_active():
+                            press_key(keyboard, KEY_F5)
                 elif code == KEY_DELETE and value == 1:
                     if d["held"] & CTRL_KEYS and d["held"] & ALT_KEYS:
-                        exit_kiosk()
+                        d["refresh"] = True
                 elif code in (KEY_BRIGHTNESSUP, KEY_BRIGHTNESSDOWN) and value in (1, 2):
                     now = time.monotonic()
                     if now - last_brightness >= DEBOUNCE and kiosk_active():
@@ -362,13 +397,14 @@ def watch(devices):
 
 
 def main():
+    keyboard = create_keyboard()
     while True:
         devices = open_devices()
         if not devices:
             time.sleep(5)
             continue
         try:
-            watch(devices)
+            watch(devices, keyboard)
         except OSError:
             time.sleep(1)
         finally:
@@ -385,7 +421,7 @@ chmod 755 /usr/local/bin/kiosk-corner
 
 cat > /etc/systemd/system/kiosk-corner.service <<'EOF'
 [Unit]
-Description=Kiosk exit and brightness buttons
+Description=Kiosk corner exit, refresh and brightness buttons
 After=systemd-logind.service
 
 [Service]

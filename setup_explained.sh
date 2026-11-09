@@ -5,16 +5,15 @@
 # הקובץ נועד ללמידה. להתקנה משתמשים ב-setup.sh.
 #
 # מה הסקריפט עושה, בקצרה:
-#   1. מתקין את Chromium (snap) מהדיסק-און-קי, בלי אינטרנט
-#   2. מתקין חבילות apt (unclutter, ffmpeg, x11vnc) מהדיסק-און-קי
-#   3. יוצר את המשתמש kiosk, בלי סיסמה
-#   4. שומר את הגדרות הקיוסק: כתובת, סיסמת VNC ותיקיית הקלטות
-#   5. יוצר "סשן" (סביבת עבודה) מיוחד לקיוסק: דפדפן, הקלטה ו-VNC
-#   6. מגדיר התחברות אוטומטית ל-kiosk בהדלקה
-#   7. מפעיל מקלדת על המסך במסך ההתחברות
-#   8. נועל את הדפדפן וחוסם קיצורי מקשים של המערכת
-#   9. מתקין שירות לפינה, ל-A1 ולתאורה
-#  10. מתקין מחיקה אוטומטית של הקלטות ישנות
+#   1. מתקין חבילות (Google Chrome, unclutter, ffmpeg, x11vnc) מהדיסק-און-קי, בלי אינטרנט
+#   2. יוצר את המשתמש kiosk, בלי סיסמה
+#   3. שומר את הגדרות הקיוסק: כתובת, סיסמת VNC ותיקיית הקלטות
+#   4. יוצר "סשן" (סביבת עבודה) מיוחד לקיוסק: דפדפן, הקלטה ו-VNC
+#   5. מגדיר התחברות אוטומטית ל-kiosk בהדלקה
+#   6. מפעיל מקלדת על המסך במסך ההתחברות
+#   7. נועל את הדפדפן וחוסם קיצורי מקשים של המערכת
+#   8. מתקין שירות לפינה, ל-A1 ולתאורה
+#   9. מתקין מחיקה אוטומטית של הקלטות ישנות
 #
 # הרצה: sudo bash setup_explained.sh http://192.168.1.10
 # =============================================================================
@@ -82,7 +81,7 @@ exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 # -----------------------------------------------------------------------------
 URL="$1"                                  # הכתובת שהועברה בהרצה
 KIOSK_USER="kiosk"                        # שם המשתמש של הקיוסק
-APT_PACKAGES="unclutter ffmpeg x11vnc"    # הסתרת סמן, הקלטה, שליטה מרחוק
+APT_PACKAGES="unclutter ffmpeg x11vnc google-chrome-stable"    # הסתרת סמן, הקלטה, שליטה מרחוק, דפדפן
 RECORDINGS="/var/kiosk-recordings"        # תיקיית ההקלטות
 RECORDINGS_LIMIT_PERCENT=70               # כמה אחוז מהדיסק ההקלטות יכולות לתפוס
 # התיקייה שבה נמצא הסקריפט (על הדיסק-און-קי), ובתוכה kiosk-offline.
@@ -108,36 +107,12 @@ if [ ! -f "${OFFLINE}/complete" ]; then
 fi
 
 # -----------------------------------------------------------------------------
-# שלב 1: התקנת snaps (Chromium והתלויות שלו) בלי אינטרנט
-# הקובץ order.txt נוצר ב-download.sh, ובו הסדר הנכון: קודם התלויות ואז Chromium.
-# כל שורה בו נראית כך: chromium_3000 (שם, קו תחתון, מספר גרסה).
-# -----------------------------------------------------------------------------
-echo "[1/10] Installing snaps"
-while read -r stem; do
-    [ -z "${stem}" ] && continue          # מדלגים על שורות ריקות
-    name="${stem%_*}"                     # מוחק מהסוף את "_מספר" ומשאיר את השם
-    rev="${stem##*_}"                     # מוחק מההתחלה עד "_" ומשאיר את המספר
-    # snap list מציג את הגרסה המותקנת. awk לוקח מהשורה השנייה את העמודה השלישית (Rev).
-    # || true : אם ה-snap לא מותקן, הפקודה נכשלת. בלי זה set -e היה עוצר את הסקריפט.
-    current="$(snap list "${name}" 2>/dev/null | awk 'NR==2 {print $3}' || true)"
-    # מתקינים רק אם ה-snap לא מותקן, או שהגרסה בדיסק-און-קי חדשה יותר.
-    # =~ ^[0-9]+$ בודק שהגרסה המותקנת היא מספר, כדי שההשוואה -gt לא תיכשל.
-    if [ -z "${current}" ] || { [[ "${current}" =~ ^[0-9]+$ ]] && [ "${rev}" -gt "${current}" ]; }; then
-        echo "  ${name}"
-        # snap ack מייבא את "תעודת המקור" של החבילה, הקובץ assert.
-        # בלעדיה snap מסרב להתקין קובץ מקומי, או מנסה לבדוק באינטרנט.
-        snap ack "${OFFLINE}/snaps/${stem}.assert" < /dev/null
-        snap install "${OFFLINE}/snaps/${stem}.snap" < /dev/null
-        # < /dev/null : מונע מהפקודה לקרוא את order.txt, שה-while קורא ממנו.
-    fi
-done < "${OFFLINE}/snaps/order.txt"
-
-# -----------------------------------------------------------------------------
-# שלב 2: התקנת חבילות apt בלי אינטרנט
+# שלב 1: התקנת חבילות בלי אינטרנט: Google Chrome, unclutter, ffmpeg, x11vnc
+# download.sh הוריד את Chrome מ-Google ואת כל התלויות מ-Ubuntu לאותה תיקייה.
 # הטריק: יוצרים "מאגר" מקומי מהקבצים שבדיסק-און-קי, ואומרים ל-apt להשתמש רק בו.
 # ככה apt עדיין פותר תלויות לבד, ולא צריך להתקין כל קובץ ידנית.
 # -----------------------------------------------------------------------------
-echo "[2/10] Installing apt packages"
+echo "[1/9] Installing packages"
 rm -rf "${LOCAL_REPO}"                            # מוחקים העתקה ישנה, אם יש
 cp -r "${OFFLINE}/debs" "${LOCAL_REPO}"           # מעתיקים את החבילות לדיסק
 chmod -R a+rX "${LOCAL_REPO}"                     # נותנים לכולם הרשאת קריאה
@@ -153,9 +128,9 @@ apt-get "${APT_LOCAL[@]}" update                  # קורא את רשימת ה�
 DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCAL[@]}" install -y ${APT_PACKAGES}
 
 # -----------------------------------------------------------------------------
-# שלב 3: יצירת המשתמש kiosk
+# שלב 2: יצירת המשתמש kiosk
 # -----------------------------------------------------------------------------
-echo "[3/10] Creating user ${KIOSK_USER}"
+echo "[2/9] Creating user ${KIOSK_USER}"
 # יוצרים רק אם המשתמש לא קיים, כדי שאפשר יהיה להריץ את הסקריפט שוב
 if ! id "${KIOSK_USER}" >/dev/null 2>&1; then
     # -m יוצר תיקיית בית, ו--s קובע את ה-shell (bash)
@@ -166,9 +141,9 @@ fi
 passwd -d "${KIOSK_USER}"
 
 # -----------------------------------------------------------------------------
-# שלב 4: שמירת הגדרות הקיוסק
+# שלב 3: שמירת הגדרות הקיוסק
 # -----------------------------------------------------------------------------
-echo "[4/10] Saving kiosk settings"
+echo "[3/9] Saving kiosk settings"
 mkdir -p /etc/kiosk                               # -p: לא שגיאה אם כבר קיים
 echo "${URL}" > /etc/kiosk/url                    # הכתובת בקובץ נפרד, כדי שקל לשנות
 # שומרים סיסמה חדשה רק אם הוקלדה, כי Enter ריק משאיר את הקיימת.
@@ -187,7 +162,7 @@ chown "${KIOSK_USER}:${KIOSK_USER}" "${RECORDINGS}"
 chmod 755 "${RECORDINGS}"
 
 # -----------------------------------------------------------------------------
-# שלב 5: סשן הקיוסק
+# שלב 4: סשן הקיוסק
 # "סשן" הוא מה שרץ אחרי ההתחברות. בדרך כלל זה שולחן העבודה של GNOME,
 # ובקיוסק במקומו רץ סקריפט שלנו: הדפדפן, ההקלטה ו-VNC. אין תפריטים ואין חלונות נוספים.
 #
@@ -195,7 +170,7 @@ chmod 755 "${RECORDINGS}"
 # המירכאות סביב 'EOF' אומרות לא להחליף משתנים ($) עכשיו. הם יוחלפו
 # רק כשהסקריפט שנוצר ירוץ בפועל.
 # -----------------------------------------------------------------------------
-echo "[5/10] Creating kiosk session"
+echo "[4/9] Creating kiosk session"
 cat > /usr/local/bin/kiosk-session <<'EOF'
 #!/bin/bash
 # ---- מסך: לא לכבות ולא להחשיך ----
@@ -261,17 +236,17 @@ unclutter -idle 1 -root &
 
 # ---- הדפדפן ----
 URL="$(cat /etc/kiosk/url)"     # הכתובת נקראת מהקובץ בכל פעם שהקיוסק עולה
-# קובץ ההגדרות של Chromium. בגרסת snap הוא נמצא בתוך תיקיית snap.
-PREFS="$HOME/snap/chromium/common/chromium/Default/Preferences"
+# קובץ ההגדרות של Chrome, בתיקיית הבית של המשתמש kiosk.
+PREFS="$HOME/.config/google-chrome/Default/Preferences"
 
-# לולאה אינסופית: אם Chromium נסגר או קורס, הוא נפתח מחדש.
+# לולאה אינסופית: אם Chrome נסגר או קורס, הוא נפתח מחדש.
 while true; do
-    # אחרי קריסה, Chromium מציג "Restore pages?". כאן מסמנים בקובץ ההגדרות
+    # אחרי קריסה, Chrome מציג "Restore pages?". כאן מסמנים בקובץ ההגדרות
     # שהוא נסגר כרגיל, כדי שהשאלה לא תופיע.
     if [ -f "$PREFS" ]; then
         sed -i 's/"exited_cleanly":false/"exited_cleanly":true/; s/"exit_type":"[^"]*"/"exit_type":"Normal"/' "$PREFS"
     fi
-    # בקיוסק אין מנהל חלונות, ולכן Chromium לא תמיד מתמתח לבד על כל המסך.
+    # בקיוסק אין מנהל חלונות, ולכן Chrome לא תמיד מתמתח לבד על כל המסך.
     # כאן מודדים את המסך (בפורמט 2160,1440) ונותנים לדפדפן גודל ומיקום מדויקים.
     SIZE="$(xrandr --current 2>/dev/null | sed -n 's/.* current \([0-9]*\) x \([0-9]*\),.*/\1,\2/p' | head -n 1)"
     WINDOW=()
@@ -284,11 +259,12 @@ while true; do
     # --disable-session-crashed-bubble: בלי הודעה על קריסה
     # --disable-features=Translate    : בלי הצעה לתרגם את הדף
     # --no-first-run                  : בלי מסך "ברוך הבא" בפעם הראשונה
+    # --no-default-browser-check      : בלי שאלה על דפדפן ברירת מחדל
     # --password-store=basic          : בלי בקשה לפתוח "מחזיק מפתחות" (keyring)
     # --check-for-update-interval=... : לא לבדוק עדכונים (פעם בשנה, בשניות)
     # --overscroll-history-navigation=0: החלקה הצידה לא חוזרת לדף הקודם
     # --disable-pinch                 : בלי הגדלה בשתי אצבעות
-    /snap/bin/chromium \
+    /usr/bin/google-chrome-stable \
         --kiosk \
         "${WINDOW[@]}" \
         --noerrdialogs \
@@ -296,6 +272,7 @@ while true; do
         --disable-session-crashed-bubble \
         --disable-features=Translate \
         --no-first-run \
+        --no-default-browser-check \
         --password-store=basic \
         --check-for-update-interval=31536000 \
         --overscroll-history-navigation=0 \
@@ -329,10 +306,10 @@ SystemAccount=false
 EOF
 
 # -----------------------------------------------------------------------------
-# שלב 6: התחברות אוטומטית ל-kiosk בהדלקה
+# שלב 5: התחברות אוטומטית ל-kiosk בהדלקה
 # ההגדרות של מסך ההתחברות (GDM) נמצאות ב-/etc/gdm3/custom.conf, בחלק [daemon].
 # -----------------------------------------------------------------------------
-echo "[6/10] Enabling auto-login"
+echo "[5/9] Enabling auto-login"
 GDM_CONF="/etc/gdm3/custom.conf"
 touch "${GDM_CONF}"                       # יוצר את הקובץ אם הוא לא קיים
 # אם אין בקובץ חלק [daemon], מוסיפים אותו בסוף
@@ -346,11 +323,11 @@ sed -i '/^#\?[[:space:]]*AutomaticLogin/d' "${GDM_CONF}"
 sed -i "/^\[daemon\]/a AutomaticLoginEnable=true\nAutomaticLogin=${KIOSK_USER}" "${GDM_CONF}"
 
 # -----------------------------------------------------------------------------
-# שלב 7: מקלדת על המסך במסך ההתחברות
+# שלב 6: מקלדת על המסך במסך ההתחברות
 # לטאבלט אין מקלדת, אז בלי זה user לא יכול להקליד סיסמה.
 # dconf הוא "מאגר ההגדרות" של GNOME. למסך ההתחברות יש מאגר משלו בשם gdm.
 # -----------------------------------------------------------------------------
-echo "[7/10] Enabling on-screen keyboard on login screen"
+echo "[6/9] Enabling on-screen keyboard on login screen"
 mkdir -p /etc/dconf/profile /etc/dconf/db/gdm.d
 # הפרופיל אומר ל-dconf מאילו מקורות לקרוא את ההגדרות של מסך ההתחברות.
 # בדרך כלל הוא כבר קיים, ויוצרים אותו רק אם הוא חסר.
@@ -365,10 +342,10 @@ EOF
 dconf update                              # בונה מחדש את מאגר ההגדרות מהקבצים
 
 # -----------------------------------------------------------------------------
-# שלב 8: נעילת הדפדפן וחסימת קיצורים
+# שלב 7: נעילת הדפדפן וחסימת קיצורים
 # -----------------------------------------------------------------------------
-echo "[8/10] Locking browser and shortcuts"
-# "מדיניות" (policies) של Chromium: הגדרות שהמשתמש לא יכול לשנות.
+echo "[7/9] Locking browser and shortcuts"
+# "מדיניות" (policies) של Chrome: הגדרות שהמשתמש לא יכול לשנות.
 #   DeveloperToolsAvailability 2 : חוסם את כלי המפתחים (F12)
 #   IncognitoModeAvailability 1  : חוסם גלישה בסתר
 #   BrowserGuestModeEnabled      : חוסם מצב אורח
@@ -377,9 +354,11 @@ echo "[8/10] Locking browser and shortcuts"
 #   TranslateEnabled             : לא להציע תרגום
 #   DownloadRestrictions 3       : חוסם הורדת קבצים
 #   PrintingEnabled              : חוסם הדפסה
+#   PrivacySandboxPromptEnabled  : בלי חלון "Ad privacy" בפתיחה הראשונה
+#   DefaultBrowserSettingEnabled : בלי שאלה אם להפוך את Chrome לדפדפן ברירת המחדל
 # בקובץ JSON אסור לכתוב הערות, ולכן ההסבר נמצא כאן ולא בתוך הקובץ.
-mkdir -p /etc/chromium-browser/policies/managed
-cat > /etc/chromium-browser/policies/managed/kiosk.json <<'EOF'
+mkdir -p /etc/opt/chrome/policies/managed
+cat > /etc/opt/chrome/policies/managed/kiosk.json <<'EOF'
 {
     "DeveloperToolsAvailability": 2,
     "IncognitoModeAvailability": 1,
@@ -388,7 +367,9 @@ cat > /etc/chromium-browser/policies/managed/kiosk.json <<'EOF'
     "PasswordManagerEnabled": false,
     "TranslateEnabled": false,
     "DownloadRestrictions": 3,
-    "PrintingEnabled": false
+    "PrintingEnabled": false,
+    "PrivacySandboxPromptEnabled": false,
+    "DefaultBrowserSettingEnabled": false
 }
 EOF
 
@@ -406,7 +387,7 @@ EOF
 systemctl mask ctrl-alt-del.target
 
 # -----------------------------------------------------------------------------
-# שלב 9: שירות הכפתורים (פינה, A1, תאורה)
+# שלב 8: שירות הכפתורים (פינה, A1, תאורה)
 # תוכנת Python שרצה ברקע בתור root מרגע ההדלקה, וקוראת ישירות מהחומרה:
 #   - לחיצה של 5 שניות על הפינה השמאלית העליונה : יציאה מהקיוסק
 #   - A1 (שולח Ctrl+Alt+Delete)                  : רענון הדף (F5)
@@ -416,7 +397,7 @@ systemctl mask ctrl-alt-del.target
 # למה Python בלי ספריות נוספות? כדי שלא יהיה צורך להוריד עוד חבילות.
 # Python 3 מגיע עם Ubuntu.
 # -----------------------------------------------------------------------------
-echo "[9/10] Installing kiosk buttons service"
+echo "[8/9] Installing kiosk buttons service"
 cat > /usr/local/bin/kiosk-corner <<'EOF'
 import fcntl        # ioctl: שאלות ופקודות ישירות לחומרה
 import os           # פתיחה וקריאה של קבצים, כולל קבצי חומרה
@@ -750,7 +731,7 @@ systemctl daemon-reload                   # טוען מחדש את קבצי הש
 systemctl enable kiosk-corner.service     # מפעיל את השירות בכל הדלקה
 
 # -----------------------------------------------------------------------------
-# שלב 10: מחיקה אוטומטית של הקלטות ישנות
+# שלב 9: מחיקה אוטומטית של הקלטות ישנות
 # סקריפט קטן ש-systemd מריץ כל דקה. הוא מוחק את הקובץ הישן ביותר כל עוד:
 #   - ההקלטות תופסות יותר מ-70% מגודל הדיסק, או
 #   - נשארו בדיסק פחות מ-2GB פנויים
@@ -764,7 +745,7 @@ systemctl enable kiosk-corner.service     # מפעיל את השירות בכל 
 #   df --output=avail    : כמה בתים פנויים
 #   ls -1 ... | sort     : רשימת הקבצים לפי שם. השם הוא תאריך, אז הישן ראשון
 # -----------------------------------------------------------------------------
-echo "[10/10] Installing recordings cleanup"
+echo "[9/9] Installing recordings cleanup"
 cat > /usr/local/bin/kiosk-recordings-cleanup <<EOF
 #!/bin/bash
 DIR="${RECORDINGS}"

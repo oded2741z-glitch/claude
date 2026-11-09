@@ -35,7 +35,7 @@ exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 
 URL="$1"
 KIOSK_USER="kiosk"
-APT_PACKAGES="unclutter ffmpeg x11vnc"
+APT_PACKAGES="unclutter ffmpeg x11vnc google-chrome-stable"
 RECORDINGS="/var/kiosk-recordings"
 RECORDINGS_LIMIT_PERCENT=70
 OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"
@@ -52,20 +52,7 @@ if [ ! -f "${OFFLINE}/complete" ]; then
     exit 1
 fi
 
-echo "[1/10] Installing snaps"
-while read -r stem; do
-    [ -z "${stem}" ] && continue
-    name="${stem%_*}"
-    rev="${stem##*_}"
-    current="$(snap list "${name}" 2>/dev/null | awk 'NR==2 {print $3}' || true)"
-    if [ -z "${current}" ] || { [[ "${current}" =~ ^[0-9]+$ ]] && [ "${rev}" -gt "${current}" ]; }; then
-        echo "  ${name}"
-        snap ack "${OFFLINE}/snaps/${stem}.assert" < /dev/null
-        snap install "${OFFLINE}/snaps/${stem}.snap" < /dev/null
-    fi
-done < "${OFFLINE}/snaps/order.txt"
-
-echo "[2/10] Installing apt packages"
+echo "[1/9] Installing packages"
 rm -rf "${LOCAL_REPO}"
 cp -r "${OFFLINE}/debs" "${LOCAL_REPO}"
 chmod -R a+rX "${LOCAL_REPO}"
@@ -74,13 +61,13 @@ APT_LOCAL=(-o "Dir::Etc::sourcelist=${LOCAL_REPO}/local.list" -o "Dir::Etc::sour
 apt-get "${APT_LOCAL[@]}" update
 DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCAL[@]}" install -y ${APT_PACKAGES}
 
-echo "[3/10] Creating user ${KIOSK_USER}"
+echo "[2/9] Creating user ${KIOSK_USER}"
 if ! id "${KIOSK_USER}" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "${KIOSK_USER}"
 fi
 passwd -d "${KIOSK_USER}"
 
-echo "[4/10] Saving kiosk settings"
+echo "[3/9] Saving kiosk settings"
 mkdir -p /etc/kiosk
 echo "${URL}" > /etc/kiosk/url
 if [ -n "${VNC_PASS}" ]; then
@@ -92,7 +79,7 @@ mkdir -p "${RECORDINGS}"
 chown "${KIOSK_USER}:${KIOSK_USER}" "${RECORDINGS}"
 chmod 755 "${RECORDINGS}"
 
-echo "[5/10] Creating kiosk session"
+echo "[4/9] Creating kiosk session"
 cat > /usr/local/bin/kiosk-session <<'EOF'
 #!/bin/bash
 xset s off
@@ -124,7 +111,7 @@ unclutter -idle 1 -root &
 ) &
 
 URL="$(cat /etc/kiosk/url)"
-PREFS="$HOME/snap/chromium/common/chromium/Default/Preferences"
+PREFS="$HOME/.config/google-chrome/Default/Preferences"
 
 while true; do
     if [ -f "$PREFS" ]; then
@@ -135,7 +122,7 @@ while true; do
     if [ -n "$SIZE" ]; then
         WINDOW=(--window-position=0,0 --window-size="$SIZE")
     fi
-    /snap/bin/chromium \
+    /usr/bin/google-chrome-stable \
         --kiosk \
         "${WINDOW[@]}" \
         --noerrdialogs \
@@ -143,6 +130,7 @@ while true; do
         --disable-session-crashed-bubble \
         --disable-features=Translate \
         --no-first-run \
+        --no-default-browser-check \
         --password-store=basic \
         --check-for-update-interval=31536000 \
         --overscroll-history-navigation=0 \
@@ -168,7 +156,7 @@ XSession=kiosk
 SystemAccount=false
 EOF
 
-echo "[6/10] Enabling auto-login"
+echo "[5/9] Enabling auto-login"
 GDM_CONF="/etc/gdm3/custom.conf"
 touch "${GDM_CONF}"
 if ! grep -q '^\[daemon\]' "${GDM_CONF}"; then
@@ -177,7 +165,7 @@ fi
 sed -i '/^#\?[[:space:]]*AutomaticLogin/d' "${GDM_CONF}"
 sed -i "/^\[daemon\]/a AutomaticLoginEnable=true\nAutomaticLogin=${KIOSK_USER}" "${GDM_CONF}"
 
-echo "[7/10] Enabling on-screen keyboard on login screen"
+echo "[6/9] Enabling on-screen keyboard on login screen"
 mkdir -p /etc/dconf/profile /etc/dconf/db/gdm.d
 if [ ! -f /etc/dconf/profile/gdm ]; then
     printf 'user-db:user\nsystem-db:gdm\nfile-db:/usr/share/gdm/greeter-dconf-defaults\n' > /etc/dconf/profile/gdm
@@ -188,9 +176,9 @@ screen-keyboard-enabled=true
 EOF
 dconf update
 
-echo "[8/10] Locking browser and shortcuts"
-mkdir -p /etc/chromium-browser/policies/managed
-cat > /etc/chromium-browser/policies/managed/kiosk.json <<'EOF'
+echo "[7/9] Locking browser and shortcuts"
+mkdir -p /etc/opt/chrome/policies/managed
+cat > /etc/opt/chrome/policies/managed/kiosk.json <<'EOF'
 {
     "DeveloperToolsAvailability": 2,
     "IncognitoModeAvailability": 1,
@@ -199,7 +187,9 @@ cat > /etc/chromium-browser/policies/managed/kiosk.json <<'EOF'
     "PasswordManagerEnabled": false,
     "TranslateEnabled": false,
     "DownloadRestrictions": 3,
-    "PrintingEnabled": false
+    "PrintingEnabled": false,
+    "PrivacySandboxPromptEnabled": false,
+    "DefaultBrowserSettingEnabled": false
 }
 EOF
 
@@ -212,7 +202,7 @@ EndSection
 EOF
 systemctl mask ctrl-alt-del.target
 
-echo "[9/10] Installing kiosk buttons service"
+echo "[8/9] Installing kiosk buttons service"
 cat > /usr/local/bin/kiosk-corner <<'EOF'
 import fcntl
 import os
@@ -488,7 +478,7 @@ EOF
 systemctl daemon-reload
 systemctl enable kiosk-corner.service
 
-echo "[10/10] Installing recordings cleanup"
+echo "[9/9] Installing recordings cleanup"
 cat > /usr/local/bin/kiosk-recordings-cleanup <<EOF
 #!/bin/bash
 DIR="${RECORDINGS}"

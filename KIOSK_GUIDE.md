@@ -4,7 +4,7 @@
 
 ## מה הקיוסק עושה
 
-- **בהדלקה:** הטאבלט נכנס לבד למשתמש `kiosk`, ו-Chromium פותח במסך מלא אתר מהרשת המקומית.
+- **בהדלקה:** הטאבלט נכנס לבד למשתמש `kiosk`, ו-Google Chrome פותח במסך מלא אתר מהרשת המקומית.
 - **אם הדפדפן נסגר או קורס,** הוא עולה מחדש אחרי 2 שניות.
 - **הקלטה:** המסך מוקלט כל הזמן, והקלטות ישנות נמחקות לבד.
 - **שליטה מרחוק:** אפשר לצפות במסך ולשלוט בו ממחשב אחר עם TigerVNC.
@@ -32,10 +32,10 @@ sudo bash download.sh
 
 3. בסוף מופיע `Done. Files saved to: ...`, ובדיסק-און-קי נוצרת התיקייה `kiosk-offline`.
 
-**אם ההורדה נכשלת:** הסקריפט מנסה שוב עד 5 פעמים. אם הוא עדיין נכשל, מריצים אותו שוב. אם גם זה לא עוזר, בודקים את החיבור לשרת של snap:
+**אם ההורדה נכשלת:** הסקריפט מנסה שוב עד 5 פעמים. אם הוא עדיין נכשל, מריצים אותו שוב. אם גם זה לא עוזר, בודקים שאפשר להוריד את Chrome מ-Google:
 
 ```bash
-snap download hello-world
+wget -O /tmp/chrome-test.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 ```
 
 ## שלב 2: התקנה בטאבלט
@@ -195,7 +195,7 @@ sudo systemctl stop kiosk-test
 | `/usr/local/bin/kiosk-corner` | השירות של הפינה, A1 והתאורה |
 | `/usr/local/bin/kiosk-recordings-cleanup` | מחיקת הקלטות ישנות |
 | `/etc/gdm3/custom.conf` | הגדרת ההתחברות האוטומטית |
-| `/etc/chromium-browser/policies/managed/kiosk.json` | נעילות הדפדפן |
+| `/etc/opt/chrome/policies/managed/kiosk.json` | נעילות הדפדפן |
 | `/var/log/kiosk-setup.log` | יומן ההתקנה |
 
 ## ביטול הקיוסק

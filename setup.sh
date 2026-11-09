@@ -77,8 +77,14 @@ while true; do
     if [ -f "$PREFS" ]; then
         sed -i 's/"exited_cleanly":false/"exited_cleanly":true/; s/"exit_type":"[^"]*"/"exit_type":"Normal"/' "$PREFS"
     fi
+    SIZE="$(xrandr --current 2>/dev/null | sed -n 's/.* current \([0-9]*\) x \([0-9]*\),.*/\1,\2/p' | head -n 1)"
+    WINDOW=()
+    if [ -n "$SIZE" ]; then
+        WINDOW=(--window-position=0,0 --window-size="$SIZE")
+    fi
     /snap/bin/chromium \
         --kiosk \
+        "${WINDOW[@]}" \
         --noerrdialogs \
         --disable-infobars \
         --disable-session-crashed-bubble \

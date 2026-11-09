@@ -11,11 +11,33 @@ if [ $# -ne 1 ]; then
     exit 1
 fi
 
+VNC_PASS_FILE="/etc/kiosk/vncpasswd"
+VNC_PASS=""
+while true; do
+    read -rsp "VNC password (max 8 characters, Enter keeps current): " VNC_PASS
+    echo
+    if [ -z "${VNC_PASS}" ]; then
+        if [ -f "${VNC_PASS_FILE}" ]; then
+            break
+        fi
+        echo "A VNC password is required."
+        continue
+    fi
+    read -rsp "Repeat VNC password: " VNC_PASS2
+    echo
+    if [ "${VNC_PASS}" = "${VNC_PASS2}" ]; then
+        break
+    fi
+    echo "Passwords do not match."
+done
+
 exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 
 URL="$1"
 KIOSK_USER="kiosk"
-APT_PACKAGES="unclutter"
+APT_PACKAGES="unclutter ffmpeg x11vnc"
+RECORDINGS="/var/kiosk-recordings"
+RECORDINGS_LIMIT_PERCENT=70
 OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"
 LOCAL_REPO="/var/tmp/kiosk-debs"
 
@@ -30,7 +52,7 @@ if [ ! -f "${OFFLINE}/complete" ]; then
     exit 1
 fi
 
-echo "[1/9] Installing snaps"
+echo "[1/10] Installing snaps"
 while read -r stem; do
     [ -z "${stem}" ] && continue
     name="${stem%_*}"
@@ -43,7 +65,7 @@ while read -r stem; do
     fi
 done < "${OFFLINE}/snaps/order.txt"
 
-echo "[2/9] Installing apt packages"
+echo "[2/10] Installing apt packages"
 rm -rf "${LOCAL_REPO}"
 cp -r "${OFFLINE}/debs" "${LOCAL_REPO}"
 chmod -R a+rX "${LOCAL_REPO}"
@@ -52,23 +74,54 @@ APT_LOCAL=(-o "Dir::Etc::sourcelist=${LOCAL_REPO}/local.list" -o "Dir::Etc::sour
 apt-get "${APT_LOCAL[@]}" update
 DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCAL[@]}" install -y ${APT_PACKAGES}
 
-echo "[3/9] Creating user ${KIOSK_USER}"
+echo "[3/10] Creating user ${KIOSK_USER}"
 if ! id "${KIOSK_USER}" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "${KIOSK_USER}"
 fi
 passwd -d "${KIOSK_USER}"
 
-echo "[4/9] Saving kiosk URL"
+echo "[4/10] Saving kiosk settings"
 mkdir -p /etc/kiosk
 echo "${URL}" > /etc/kiosk/url
+if [ -n "${VNC_PASS}" ]; then
+    x11vnc -storepasswd "${VNC_PASS}" "${VNC_PASS_FILE}" >/dev/null
+fi
+chown root:"${KIOSK_USER}" "${VNC_PASS_FILE}"
+chmod 640 "${VNC_PASS_FILE}"
+mkdir -p "${RECORDINGS}"
+chown "${KIOSK_USER}:${KIOSK_USER}" "${RECORDINGS}"
+chmod 755 "${RECORDINGS}"
 
-echo "[5/9] Creating kiosk session"
+echo "[5/10] Creating kiosk session"
 cat > /usr/local/bin/kiosk-session <<'EOF'
 #!/bin/bash
 xset s off
 xset s noblank
 xset -dpms
 unclutter -idle 1 -root &
+
+(
+    while true; do
+        GEOM="$(xrandr --current 2>/dev/null | sed -n 's/.* current \([0-9]*\) x \([0-9]*\),.*/\1x\2/p' | head -n 1)"
+        if [ -n "$GEOM" ]; then
+            ffmpeg -nostdin -loglevel error \
+                -f x11grab -draw_mouse 0 -framerate 5 -video_size "$GEOM" -i "$DISPLAY" \
+                -vf "scale=trunc(iw/4)*2:trunc(ih/4)*2" \
+                -c:v libx264 -preset veryfast -crf 30 -pix_fmt yuv420p \
+                -f segment -segment_time 21600 -reset_timestamps 1 -strftime 1 \
+                /var/kiosk-recordings/%Y-%m-%d_%H-%M-%S.mkv
+        fi
+        sleep 5
+    done
+) &
+
+(
+    while true; do
+        x11vnc -display "$DISPLAY" -rfbauth /etc/kiosk/vncpasswd -rfbport 5900 \
+            -forever -shared -noxdamage -quiet >/dev/null 2>&1
+        sleep 2
+    done
+) &
 
 URL="$(cat /etc/kiosk/url)"
 PREFS="$HOME/snap/chromium/common/chromium/Default/Preferences"
@@ -115,7 +168,7 @@ XSession=kiosk
 SystemAccount=false
 EOF
 
-echo "[6/9] Enabling auto-login"
+echo "[6/10] Enabling auto-login"
 GDM_CONF="/etc/gdm3/custom.conf"
 touch "${GDM_CONF}"
 if ! grep -q '^\[daemon\]' "${GDM_CONF}"; then
@@ -124,7 +177,7 @@ fi
 sed -i '/^#\?[[:space:]]*AutomaticLogin/d' "${GDM_CONF}"
 sed -i "/^\[daemon\]/a AutomaticLoginEnable=true\nAutomaticLogin=${KIOSK_USER}" "${GDM_CONF}"
 
-echo "[7/9] Enabling on-screen keyboard on login screen"
+echo "[7/10] Enabling on-screen keyboard on login screen"
 mkdir -p /etc/dconf/profile /etc/dconf/db/gdm.d
 if [ ! -f /etc/dconf/profile/gdm ]; then
     printf 'user-db:user\nsystem-db:gdm\nfile-db:/usr/share/gdm/greeter-dconf-defaults\n' > /etc/dconf/profile/gdm
@@ -135,7 +188,7 @@ screen-keyboard-enabled=true
 EOF
 dconf update
 
-echo "[8/9] Locking browser and shortcuts"
+echo "[8/10] Locking browser and shortcuts"
 mkdir -p /etc/chromium-browser/policies/managed
 cat > /etc/chromium-browser/policies/managed/kiosk.json <<'EOF'
 {
@@ -159,7 +212,7 @@ EndSection
 EOF
 systemctl mask ctrl-alt-del.target
 
-echo "[9/9] Installing kiosk buttons service"
+echo "[9/10] Installing kiosk buttons service"
 cat > /usr/local/bin/kiosk-corner <<'EOF'
 import fcntl
 import os
@@ -435,6 +488,54 @@ EOF
 systemctl daemon-reload
 systemctl enable kiosk-corner.service
 
+echo "[10/10] Installing recordings cleanup"
+cat > /usr/local/bin/kiosk-recordings-cleanup <<EOF
+#!/bin/bash
+DIR="${RECORDINGS}"
+LIMIT_PERCENT=${RECORDINGS_LIMIT_PERCENT}
+MIN_FREE=\$((2 * 1024 * 1024 * 1024))
+TOTAL=\$(df --output=size -B1 "\$DIR" | tail -n 1)
+LIMIT=\$((TOTAL * LIMIT_PERCENT / 100))
+while true; do
+    mapfile -t FILES < <(ls -1 "\$DIR"/*.mkv 2>/dev/null | sort)
+    if [ "\${#FILES[@]}" -lt 2 ]; then
+        break
+    fi
+    USED=\$(du -sb "\$DIR" | cut -f1)
+    FREE=\$(df --output=avail -B1 "\$DIR" | tail -n 1)
+    if [ "\$USED" -le "\$LIMIT" ] && [ "\$FREE" -ge "\$MIN_FREE" ]; then
+        break
+    fi
+    rm -f "\${FILES[0]}"
+done
+EOF
+chmod 755 /usr/local/bin/kiosk-recordings-cleanup
+
+cat > /etc/systemd/system/kiosk-recordings-cleanup.service <<'EOF'
+[Unit]
+Description=Delete old kiosk recordings
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kiosk-recordings-cleanup
+EOF
+
+cat > /etc/systemd/system/kiosk-recordings-cleanup.timer <<'EOF'
+[Unit]
+Description=Delete old kiosk recordings every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable kiosk-recordings-cleanup.timer
+
 echo
 echo "Done. Kiosk URL: ${URL}"
+echo "Recordings: ${RECORDINGS} (limit ${RECORDINGS_LIMIT_PERCENT}% of disk)"
+echo "VNC: port 5900, available while the kiosk is active"
 echo "Reboot to start the kiosk: sudo reboot"

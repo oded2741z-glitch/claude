@@ -50,17 +50,18 @@ if [ "${updated}" -ne 1 ]; then
 fi
 
 cd "${DEB_DIR}"
+rm -f ./*_i386.deb
 mapfile -t PKGS < <(apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances ${APT_PACKAGES} \
-    | grep -E '^[a-z0-9]' | sort -u)
+    | grep -E '^[a-z0-9]' | sed 's/:amd64$//' | grep -v ':' | sort -u)
 
 total="${#PKGS[@]}"
 count=0
 for pkg in "${PKGS[@]}"; do
     count=$((count + 1))
-    info="$(apt-cache show --no-all-versions "${pkg}" 2>/dev/null || true)"
+    info="$(apt-cache show --no-all-versions "${pkg}:amd64" 2>/dev/null || true)"
     ver="$(sed -n 's/^Version: //p' <<< "${info}" | head -n 1)"
     arch="$(sed -n 's/^Architecture: //p' <<< "${info}" | head -n 1)"
-    if [ -z "${ver}" ] || [ -z "${arch}" ]; then
+    if [ -z "${ver}" ] || { [ "${arch}" != "amd64" ] && [ "${arch}" != "all" ]; }; then
         continue
     fi
     file="${pkg}_${ver//:/%3a}_${arch}.deb"
@@ -71,7 +72,7 @@ for pkg in "${PKGS[@]}"; do
     ok=0
     for attempt in $(seq 1 "${ATTEMPTS}"); do
         rm -f "${file}"
-        if apt-get -o Acquire::Retries=3 download "${pkg}" >/dev/null 2>&1 && [ -s "${file}" ]; then
+        if apt-get -o Acquire::Retries=3 download "${pkg}:amd64" >/dev/null 2>&1 && [ -s "${file}" ]; then
             ok=1
             break
         fi

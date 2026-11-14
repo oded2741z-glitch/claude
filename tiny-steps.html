@@ -839,6 +839,33 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (screenTop < top) ctx.drawImage(img, 0, 8, w, 2, -ax, screenTop, w, top - screenTop + 10);
     ctx.drawImage(footBase, -ax, top);
     drawToes(img, -ax, top, idx);
+    var pc = 121 - ax, phw = 118, hemY = top + 110, pTop = Math.min(screenTop, top) - 60;
+    var pg = ctx.createLinearGradient(pc - phw, 0, pc + phw, 0);
+    pg.addColorStop(0, '#050506');
+    pg.addColorStop(0.28, '#232328');
+    pg.addColorStop(0.44, '#3b3b43');
+    pg.addColorStop(0.6, '#1b1b1f');
+    pg.addColorStop(1, '#050506');
+    ctx.fillStyle = pg;
+    ctx.beginPath();
+    ctx.moveTo(pc - phw + 8, pTop);
+    ctx.lineTo(pc - phw - 6, hemY);
+    ctx.quadraticCurveTo(pc, hemY + 36, pc + phw + 6, hemY);
+    ctx.lineTo(pc + phw - 8, pTop);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(pc - phw - 6, hemY);
+    ctx.quadraticCurveTo(pc, hemY + 36, pc + phw + 6, hemY);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(pc - 14, pTop);
+    ctx.lineTo(pc - 10, hemY + 14);
+    ctx.stroke();
     ctx.restore();
   }
 

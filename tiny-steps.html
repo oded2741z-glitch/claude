@@ -181,13 +181,14 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   function halfW(side) { return side ? SIDE_W / 2 : FOOT_W / 2; }
   function halfL(side) { return side ? SIDE_L / 2 : FOOT_L / 2; }
 
-  var SOLE_PART = 0.62, HEEL_R = 0.085, HEEL_BACK = 0.11;
+  var SOLE_PART = 0.47, HEEL_R = 0.07, HEEL_BACK = 0.1;
 
   function overlapsFoot(x, d, f, pad) {
     if (f.side) return Math.abs(x - f.x) < halfW(f.side) + pad && Math.abs(d - f.d) < halfL(f.side) + pad;
     var near = f.d - FOOT_L / 2;
     if (Math.abs(x - f.x) < FOOT_W / 2 + pad && d > near - pad && d < near + SOLE_PART * FOOT_L + pad) return true;
     var hx = x - f.x, hd = d - (f.d + FOOT_L / 2 - HEEL_BACK);
+    pad += 0.04;
     return hx * hx + hd * hd < (HEEL_R + pad) * (HEEL_R + pad);
   }
 
@@ -516,7 +517,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   function beginGiantStep() {
     movingFoot = aim.x < (feet[0].x + feet[1].x) / 2 ? 0 : 1;
     var mover = feet[movingFoot], other = feet[1 - movingFoot];
-    var tx = aim.x, td = aim.d + 0.23;
+    var tx = aim.x, td = aim.d + 0.32;
     var gapX = FOOT_W, gapD = FOOT_L;
     if (Math.abs(tx - other.x) < gapX * 1.1 && Math.abs(td - other.d) < gapD * 0.9) {
       tx = other.x + (tx >= other.x ? 1 : -1) * gapX * 1.15;
@@ -828,23 +829,25 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     ctx.restore();
   }
 
-  function drawSole(x, d, fill, stroke) {
+  function drawSole(x, d, fill, stroke, idx) {
     var hw = FOOT_W / 2, hl = FOOT_L / 2;
-    var pts = [], right = [], i, v, wv, dd, ang;
-    for (i = 0; i <= 24; i++) {
-      v = i / 24;
-      if (v < 0.3) wv = Math.sqrt(1 - Math.pow(1 - v / 0.3, 2));
-      else if (v < 0.8) wv = 1 - 0.3 * (v - 0.3) / 0.5;
-      else wv = 0.7 * Math.sqrt(Math.max(0, 1 - Math.pow((v - 0.8) / 0.2, 2)));
+    var inner = idx === 0 ? 1 : -1;
+    var pts = [], right = [], i, v, wv, dd, cx, ang;
+    for (i = 0; i <= 30; i++) {
+      v = i / 30;
+      if (v < 0.25) wv = Math.sqrt(1 - Math.pow(1 - v / 0.25, 2));
+      else wv = 0.4 + 0.6 * (0.5 + 0.5 * Math.cos(Math.PI * (v - 0.25) / 0.75));
+      if (v > 0.9) wv *= Math.sqrt(Math.max(0, 1 - Math.pow((v - 0.9) / 0.1, 2)));
       dd = Math.max(0.35, d - hl + v * SOLE_PART * FOOT_L);
-      pts.push(P(x - hw * wv, dd, 0));
-      right.push(P(x + hw * wv, dd, 0));
+      cx = x + inner * hw * 0.14 * (1 - v) - inner * hw * 0.1 * v;
+      pts.push(P(cx - hw * wv * (inner > 0 ? 0.92 : 1), dd, 0));
+      right.push(P(cx + hw * wv * (inner > 0 ? 1 : 0.92), dd, 0));
     }
     for (i = right.length - 1; i >= 0; i--) pts.push(right[i]);
     var heel = [];
     for (i = 0; i < 20; i++) {
       ang = i / 20 * Math.PI * 2;
-      heel.push(P(x + Math.cos(ang) * HEEL_R, Math.max(0.35, d + hl - HEEL_BACK + Math.sin(ang) * HEEL_R), 0));
+      heel.push(P(x - inner * hw * 0.12 + Math.cos(ang) * HEEL_R, Math.max(0.35, d + hl - HEEL_BACK + Math.sin(ang) * HEEL_R * 1.2), 0));
     }
     quad(pts, fill, null);
     quad(heel, fill, null);
@@ -858,9 +861,9 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   function drawShadow() {
     if (step) {
       var p = step.t / step.dur;
-      drawSole(step.toX, step.toD, 'rgba(10,5,0,' + (0.15 + 0.4 * p).toFixed(3) + ')', '#ff4d4d');
+      drawSole(step.toX, step.toD, 'rgba(10,5,0,' + (0.15 + 0.4 * p).toFixed(3) + ')', '#ff4d4d', step.foot);
     } else if (mode === 'giant' && state === 'playing') {
-      drawSole(aim.x, aim.d + 0.23, 'rgba(255,255,255,0.14)', '#ffffff');
+      drawSole(aim.x, aim.d + 0.32, 'rgba(255,255,255,0.14)', '#ffffff', aim.x < (feet[0].x + feet[1].x) / 2 ? 0 : 1);
     }
   }
 

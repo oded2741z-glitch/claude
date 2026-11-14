@@ -332,59 +332,165 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     ctx.setLineDash([]);
   }
 
-  function drawFoot(f, idx) {
-    var x = f.x, d = f.d, b = f.lift;
-    var SKIN = '#c68a5e', SHADE = '#a9714a', LINE = '#7a4f33', BLACK = '#111827';
-    var dn = Math.max(0.35, d - FOOT_L / 2), df = d + FOOT_L / 2;
-    var dBall = Math.max(dn, d - 0.1), dToe = dn + 0.05;
-    var da = Math.max(dToe, d + 0.15);
-    var l = x - FOOT_W / 2, r = x + FOOT_W / 2;
-    var xs = x > camX ? l : r;
-    var ll = x - LEG_W / 2, lr = x + LEG_W / 2;
-    var lxs = x > camX ? ll : lr;
-    var legTop = b + 14;
-    var inner = idx === 0 ? 1 : -1;
-    ctx.lineWidth = 1.5;
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
+  var SW = 500, SH = 700, SPRITE_UNITS = 0.6;
+  var footSprites = makeFootSprites();
 
-    var dh = df - 0.06;
-    quad([P(x - 0.04, dh, b), P(x + 0.04, dh, b), P(x + 0.08, dh, b + 0.26), P(x - 0.08, dh, b + 0.26)], BLACK, BLACK);
+  function footBody(g) {
+    g.beginPath();
+    g.moveTo(141, 0);
+    g.bezierCurveTo(130, 150, 60, 300, 42, 450);
+    g.bezierCurveTo(34, 520, 50, 590, 90, 610);
+    g.bezierCurveTo(180, 640, 330, 670, 400, 650);
+    g.bezierCurveTo(455, 630, 468, 540, 458, 450);
+    g.bezierCurveTo(450, 300, 372, 150, 359, 0);
+    g.closePath();
+  }
 
-    quad([P(xs, dn, b + 0.03), P(xs, dBall, b + 0.03), P(xs, df, b + 0.28), P(lxs, df, b + 0.7), P(lxs, da, b + 0.62), P(xs, dToe, b + 0.17)], SHADE, LINE);
-    quad([P(xs, dn, b), P(xs, dBall, b), P(xs, df, b + 0.25), P(xs, df, b + 0.28), P(xs, dBall, b + 0.03), P(xs, dn, b + 0.03)], BLACK, BLACK);
+  function makeFootSprites() {
+    var toes = [
+      { x: 395, y: 618, rx: 52, ry: 62 },
+      { x: 300, y: 640, rx: 38, ry: 50 },
+      { x: 228, y: 634, rx: 34, ry: 45 },
+      { x: 162, y: 617, rx: 32, ry: 41 },
+      { x: 100, y: 592, rx: 30, ry: 37 }
+    ];
+    var c = document.createElement('canvas');
+    c.width = SW; c.height = SH;
+    var g = c.getContext('2d');
+    var i, t, gr;
 
-    quad([P(lxs, da, b + 0.55), P(lxs, df, b + 0.55), P(lxs, df, legTop), P(lxs, da, legTop)], SHADE, LINE);
-    quad([P(ll, da, b + 0.55), P(lr, da, b + 0.55), P(lr, da, legTop), P(ll, da, legTop)], SKIN, LINE);
+    g.save();
+    g.translate(250, 350); g.scale(1.07, 1.03); g.translate(-250, -350);
+    g.translate(0, 8);
+    g.fillStyle = '#141414';
+    footBody(g); g.fill();
+    for (i = 0; i < toes.length; i++) {
+      t = toes[i];
+      g.beginPath(); g.ellipse(t.x, t.y, t.rx + 4, t.ry + 4, 0, 0, Math.PI * 2); g.fill();
+    }
+    g.restore();
 
-    if (b <= 0.8) {
-      quad([P(l, dToe, b + 0.17), P(r, dToe, b + 0.17), P(lr, da, b + 0.62), P(ll, da, b + 0.62)], SKIN, LINE);
-      var post = P(x + inner * 0.09, dn + 0.1, b + 0.2);
-      var sd = Math.max(dn + 0.1, d + 0.05);
-      var sl = P(l, sd, b + 0.1), sr = P(r, sd, b + 0.1);
-      ctx.strokeStyle = BLACK;
-      ctx.lineWidth = Math.max(2, 0.035 * F / d);
-      ctx.beginPath(); ctx.moveTo(sl[0], sl[1]); ctx.lineTo(post[0], post[1]); ctx.lineTo(sr[0], sr[1]); ctx.stroke();
-      ctx.lineWidth = 1.5;
-    } else {
-      quad([P(l, dn, b), P(r, dn, b), P(r, df, b + 0.25), P(l, df, b + 0.25)], BLACK, BLACK);
+    footBody(g);
+    g.fillStyle = '#c98f63';
+    g.fill();
+    g.save();
+    footBody(g); g.clip();
+    gr = g.createLinearGradient(30, 0, 470, 0);
+    gr.addColorStop(0, 'rgba(90,50,25,0.5)');
+    gr.addColorStop(0.25, 'rgba(90,50,25,0)');
+    gr.addColorStop(0.5, 'rgba(255,225,195,0.28)');
+    gr.addColorStop(0.78, 'rgba(90,50,25,0)');
+    gr.addColorStop(1, 'rgba(90,50,25,0.45)');
+    g.fillStyle = gr; g.fillRect(0, 0, SW, SH);
+    gr = g.createLinearGradient(0, 0, 0, SH);
+    gr.addColorStop(0, 'rgba(90,50,25,0.3)');
+    gr.addColorStop(0.35, 'rgba(90,50,25,0)');
+    gr.addColorStop(0.8, 'rgba(90,50,25,0)');
+    gr.addColorStop(1, 'rgba(90,50,25,0.25)');
+    g.fillStyle = gr; g.fillRect(0, 0, SW, SH);
+    g.restore();
+
+    for (i = toes.length - 1; i >= 0; i--) {
+      t = toes[i];
+      gr = g.createRadialGradient(t.x - t.rx * 0.25, t.y - t.ry * 0.35, 2, t.x, t.y, Math.max(t.rx, t.ry) * 1.1);
+      gr.addColorStop(0, '#e6b189');
+      gr.addColorStop(0.55, '#c98f63');
+      gr.addColorStop(1, '#9c6640');
+      g.fillStyle = gr;
+      g.beginPath(); g.ellipse(t.x, t.y, t.rx, t.ry, 0, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = 'rgba(90,50,25,0.45)';
+      g.lineWidth = 2;
+      g.stroke();
+      gr = g.createLinearGradient(0, t.y - t.ry * 0.15, 0, t.y + t.ry * 0.7);
+      gr.addColorStop(0, '#f6e1d8');
+      gr.addColorStop(1, '#e3b9a8');
+      g.fillStyle = gr;
+      g.beginPath(); g.ellipse(t.x, t.y + t.ry * 0.28, t.rx * 0.58, t.ry * 0.42, 0, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = 'rgba(120,70,50,0.4)';
+      g.lineWidth = 1.5;
+      g.stroke();
+      g.fillStyle = 'rgba(255,255,255,0.55)';
+      g.beginPath(); g.ellipse(t.x - t.rx * 0.18, t.y + t.ry * 0.16, t.rx * 0.2, t.ry * 0.1, -0.3, 0, Math.PI * 2); g.fill();
     }
 
-    quad([P(l, dn, b), P(r, dn, b), P(r, dn, b + 0.03), P(l, dn, b + 0.03)], BLACK, BLACK);
+    function straps(dy, width, style) {
+      g.strokeStyle = style;
+      g.lineWidth = width;
+      g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(38, 372 + dy);
+      g.quadraticCurveTo(200, 470 + dy, 348, 588 + dy);
+      g.quadraticCurveTo(425, 500 + dy, 464, 392 + dy);
+      g.stroke();
+    }
+    straps(7, 24, 'rgba(60,30,10,0.35)');
+    straps(0, 20, '#141414');
+    straps(-5, 3, 'rgba(255,255,255,0.28)');
 
-    var widths = [0.15, 0.1, 0.09, 0.085, 0.075];
-    var s = F / dn;
-    var tx = inner > 0 ? r : l;
-    for (var i = 0; i < widths.length; i++) {
-      var tr = widths[i] / 2;
-      var cxw = tx - inner * tr;
-      tx -= inner * widths[i];
-      var c = P(cxw, dn, b + 0.03 + tr * 1.1);
-      ctx.fillStyle = SKIN;
-      ctx.strokeStyle = LINE;
-      ctx.beginPath(); ctx.ellipse(c[0], c[1], tr * s, tr * 1.1 * s, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#fce7f3';
-      ctx.beginPath(); ctx.ellipse(c[0], c[1] - tr * 0.35 * s, tr * 0.6 * s, tr * 0.45 * s, 0, 0, Math.PI * 2); ctx.fill();
+    var m = document.createElement('canvas');
+    m.width = SW; m.height = SH;
+    var mg = m.getContext('2d');
+    mg.translate(SW, 0); mg.scale(-1, 1);
+    mg.drawImage(c, 0, 0);
+    return [c, m];
+  }
+
+  function drawLeg(x, da, hb) {
+    var s = F / da;
+    var cx = CX + (x - camX) * s;
+    var y0 = HZ + (1 - hb) * s;
+    function px(u) { return cx + u * s; }
+    function py(v) { return y0 - v * s; }
+    ctx.beginPath();
+    ctx.moveTo(px(-0.13), py(0));
+    ctx.bezierCurveTo(px(-0.11), py(0.8), px(-0.2), py(1.4), px(-0.21), py(2.2));
+    ctx.bezierCurveTo(px(-0.22), py(3), px(-0.18), py(3.8), px(-0.19), py(4.5));
+    ctx.lineTo(px(-0.27), py(16));
+    ctx.lineTo(px(0.27), py(16));
+    ctx.lineTo(px(0.19), py(4.5));
+    ctx.bezierCurveTo(px(0.18), py(3.8), px(0.22), py(3), px(0.21), py(2.2));
+    ctx.bezierCurveTo(px(0.2), py(1.4), px(0.11), py(0.8), px(0.13), py(0));
+    ctx.closePath();
+    var gr = ctx.createLinearGradient(px(-0.24), 0, px(0.24), 0);
+    gr.addColorStop(0, '#8a5632');
+    gr.addColorStop(0.28, '#c48a5e');
+    gr.addColorStop(0.5, '#dda87d');
+    gr.addColorStop(0.74, '#c48a5e');
+    gr.addColorStop(1, '#8a5632');
+    ctx.fillStyle = gr;
+    ctx.fill();
+  }
+
+  function drawFoot(f, idx) {
+    var x = f.x, d = f.d, b = f.lift;
+    var dn = Math.max(0.35, d - FOOT_L / 2), df = d + FOOT_L / 2;
+    var da = Math.max(dn + 0.2, d + 0.15);
+    var spr = footSprites[idx];
+    var N = 28;
+
+    drawLeg(x, da, b + 0.5);
+
+    function depthAt(t) { return dn + (da - dn) * t; }
+    function yAt(t) { return HZ + (1 - (b + 0.55 * Math.pow(t, 1.6))) * F / depthAt(t); }
+
+    if (yAt(0) - yAt(1) > 6) {
+      for (var i = N - 1; i >= 0; i--) {
+        var t0 = i / N, t1 = (i + 1) / N;
+        var sc = F / depthAt((t0 + t1) / 2);
+        var yA = yAt(t0), yB = yAt(t1);
+        var w = SPRITE_UNITS * sc;
+        ctx.drawImage(spr, 0, SH * (1 - t1), SW, SH / N, CX + (x - camX) * sc - w / 2, yB - 0.5, w, yA - yB + 1);
+      }
+    } else {
+      var l = x - FOOT_W / 2, r = x + FOOT_W / 2;
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(2, 0.08 * F / d);
+      quad([P(l, dn, b), P(r, dn, b), P(x + 0.14, df, b + 0.25), P(x - 0.14, df, b + 0.25)], '#141414', '#141414');
+      ctx.lineWidth = 1.5;
+      var hl = P(x, df - 0.08, b);
+      var hs = 0.05 * F / df;
+      ctx.fillStyle = '#333333';
+      ctx.beginPath(); ctx.ellipse(hl[0], hl[1], hs, hs * 0.7, 0, 0, Math.PI * 2); ctx.fill();
     }
   }
 

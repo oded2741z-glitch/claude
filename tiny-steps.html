@@ -869,64 +869,44 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     ctx.drawImage(footBase, -ax, top);
     drawToes(img, -ax, top, idx);
     var pc = 121 - ax, hemY = top + 112, pTop = Math.min(screenTop, top) - 60;
-    var cuffW = 80, bulgeW = 205, bulgeY = hemY - 300, cuffH = 24, N = 12, i, u;
-    function pantEdge(side, first) {
-      var x0 = pc + side * cuffW, x1 = pc + side * bulgeW;
-      if (first) ctx.moveTo(x0, hemY - cuffH); else ctx.lineTo(x0, hemY - cuffH);
-      ctx.bezierCurveTo(pc + side * (cuffW + 70), hemY - cuffH - 20, x1, hemY - 170, x1, bulgeY);
-      ctx.lineTo(pc + side * (bulgeW + 6), pTop);
-    }
-    function pantEdgeDown(side) {
-      var x0 = pc + side * cuffW, x1 = pc + side * bulgeW;
-      ctx.lineTo(pc + side * (bulgeW + 6), pTop);
-      ctx.lineTo(x1, bulgeY);
-      ctx.bezierCurveTo(x1, hemY - 170, pc + side * (cuffW + 70), hemY - cuffH - 20, x0, hemY - cuffH);
-    }
+    var hemW = 126, topW = 114, N = 10, i;
+    function hemAt(u) { return hemY + 34 * (1 - u * u); }
     ctx.save();
     ctx.beginPath();
-    pantEdge(-1, true);
-    pantEdgeDown(1);
+    ctx.moveTo(pc - topW, pTop);
+    ctx.lineTo(pc - hemW, hemY);
+    ctx.quadraticCurveTo(pc, hemY + 68, pc + hemW, hemY);
+    ctx.lineTo(pc + topW, pTop);
     ctx.closePath();
     ctx.clip();
     ctx.fillStyle = '#ece4d4';
-    ctx.fillRect(pc - bulgeW - 20, pTop, bulgeW * 2 + 40, hemY - pTop);
+    ctx.fillRect(pc - hemW - 10, pTop, hemW * 2 + 20, hemY + 80 - pTop);
     ctx.fillStyle = '#1f2a44';
     for (i = 0; i < N; i += 2) {
-      var s0 = (i / N) * 2 - 1, s1 = ((i + 1) / N) * 2 - 1;
+      var u0 = (i / N) * 2 - 1, u1 = ((i + 1) / N) * 2 - 1;
       ctx.beginPath();
-      pantEdge(s0, true);
-      pantEdgeDown(s1);
+      ctx.moveTo(pc + u0 * topW, pTop);
+      ctx.lineTo(pc + u0 * hemW, hemY + 80);
+      ctx.lineTo(pc + u1 * hemW, hemY + 80);
+      ctx.lineTo(pc + u1 * topW, pTop);
       ctx.closePath();
       ctx.fill();
     }
-    var pg = ctx.createLinearGradient(pc - bulgeW, 0, pc + bulgeW, 0);
-    pg.addColorStop(0, 'rgba(0,0,0,0.55)');
-    pg.addColorStop(0.3, 'rgba(0,0,0,0.08)');
+    var pg = ctx.createLinearGradient(pc - hemW, 0, pc + hemW, 0);
+    pg.addColorStop(0, 'rgba(0,0,0,0.5)');
+    pg.addColorStop(0.3, 'rgba(0,0,0,0.06)');
     pg.addColorStop(0.45, 'rgba(255,255,255,0.12)');
-    pg.addColorStop(0.65, 'rgba(0,0,0,0.1)');
-    pg.addColorStop(1, 'rgba(0,0,0,0.55)');
+    pg.addColorStop(0.65, 'rgba(0,0,0,0.08)');
+    pg.addColorStop(1, 'rgba(0,0,0,0.5)');
     ctx.fillStyle = pg;
-    ctx.fillRect(pc - bulgeW - 20, pTop, bulgeW * 2 + 40, hemY - pTop);
-    var vg = ctx.createLinearGradient(0, hemY - 150, 0, hemY - cuffH);
-    vg.addColorStop(0, 'rgba(0,0,0,0)');
-    vg.addColorStop(1, 'rgba(0,0,0,0.5)');
-    ctx.fillStyle = vg;
-    ctx.fillRect(pc - bulgeW - 20, hemY - 150, bulgeW * 2 + 40, 150);
+    ctx.fillRect(pc - hemW - 10, pTop, hemW * 2 + 20, hemY + 80 - pTop);
     ctx.restore();
-    ctx.fillStyle = '#161e33';
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.moveTo(pc - cuffW - 3, hemY - cuffH - 2);
-    ctx.lineTo(pc + cuffW + 3, hemY - cuffH - 2);
-    ctx.lineTo(pc + cuffW, hemY);
-    ctx.quadraticCurveTo(pc, hemY + 14, pc - cuffW, hemY);
-    ctx.closePath();
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-    ctx.lineWidth = 2;
-    for (i = 1; i < 9; i++) {
-      u = pc - cuffW + (i / 9) * cuffW * 2;
-      ctx.beginPath(); ctx.moveTo(u, hemY - cuffH); ctx.lineTo(u, hemY + 4); ctx.stroke();
-    }
+    ctx.moveTo(pc - hemW, hemY);
+    ctx.quadraticCurveTo(pc, hemY + 68, pc + hemW, hemY);
+    ctx.stroke();
     ctx.restore();
   }
 

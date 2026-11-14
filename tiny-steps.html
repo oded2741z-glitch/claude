@@ -336,25 +336,32 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     n.start(t);
   }
 
-  function playClick(vol) {
+  function playKnock(vol, freq) {
     if (!audio) return;
     var t = audio.currentTime;
     var o = audio.createOscillator(), g = audio.createGain();
-    o.type = 'square';
-    o.frequency.setValueAtTime(1500, t);
-    o.frequency.exponentialRampToValueAtTime(500, t + 0.04);
-    g.gain.setValueAtTime(0.25 * vol, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(freq, t);
+    o.frequency.exponentialRampToValueAtTime(freq * 0.72, t + 0.06);
+    g.gain.setValueAtTime(0.6 * vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
     o.connect(g); g.connect(audio.destination);
-    o.start(t); o.stop(t + 0.07);
-    var len = Math.floor(audio.sampleRate * 0.03);
+    o.start(t); o.stop(t + 0.11);
+    var o2 = audio.createOscillator(), g2 = audio.createGain();
+    o2.type = 'triangle';
+    o2.frequency.setValueAtTime(freq * 2.6, t);
+    g2.gain.setValueAtTime(0.18 * vol, t);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+    o2.connect(g2); g2.connect(audio.destination);
+    o2.start(t); o2.stop(t + 0.04);
+    var len = Math.floor(audio.sampleRate * 0.035);
     var buf = audio.createBuffer(1, len, audio.sampleRate);
     var data = buf.getChannelData(0);
-    for (var i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    for (var i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
     var n = audio.createBufferSource(), f = audio.createBiquadFilter(), ng = audio.createGain();
     n.buffer = buf;
-    f.type = 'highpass'; f.frequency.value = 2500;
-    ng.gain.value = 0.5 * vol;
+    f.type = 'bandpass'; f.frequency.value = freq * 3; f.Q.value = 2.5;
+    ng.gain.value = 0.7 * vol;
     n.connect(f); f.connect(ng); ng.connect(audio.destination);
     n.start(t);
   }
@@ -536,7 +543,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       if (f.tapT >= 0) {
         var prev = f.tapT;
         f.tapT += dt;
-        if (Math.floor(prev / TAP) < Math.floor(f.tapT / TAP)) playClick(Math.min(1, 1.6 / f.d));
+        if (Math.floor(prev / TAP) < Math.floor(f.tapT / TAP)) playKnock(Math.min(1, 1.6 / f.d), f.tapKind === 'sole' ? 260 : 520);
         if (f.tapT >= TAP * 2) {
           f.tapT = -1; f.tap = 0;
           f.tapIn = 3 + Math.random() * 4;
@@ -545,7 +552,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
         }
       } else {
         f.tapIn -= dt;
-        if (f.tapIn <= 0) f.tapT = 0;
+        if (f.tapIn <= 0) { f.tapT = 0; f.tapKind = Math.random() < 0.5 ? 'sole' : 'heel'; }
       }
     }
   }
@@ -822,9 +829,10 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (flip) ctx.scale(-1, 1);
     ctx.scale(k, k);
     if (f.tap > 0) {
-      ctx.translate(43, 0);
-      ctx.rotate(0.075 * f.tap);
-      ctx.translate(-43, 0);
+      var pivot = f.tapKind === 'sole' ? -142 : 43;
+      ctx.translate(pivot, 0);
+      ctx.rotate((f.tapKind === 'sole' ? -0.06 : 0.075) * f.tap);
+      ctx.translate(-pivot, 0);
     }
     var top = -ay;
     var screenTop = -gy / k - 40;

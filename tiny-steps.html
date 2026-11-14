@@ -36,6 +36,7 @@ h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); margin-botto
 .stage { position:relative; width:min(100%, max(480px, calc((100vh - 330px) * 16 / 9))); margin:0 auto; aspect-ratio:16/9; border:1px solid var(--border-color); border-radius:12px; overflow:hidden; background:var(--bg-light); }
 canvas { display:block; width:100%; height:100%; touch-action:none; cursor:pointer; }
 .overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:1rem; }
+.overlay.side { justify-content:flex-end; }
 .overlay-card { background:white; border:1px solid var(--border-color); border-radius:16px; padding:1.5rem 2rem; display:flex; flex-direction:column; align-items:center; gap:0.75rem; text-align:center; box-shadow:0 10px 25px rgba(0,0,0,0.05); max-width:90%; }
 .overlay-title { font-size:1.25rem; font-weight:800; letter-spacing:-0.5px; }
 .overlay-text { font-size:0.95rem; color:var(--text-gray); line-height:1.5; }
@@ -206,8 +207,6 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
       player.squashed = true;
       playSqueak();
-      stopVoice();
-      sayMine();
       gameOver();
     } else {
       dodged++;
@@ -225,6 +224,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       try { localStorage.setItem('tinysteps-best', String(best)); } catch (e) {}
       bestEl.textContent = best.toFixed(1) + ' s';
     }
+    overlay.classList.add('side');
     overlayTitle.textContent = 'Squashed';
     overlayText.textContent = 'You lasted ' + elapsed.toFixed(1) + ' seconds and dodged ' + dodged + (dodged === 1 ? ' step.' : ' steps.');
     startBtn.textContent = 'Play again';
@@ -277,25 +277,6 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     return len + 1.2 + Math.random() * 1.5;
   }
 
-  function sayMine() {
-    try {
-      var synth = window.speechSynthesis;
-      if (!synth) return;
-      synth.cancel();
-      var u = new SpeechSynthesisUtterance('You are mine.');
-      u.lang = 'en-US';
-      u.rate = 0.9;
-      u.pitch = 1.2;
-      var voices = synth.getVoices(), pick = null;
-      for (var i = 0; i < voices.length; i++) {
-        var v = voices[i];
-        if (v.lang && v.lang.indexOf('en') === 0 && /female|samantha|zira|aria|jenny|victoria|karen|google us english/i.test(v.name)) { pick = v; break; }
-      }
-      if (pick) u.voice = pick;
-      setTimeout(function () { try { synth.speak(u); } catch (e) {} }, 350);
-    } catch (e) {}
-  }
-
   function playStomp(vol) {
     if (!audio) return;
     var t = audio.currentTime;
@@ -336,7 +317,6 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
 
   function start() {
     initAudio();
-    try { if (window.speechSynthesis) { window.speechSynthesis.cancel(); window.speechSynthesis.getVoices(); } } catch (e) {}
     loadVoice();
     voiceIdx = 0;
     voiceIn = 0.2;
@@ -345,6 +325,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     timeEl.textContent = '0.0 s';
     dodgedEl.textContent = '0';
     overlay.style.display = 'none';
+    overlay.classList.remove('side');
     canvas.focus();
   }
 

@@ -792,6 +792,42 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     quad([s0, s1, s2, s3], g, 'rgba(120,90,40,0.35)');
   }
 
+  function drawBodyShadow() {
+    var LX = 3.6, LD = 12, LEN = 6, i, k;
+    var soft = typeof ctx.filter === 'string';
+    ctx.save();
+    if (soft) ctx.filter = 'blur(' + Math.max(2, Math.round(7 * canvas.width / W)) + 'px)';
+    ctx.fillStyle = 'rgba(12,6,0,0.34)';
+    ctx.beginPath();
+    for (i = 0; i < 2; i++) {
+      var f = feet[i];
+      var dx = f.x - LX, dd = f.d - LD;
+      var len = Math.sqrt(dx * dx + dd * dd);
+      dx /= len; dd /= len;
+      var sx = f.x + dx * f.lift * 0.7, sd = f.d + dd * f.lift * 0.7;
+      var tmax = dd < 0 ? Math.min(1, (sd - 0.38) / (-dd * LEN)) : 1;
+      if (tmax <= 0) continue;
+      var nx = -dd, nd = dx;
+      var w0 = 0.3, w1 = 0.3 + 0.75 * tmax;
+      var ex = sx + dx * LEN * tmax, ed = sd + dd * LEN * tmax;
+      var a = P(sx - nx * w0, sd - nd * w0, 0), b = P(sx + nx * w0, sd + nd * w0, 0);
+      var c = P(ex + nx * w1, Math.max(0.36, ed + nd * w1), 0), e = P(ex - nx * w1, Math.max(0.36, ed - nd * w1), 0);
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(e[0], e[1]); ctx.closePath();
+    }
+    ctx.fill();
+    var mx = (feet[0].x + feet[1].x) / 2, md = (feet[0].d + feet[1].d) / 2;
+    ctx.fillStyle = 'rgba(12,6,0,0.16)';
+    ctx.beginPath();
+    for (k = 0; k < 28; k++) {
+      var ang = k / 28 * Math.PI * 2;
+      var pt = P(mx - 0.3 + Math.cos(ang) * 1.9, Math.max(0.36, md - 0.6 + Math.sin(ang) * 1.5), 0);
+      if (k) ctx.lineTo(pt[0], pt[1]); else ctx.moveTo(pt[0], pt[1]);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   function drawSole(x, d, fill, stroke) {
     var hw = FOOT_W / 2, hl = FOOT_L / 2;
     var pts = [], right = [], i, v, wv, dd, ang;
@@ -999,6 +1035,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     ctx.save();
     if (shake > 0) ctx.translate((Math.random() - 0.5) * shake * 60, (Math.random() - 0.5) * shake * 90);
     drawRoom();
+    drawBodyShadow();
     drawShadow();
     var items = [
       { d: footDepth(feet[0]), draw: function () { drawFoot(feet[0], 0); } },

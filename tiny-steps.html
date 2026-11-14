@@ -191,12 +191,13 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   }
 
   function beginStep() {
-    var mover = feet[movingFoot];
-    var other = feet[1 - movingFoot];
     var warn = Math.max(0.5, 1.15 - elapsed * 0.012);
     var lead = Math.min(0.5, elapsed * 0.01) * warn;
-    var ax = player.x + player.vx * lead + (Math.random() - 0.5) * 0.3 + (movingFoot === 0 ? -0.1 : 0.1);
+    var ax = player.x + player.vx * lead + (Math.random() - 0.5) * 0.3;
     var ad = player.d + player.vd * lead + (Math.random() - 0.5) * 0.3;
+    movingFoot = ax < (feet[0].x + feet[1].x) / 2 ? 0 : 1;
+    var mover = feet[movingFoot];
+    var other = feet[1 - movingFoot];
     var dx = ax - other.x, dd = ad - other.d;
     var len = Math.sqrt(dx * dx + dd * dd);
     var stride = 2.4;
@@ -208,6 +209,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (Math.abs(tx - other.x) < gapX * 1.1 && Math.abs(td - other.d) < gapD * 0.9) {
       tx = other.x + (tx >= other.x ? 1 : -1) * gapX * 1.15;
     }
+    tx = movingFoot === 0 ? Math.min(tx, other.x - 0.05) : Math.max(tx, other.x + 0.05);
     step = { foot: movingFoot, fromX: mover.x, fromD: mover.d, fromSide: mover.side, toX: tx, toD: td, side: side, t: 0, dur: warn };
   }
 
@@ -426,12 +428,14 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   }
 
   function beginGiantStep() {
+    movingFoot = aim.x < (feet[0].x + feet[1].x) / 2 ? 0 : 1;
     var mover = feet[movingFoot], other = feet[1 - movingFoot];
     var tx = aim.x, td = aim.d + 0.23;
     var gapX = FOOT_W, gapD = FOOT_L;
     if (Math.abs(tx - other.x) < gapX * 1.1 && Math.abs(td - other.d) < gapD * 0.9) {
       tx = other.x + (tx >= other.x ? 1 : -1) * gapX * 1.15;
     }
+    tx = movingFoot === 0 ? Math.min(tx, other.x - 0.05) : Math.max(tx, other.x + 0.05);
     step = { foot: movingFoot, fromX: mover.x, fromD: mover.d, fromSide: 0, toX: tx, toD: td, side: 0, t: 0, dur: STOMP_TIME };
     ai.react = 0.1 + Math.random() * 0.3;
   }

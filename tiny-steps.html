@@ -87,7 +87,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
         </div>
       </div>
     </div>
-    <p class="hint" id="hint">Man: move with the arrow keys or W A S D, or press and hold the floor where you want to go. Giant: aim with the pointer and click to stomp, or use the arrow keys and Space.</p>
+    <p class="hint" id="hint">Man: move with the arrow keys or W A S D, or press and hold the floor where you want to go. Giant: aim with the pointer and click to stomp, or use the arrow keys and Space. The man can hide behind the dropped sandal for up to 3 seconds.</p>
   </div>
 </div>
 
@@ -152,6 +152,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     camX = 0;
     shake = 0;
     nextStepIn = 0.9;
+    hideT = 0;
+    placeSandal(true);
     movingFoot = 0;
   }
   var nextStepIn = 0.6, movingFoot = 0;
@@ -212,6 +214,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       tx = other.x + (tx >= other.x ? 1 : -1) * gapX * 1.15;
     }
     tx = movingFoot === 0 ? Math.min(tx, other.x - 0.05) : Math.max(tx, other.x + 0.05);
+    tx = avoidSandal(tx, td);
     step = { foot: movingFoot, fromX: mover.x, fromD: mover.d, fromSide: mover.side, toX: tx, toD: td, side: side, t: 0, dur: warn };
   }
 
@@ -262,6 +265,102 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     }
   }
 
+  var sandal = { x: 1.2, d: 2.6, flip: 1, fromX: 0, fromD: 0, toX: 0, toD: 0, move: 1, spin: 0 };
+  var hideT = 0, HIDE_MAX = 3;
+
+  function placeSandal(instant) {
+    var nx = 0, nd = 0;
+    for (var n = 0; n < 40; n++) {
+      nx = -1.4 + Math.random() * 2.8;
+      nd = 1.9 + Math.random() * 1.3;
+      var far = instant || Math.abs(nx - sandal.x) + Math.abs(nd - sandal.d) > 1.2;
+      var clear = !feet || (Math.abs(nx - feet[0].x) > 1.0 || Math.abs(nd - feet[0].d) > 0.9) && (Math.abs(nx - feet[1].x) > 1.0 || Math.abs(nd - feet[1].d) > 0.9);
+      if (far && clear) break;
+    }
+    if (instant) {
+      sandal.x = nx; sandal.d = nd; sandal.move = 1; sandal.spin = 0;
+      sandal.flip = Math.random() < 0.5 ? 1 : -1;
+    } else {
+      sandal.fromX = sandal.x; sandal.fromD = sandal.d; sandal.toX = nx; sandal.toD = nd; sandal.move = 0;
+    }
+  }
+
+  function inHide(x, d) {
+    return sandal.move >= 1 && Math.abs(x - (sandal.x + 0.2 * sandal.flip)) < 0.42 && d > sandal.d - 0.08 && d < sandal.d + 0.28;
+  }
+
+  function avoidSandal(tx, td) {
+    if (Math.abs(tx - sandal.x) < 0.95 && Math.abs(td - sandal.d) < 0.78) return sandal.x + (tx >= sandal.x ? 1 : -1) * 0.98;
+    return tx;
+  }
+
+  function updateHide(dt) {
+    if (sandal.move < 1) {
+      sandal.move = Math.min(1, sandal.move + dt / 0.5);
+      var e = 1 - Math.pow(1 - sandal.move, 3);
+      sandal.x = sandal.fromX + (sandal.toX - sandal.fromX) * e;
+      sandal.d = sandal.fromD + (sandal.toD - sandal.fromD) * e;
+      sandal.spin = Math.sin(sandal.move * Math.PI) * 0.9;
+      if (sandal.move >= 1) { sandal.spin = 0; playKnock(0.6, 'sole'); }
+      return;
+    }
+    if (state === 'playing' && !player.squashed && inHide(player.x, player.d)) {
+      hideT += dt;
+      if (hideT >= HIDE_MAX) {
+        hideT = 0;
+        playKnock(0.9, 'heel');
+        placeSandal(false);
+      }
+    } else {
+      hideT = Math.max(0, hideT - dt * 1.5);
+    }
+  }
+
+  function drawSandal() {
+    var u = F / sandal.d;
+    var g = P(sandal.x, sandal.d, 0);
+    ctx.fillStyle = 'rgba(0,0,0,0.32)';
+    ctx.beginPath(); ctx.ellipse(g[0], g[1], 0.66 * u, 0.07 * u, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.translate(g[0], g[1] - Math.sin(sandal.move * Math.PI) * 0.25 * u * (sandal.move < 1 ? 1 : 0));
+    ctx.scale(sandal.flip * u, u);
+    ctx.rotate(sandal.spin);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.fillStyle = '#141414';
+    ctx.beginPath();
+    ctx.moveTo(0.5, -0.52); ctx.lineTo(0.64, -0.54); ctx.lineTo(0.6, 0); ctx.lineTo(0.565, 0);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#141414';
+    ctx.lineWidth = 0.06;
+    ctx.beginPath();
+    ctx.moveTo(-0.62, -0.03);
+    ctx.lineTo(-0.18, -0.03);
+    ctx.bezierCurveTo(0.1, -0.03, 0.25, -0.5, 0.64, -0.54);
+    ctx.stroke();
+    ctx.strokeStyle = '#b08a62';
+    ctx.lineWidth = 0.018;
+    ctx.beginPath();
+    ctx.moveTo(-0.6, -0.062);
+    ctx.lineTo(-0.18, -0.062);
+    ctx.bezierCurveTo(0.1, -0.062, 0.25, -0.53, 0.62, -0.572);
+    ctx.stroke();
+    ctx.strokeStyle = '#141414';
+    ctx.lineWidth = 0.03;
+    ctx.beginPath(); ctx.ellipse(0.5, -0.74, 0.13, 0.2, -0.15, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0.4, -0.62); ctx.lineTo(-0.36, -0.08); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(-0.36, -0.1, 0.1, 0.07, 0, Math.PI, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    if (hideT > 0 && sandal.move >= 1) {
+      var left = 1 - hideT / HIDE_MAX;
+      var bw = 0.7 * u, bx = g[0] - bw / 2, by = g[1] - 1.1 * u;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(bx - 1, by - 1, bw + 2, 7);
+      ctx.fillStyle = left < 0.34 ? '#ff4d4d' : '#ffffff';
+      ctx.fillRect(bx, by, bw * left, 5);
+    }
+  }
+
   function landStep() {
     var f = feet[step.foot];
     f.x = step.toX; f.d = step.toD; f.side = step.side; f.lift = 0;
@@ -270,14 +369,14 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     spawnDust(f);
     playStomp(near);
     if (mode === 'giant') {
-      if (!player.squashed && overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
+      if (!player.squashed && !inHide(player.x, player.d) && overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
         player.squashed = true;
         playSqueak();
         caught++;
         dodgedEl.textContent = caught;
         respawnIn = 0.8;
       }
-    } else if (overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
+    } else if (!inHide(player.x, player.d) && overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
       player.squashed = true;
       playSqueak();
       gameOver();
@@ -523,6 +622,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       tx = other.x + (tx >= other.x ? 1 : -1) * gapX * 1.15;
     }
     tx = movingFoot === 0 ? Math.min(tx, other.x - 0.05) : Math.max(tx, other.x + 0.05);
+    tx = avoidSandal(tx, td);
     step = { foot: movingFoot, fromX: mover.x, fromD: mover.d, fromSide: 0, toX: tx, toD: td, side: 0, t: 0, dur: STOMP_TIME };
     ai.react = 0.1 + Math.random() * 0.3;
   }
@@ -571,7 +671,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
           mx = 0; md = 0;
           ai.tx = G_MIN_X + Math.random() * (G_MAX_X - G_MIN_X);
           ai.td = G_MIN_D + Math.random() * (G_MAX_D - G_MIN_D);
-          ai.wait = Math.random() * 0.8;
+          ai.wait = inHide(player.x, player.d) ? 1.4 + Math.random() * 1.2 : Math.random() * 0.8;
+          if (Math.random() < 0.3 && sandal.move >= 1) { ai.tx = sandal.x + 0.2 * sandal.flip; ai.td = sandal.d + 0.1; }
         }
       }
       var ml = Math.sqrt(mx * mx + md * md);
@@ -617,6 +718,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   function update(dt) {
     if (shake > 0) shake = Math.max(0, shake - dt);
     updateDust(dt);
+    updateHide(dt);
     if (state !== 'playing') return;
     elapsed += dt;
     updateTaps(dt);
@@ -1043,7 +1145,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     var items = [
       { d: footDepth(feet[0]), draw: function () { drawFoot(feet[0], 0); } },
       { d: footDepth(feet[1]), draw: function () { drawFoot(feet[1], 1); } },
-      { d: player.d, draw: drawPlayer }
+      { d: player.d, draw: drawPlayer },
+      { d: sandal.d, draw: drawSandal }
     ];
     if (player.squashed) items[2].d = 99;
     items.sort(function (a, b) { return b.d - a.d; });

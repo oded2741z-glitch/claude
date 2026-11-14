@@ -142,8 +142,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   function reset() {
     player = { x: 0, d: 1.8, vx: 0, vd: 0, faceX: 0, faceD: 1, dir: 1, walk: 0, amp: 0, squashed: false };
     feet = [
-      { x: -0.4, d: 3.6, lift: 0, side: 0 },
-      { x: 0.4, d: 4.2, lift: 0, side: 0 }
+      { x: -0.4, d: 3.6, lift: 0, side: 0, tap: 0, tapT: -1, tapIn: 2 + Math.random() * 3 },
+      { x: 0.4, d: 4.2, lift: 0, side: 0, tap: 0, tapT: -1, tapIn: 4 + Math.random() * 3 }
     ];
     step = null;
     elapsed = 0;
@@ -336,6 +336,29 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     n.start(t);
   }
 
+  function playClick(vol) {
+    if (!audio) return;
+    var t = audio.currentTime;
+    var o = audio.createOscillator(), g = audio.createGain();
+    o.type = 'square';
+    o.frequency.setValueAtTime(1500, t);
+    o.frequency.exponentialRampToValueAtTime(500, t + 0.04);
+    g.gain.setValueAtTime(0.25 * vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    o.connect(g); g.connect(audio.destination);
+    o.start(t); o.stop(t + 0.07);
+    var len = Math.floor(audio.sampleRate * 0.03);
+    var buf = audio.createBuffer(1, len, audio.sampleRate);
+    var data = buf.getChannelData(0);
+    for (var i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    var n = audio.createBufferSource(), f = audio.createBiquadFilter(), ng = audio.createGain();
+    n.buffer = buf;
+    f.type = 'highpass'; f.frequency.value = 2500;
+    ng.gain.value = 0.5 * vol;
+    n.connect(f); f.connect(ng); ng.connect(audio.destination);
+    n.start(t);
+  }
+
   function playSqueak() {
     if (!audio) return;
     var t = audio.currentTime + 0.05;
@@ -505,10 +528,33 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (step) advanceStep(dt);
   }
 
+  function updateTaps(dt) {
+    var TAP = 0.22;
+    for (var i = 0; i < 2; i++) {
+      var f = feet[i];
+      if (step && step.foot === i) { f.tapT = -1; f.tap = 0; continue; }
+      if (f.tapT >= 0) {
+        var prev = f.tapT;
+        f.tapT += dt;
+        if (Math.floor(prev / TAP) < Math.floor(f.tapT / TAP)) playClick(Math.min(1, 1.6 / f.d));
+        if (f.tapT >= TAP * 2) {
+          f.tapT = -1; f.tap = 0;
+          f.tapIn = 3 + Math.random() * 4;
+        } else {
+          f.tap = Math.sin(Math.PI * ((f.tapT % TAP) / TAP));
+        }
+      } else {
+        f.tapIn -= dt;
+        if (f.tapIn <= 0) f.tapT = 0;
+      }
+    }
+  }
+
   function update(dt) {
     if (shake > 0) shake = Math.max(0, shake - dt);
     if (state !== 'playing') return;
     elapsed += dt;
+    updateTaps(dt);
     voiceIn -= dt;
     if (voiceIn <= 0) voiceIn = playVoice();
     if (mode === 'giant') { updateGiant(dt); return; }
@@ -775,6 +821,11 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     ctx.translate(gx, gy);
     if (flip) ctx.scale(-1, 1);
     ctx.scale(k, k);
+    if (f.tap > 0) {
+      ctx.translate(43, 0);
+      ctx.rotate(0.075 * f.tap);
+      ctx.translate(-43, 0);
+    }
     var top = -ay;
     var screenTop = -gy / k - 40;
     if (screenTop < top) ctx.drawImage(img, 0, 8, w, 2, -ax, screenTop, w, top - screenTop + 10);

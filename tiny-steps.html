@@ -206,6 +206,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
       player.squashed = true;
       playSqueak();
+      stopVoice();
+      sayMine();
       gameOver();
     } else {
       dodged++;
@@ -275,6 +277,25 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     return len + 1.2 + Math.random() * 1.5;
   }
 
+  function sayMine() {
+    try {
+      var synth = window.speechSynthesis;
+      if (!synth) return;
+      synth.cancel();
+      var u = new SpeechSynthesisUtterance('You are mine.');
+      u.lang = 'en-US';
+      u.rate = 0.9;
+      u.pitch = 1.2;
+      var voices = synth.getVoices(), pick = null;
+      for (var i = 0; i < voices.length; i++) {
+        var v = voices[i];
+        if (v.lang && v.lang.indexOf('en') === 0 && /female|samantha|zira|aria|jenny|victoria|karen|google us english/i.test(v.name)) { pick = v; break; }
+      }
+      if (pick) u.voice = pick;
+      setTimeout(function () { try { synth.speak(u); } catch (e) {} }, 350);
+    } catch (e) {}
+  }
+
   function playStomp(vol) {
     if (!audio) return;
     var t = audio.currentTime;
@@ -315,6 +336,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
 
   function start() {
     initAudio();
+    try { if (window.speechSynthesis) { window.speechSynthesis.cancel(); window.speechSynthesis.getVoices(); } } catch (e) {}
     loadVoice();
     voiceIdx = 0;
     voiceIn = 0.2;

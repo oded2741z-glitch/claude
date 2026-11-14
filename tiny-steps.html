@@ -336,33 +336,62 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     n.start(t);
   }
 
-  function playKnock(vol, freq) {
+  var KNOCK = {
+    heel: { modes: [[190, 0.5, 0.05], [720, 0.55, 0.035], [1180, 0.4, 0.028], [1930, 0.28, 0.02], [2850, 0.16, 0.014]], noise: 0.9, noiseType: 'highpass', noiseFreq: 3200, noiseLen: 0.007 },
+    sole: { modes: [[120, 0.7, 0.07], [185, 0.55, 0.06], [340, 0.35, 0.045], [610, 0.2, 0.03]], noise: 0.75, noiseType: 'lowpass', noiseFreq: 1700, noiseLen: 0.018 }
+  };
+  var knockBus = null;
+
+  function getKnockBus() {
+    if (knockBus) return knockBus;
+    knockBus = audio.createGain();
+    knockBus.connect(audio.destination);
+    try {
+      var len = Math.floor(audio.sampleRate * 0.28);
+      var ir = audio.createBuffer(2, len, audio.sampleRate);
+      for (var c = 0; c < 2; c++) {
+        var data = ir.getChannelData(c), prev = 0;
+        for (var i = 0; i < len; i++) {
+          var n = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3.2);
+          prev = prev * 0.55 + n * 0.45;
+          data[i] = prev;
+        }
+      }
+      var conv = audio.createConvolver(), wet = audio.createGain();
+      conv.buffer = ir;
+      wet.gain.value = 0.35;
+      knockBus.connect(conv); conv.connect(wet); wet.connect(audio.destination);
+    } catch (e) {}
+    return knockBus;
+  }
+
+  function playKnock(vol, kind) {
     if (!audio) return;
+    var k = KNOCK[kind] || KNOCK.heel;
+    var bus = getKnockBus();
     var t = audio.currentTime;
-    var o = audio.createOscillator(), g = audio.createGain();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(freq, t);
-    o.frequency.exponentialRampToValueAtTime(freq * 0.72, t + 0.06);
-    g.gain.setValueAtTime(0.6 * vol, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
-    o.connect(g); g.connect(audio.destination);
-    o.start(t); o.stop(t + 0.11);
-    var o2 = audio.createOscillator(), g2 = audio.createGain();
-    o2.type = 'triangle';
-    o2.frequency.setValueAtTime(freq * 2.6, t);
-    g2.gain.setValueAtTime(0.18 * vol, t);
-    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
-    o2.connect(g2); g2.connect(audio.destination);
-    o2.start(t); o2.stop(t + 0.04);
-    var len = Math.floor(audio.sampleRate * 0.035);
+    var detune = 1 + (Math.random() - 0.5) * 0.08;
+    var hit = vol * (0.8 + Math.random() * 0.2);
+    for (var i = 0; i < k.modes.length; i++) {
+      var m = k.modes[i];
+      var o = audio.createOscillator(), g = audio.createGain();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(m[0] * detune * (1 + (Math.random() - 0.5) * 0.03), t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(m[1] * hit * 0.6, t + 0.0015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + m[2] * 2.2);
+      o.connect(g); g.connect(bus);
+      o.start(t); o.stop(t + m[2] * 2.2 + 0.01);
+    }
+    var len = Math.max(8, Math.floor(audio.sampleRate * k.noiseLen));
     var buf = audio.createBuffer(1, len, audio.sampleRate);
     var data = buf.getChannelData(0);
-    for (var i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+    for (var j = 0; j < len; j++) data[j] = (Math.random() * 2 - 1) * Math.pow(1 - j / len, 1.5);
     var n = audio.createBufferSource(), f = audio.createBiquadFilter(), ng = audio.createGain();
     n.buffer = buf;
-    f.type = 'bandpass'; f.frequency.value = freq * 3; f.Q.value = 2.5;
-    ng.gain.value = 0.7 * vol;
-    n.connect(f); f.connect(ng); ng.connect(audio.destination);
+    f.type = k.noiseType; f.frequency.value = k.noiseFreq;
+    ng.gain.value = k.noise * hit;
+    n.connect(f); f.connect(ng); ng.connect(bus);
     n.start(t);
   }
 
@@ -543,7 +572,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       if (f.tapT >= 0) {
         var prev = f.tapT;
         f.tapT += dt;
-        if (Math.floor(prev / TAP) < Math.floor(f.tapT / TAP)) playKnock(Math.min(1, 1.6 / f.d), f.tapKind === 'sole' ? 260 : 520);
+        if (Math.floor(prev / TAP) < Math.floor(f.tapT / TAP)) playKnock(Math.min(1, 1.6 / f.d), f.tapKind);
         if (f.tapT >= TAP * 2) {
           f.tapT = -1; f.tap = 0;
           f.tapIn = 3 + Math.random() * 4;

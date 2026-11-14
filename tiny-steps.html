@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='16' cy='20' r='6' fill='%23ffffff'/%3E%3C/svg%3E">
+<link rel="shortcut icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232563eb'/%3E%3Ccircle cx='16' cy='20' r='6' fill='%23ffffff'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#f9fafb">
+<title>Tiny Steps</title>
+<meta name="description" content="A floor-level dodging game. You are tiny, the feet are giant. Watch the shadow and get out of the way.">
+<meta property="og:title" content="Tiny Steps">
+<meta property="og:description" content="A floor-level dodging game. You are tiny, the feet are giant. Watch the shadow and get out of the way.">
+<meta property="og:type" content="website">
+<style>
+:root {
+  --primary-accent: #2563eb;
+  --primary-hover:  #1d4ed8;
+  --bg-light:       #f9fafb;
+  --text-dark:      #111827;
+  --text-gray:      #64748b;
+  --border-color:   #e2e8f0;
+}
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden; }
+header { padding:1.5rem 6%; background:#ffffff; border-bottom:1px solid var(--border-color); }
+.logo-text { font-weight:800; font-size:1.5rem; letter-spacing:-0.5px; color:var(--text-dark); text-decoration:none; }
+.logo-accent { color:var(--primary-accent); }
+.work-wrap { max-width:760px; margin:3rem auto; padding:0 6%; width:100%; flex:1; display:flex; flex-direction:column; gap:1.5rem; }
+h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); margin-bottom:0.5rem; }
+.subtitle { font-size:1.05rem; line-height:1.6; color:var(--text-gray); }
+.panel { background:white; border:1px solid var(--border-color); border-radius:12px; padding:2rem; display:flex; flex-direction:column; gap:1.25rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }
+.hud { display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap; }
+.hud-item { display:flex; flex-direction:column; gap:0.25rem; }
+.hud-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); }
+.hud-value { font-size:1.25rem; font-weight:800; letter-spacing:-0.5px; font-variant-numeric:tabular-nums; }
+.stage { position:relative; width:100%; aspect-ratio:16/9; border:1px solid var(--border-color); border-radius:12px; overflow:hidden; background:var(--bg-light); }
+canvas { display:block; width:100%; height:100%; touch-action:none; cursor:pointer; }
+.overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:1rem; }
+.overlay-card { background:white; border:1px solid var(--border-color); border-radius:16px; padding:1.5rem 2rem; display:flex; flex-direction:column; align-items:center; gap:0.75rem; text-align:center; box-shadow:0 10px 25px rgba(0,0,0,0.05); max-width:90%; }
+.overlay-title { font-size:1.25rem; font-weight:800; letter-spacing:-0.5px; }
+.overlay-text { font-size:0.95rem; color:var(--text-gray); line-height:1.5; }
+.btn-primary { background:var(--primary-accent); color:#fff; border:none; border-radius:8px; padding:0.85rem 1.5rem; font-weight:700; font-size:1rem; cursor:pointer; transition:background 0.2s; }
+.btn-primary:hover { background:var(--primary-hover); }
+.btn-primary:focus-visible { outline:2px solid var(--text-dark); outline-offset:2px; }
+.hint { font-size:0.95rem; color:var(--text-gray); line-height:1.5; }
+footer { padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; background:transparent; }
+.acc-btn { position:fixed; bottom:30px; left:30px; width:50px; height:50px; border-radius:50%; background:var(--primary-accent); display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:1000; }
+.acc-menu { position:fixed; bottom:90px; left:30px; width:260px; display:none; flex-direction:column; gap:0.8rem; padding:1.5rem; background:white; border:1px solid var(--border-color); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:1000; }
+.acc-toggle { width:100%; padding:0.6rem; border:1px solid var(--border-color); border-radius:6px; background:white; font-weight:700; text-align:left; cursor:pointer; }
+.acc-toggle:hover { border-color:var(--primary-accent); }
+body.acc-high-contrast { background:#000; color:#fff; }
+body.acc-high-contrast * { background:#000 !important; color:#fff !important; border-color:#fff !important; }
+body.acc-large-text * { font-size:120% !important; }
+body.acc-highlight-links a { background:yellow !important; color:black !important; padding:2px !important; }
+@media (max-width:768px){ .work-wrap{margin:1.5rem auto;} h1{font-size:1.8rem;} .panel{padding:1rem;} }
+</style>
+</head>
+<body>
+<header>
+  <a href="#" class="logo-text">Tiny<span class="logo-accent">Steps</span></a>
+</header>
+
+<div class="work-wrap">
+  <div>
+    <h1>Tiny Steps</h1>
+    <p class="subtitle">You are tiny. The feet are not. Watch the shadow on the floor and get out of the way before the shoe lands.</p>
+  </div>
+
+  <div class="panel">
+    <div class="hud">
+      <div class="hud-item"><span class="hud-label">Time</span><span class="hud-value" id="time">0.0 s</span></div>
+      <div class="hud-item"><span class="hud-label">Steps dodged</span><span class="hud-value" id="dodged">0</span></div>
+      <div class="hud-item"><span class="hud-label">Best</span><span class="hud-value" id="best">0.0 s</span></div>
+    </div>
+    <div class="stage">
+      <canvas id="game" aria-label="Tiny Steps game area"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="overlay-card">
+          <div class="overlay-title" id="overlay-title">Ready?</div>
+          <div class="overlay-text" id="overlay-text">A giant is walking your way. Stay out from under the shoes.</div>
+          <button class="btn-primary" id="start-btn">Start</button>
+        </div>
+      </div>
+    </div>
+    <p class="hint">Move with the arrow keys or W A S D. On a phone, press and hold the floor where you want to go.</p>
+  </div>
+</div>
+
+<footer>&copy; 2026 TinySteps. All rights reserved.</footer>
+
+<button class="acc-btn" aria-label="Accessibility options" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')">
+  <svg viewBox="0 0 24 24" fill="white" width="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
+</button>
+<div class="acc-menu" id="acc-menu">
+  <h4 style="margin-bottom:0.5rem;">Accessibility Options</h4>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-high-contrast')">High Contrast Mode</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-large-text')">Increase Font Size</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-highlight-links')">Highlight Links</button>
+  <button class="acc-toggle" onclick="location.reload()" style="color:red;border-color:red;margin-top:10px;">Reset All</button>
+</div>
+
+<script>
+(function () {
+  var canvas = document.getElementById('game');
+  var ctx = canvas.getContext('2d');
+  var overlay = document.getElementById('overlay');
+  var overlayTitle = document.getElementById('overlay-title');
+  var overlayText = document.getElementById('overlay-text');
+  var startBtn = document.getElementById('start-btn');
+  var timeEl = document.getElementById('time');
+  var dodgedEl = document.getElementById('dodged');
+  var bestEl = document.getElementById('best');
+
+  var W = 960, H = 540, CX = 480, HZ = 200, F = 340;
+  var FOOT_W = 0.5, FOOT_L = 1.2, LEG_W = 0.36, MAX_LIFT = 3;
+  var PLAYER_R = 0.11, PLAYER_SPEED = 1.9;
+  var MIN_X = -2.6, MAX_X = 2.6, MIN_D = 1.3, MAX_D = 3.6;
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var state = 'ready';
+  var player, feet, step, elapsed, dodged, camX, shake, best = 0;
+  var keys = {};
+  var pointerDown = false, pointerTarget = null;
+  var lastTime = 0;
+
+  try { best = parseFloat(localStorage.getItem('tinysteps-best')) || 0; } catch (e) { best = 0; }
+  bestEl.textContent = best.toFixed(1) + ' s';
+
+  function reset() {
+    player = { x: 0, d: 1.8, vx: 0, vd: 0, faceX: 0, faceD: 1, squashed: false };
+    feet = [
+      { x: -0.4, d: 9.0, lift: 0 },
+      { x: 0.4, d: 9.6, lift: 0 }
+    ];
+    step = null;
+    elapsed = 0;
+    dodged = 0;
+    camX = 0;
+    shake = 0;
+    nextStepIn = 0.6;
+    movingFoot = 0;
+  }
+  var nextStepIn = 0.6, movingFoot = 0;
+
+  function resize() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  }
+
+  function P(x, d, h) {
+    var dd = d < 0.3 ? 0.3 : d;
+    var s = F / dd;
+    return [CX + (x - camX) * s, HZ + (1 - h) * s];
+  }
+
+  function quad(pts, fill, stroke) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+    if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); }
+  }
+
+  function overlapsFoot(x, d, f, pad) {
+    return Math.abs(x - f.x) < FOOT_W / 2 + pad && Math.abs(d - f.d) < FOOT_L / 2 + pad;
+  }
+
+  function beginStep() {
+    var mover = feet[movingFoot];
+    var other = feet[1 - movingFoot];
+    var warn = Math.max(0.5, 1.15 - elapsed * 0.012);
+    var lead = Math.min(0.5, elapsed * 0.01) * warn;
+    var ax = player.x + player.vx * lead + (Math.random() - 0.5) * 0.3 + (movingFoot === 0 ? -0.1 : 0.1);
+    var ad = player.d + player.vd * lead + (Math.random() - 0.5) * 0.3;
+    var dx = ax - other.x, dd = ad - other.d;
+    var len = Math.sqrt(dx * dx + dd * dd);
+    var stride = 2.4;
+    if (len > stride) { dx = dx / len * stride; dd = dd / len * stride; }
+    var tx = other.x + dx, td = other.d + dd;
+    td = Math.max(1.0, td);
+    if (Math.abs(tx - other.x) < FOOT_W * 1.1 && Math.abs(td - other.d) < FOOT_L * 0.9) {
+      tx = other.x + (tx >= other.x ? 1 : -1) * FOOT_W * 1.15;
+    }
+    step = { foot: movingFoot, fromX: mover.x, fromD: mover.d, toX: tx, toD: td, t: 0, dur: warn };
+  }
+
+  function landStep() {
+    var f = feet[step.foot];
+    f.x = step.toX; f.d = step.toD; f.lift = 0;
+    if (!reduceMotion) shake = 0.18;
+    if (overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
+      player.squashed = true;
+      gameOver();
+    } else {
+      dodged++;
+      dodgedEl.textContent = dodged;
+    }
+    movingFoot = 1 - step.foot;
+    step = null;
+    nextStepIn = Math.max(0.08, 0.35 - elapsed * 0.005);
+  }
+
+  function gameOver() {
+    state = 'over';
+    if (elapsed > best) {
+      best = elapsed;
+      try { localStorage.setItem('tinysteps-best', String(best)); } catch (e) {}
+      bestEl.textContent = best.toFixed(1) + ' s';
+    }
+    overlayTitle.textContent = 'Squashed';
+    overlayText.textContent = 'You lasted ' + elapsed.toFixed(1) + ' seconds and dodged ' + dodged + (dodged === 1 ? ' step.' : ' steps.');
+    startBtn.textContent = 'Play again';
+    overlay.hidden = false;
+    overlay.style.display = 'flex';
+    startBtn.focus();
+  }
+
+  function start() {
+    reset();
+    state = 'playing';
+    timeEl.textContent = '0.0 s';
+    dodgedEl.textContent = '0';
+    overlay.style.display = 'none';
+    canvas.focus();
+  }
+
+  function update(dt) {
+    if (shake > 0) shake = Math.max(0, shake - dt);
+    if (state !== 'playing') return;
+    elapsed += dt;
+    timeEl.textContent = elapsed.toFixed(1) + ' s';
+
+    var mx = 0, md = 0;
+    if (keys.ArrowLeft || keys.a) mx -= 1;
+    if (keys.ArrowRight || keys.d) mx += 1;
+    if (keys.ArrowUp || keys.w) md += 1;
+    if (keys.ArrowDown || keys.s) md -= 1;
+    if (mx === 0 && md === 0 && pointerDown && pointerTarget) {
+      var px = pointerTarget.x - player.x, pd = pointerTarget.d - player.d;
+      if (Math.sqrt(px * px + pd * pd) > 0.06) { mx = px; md = pd; }
+    }
+    var ml = Math.sqrt(mx * mx + md * md);
+    if (ml > 0) {
+      mx /= ml; md /= ml;
+      player.faceX = mx; player.faceD = md;
+    }
+    player.vx = mx * PLAYER_SPEED;
+    player.vd = md * PLAYER_SPEED;
+
+    var planted = [];
+    for (var i = 0; i < 2; i++) {
+      if (!(step && step.foot === i)) planted.push(feet[i]);
+    }
+    var nx = Math.min(MAX_X, Math.max(MIN_X, player.x + player.vx * dt));
+    var blocked = false;
+    for (var j = 0; j < planted.length; j++) if (overlapsFoot(nx, player.d, planted[j], PLAYER_R)) blocked = true;
+    if (!blocked) player.x = nx;
+    var nd = Math.min(MAX_D, Math.max(MIN_D, player.d + player.vd * dt));
+    blocked = false;
+    for (j = 0; j < planted.length; j++) if (overlapsFoot(player.x, nd, planted[j], PLAYER_R)) blocked = true;
+    if (!blocked) player.d = nd;
+
+    camX += (player.x * 0.7 - camX) * Math.min(1, dt * 6);
+
+    if (step) {
+      step.t += dt;
+      var p = step.t / step.dur;
+      var f = feet[step.foot];
+      if (p >= 1) {
+        landStep();
+      } else if (p < 0.25) {
+        f.x = step.fromX; f.d = step.fromD;
+        f.lift = (p / 0.25) * MAX_LIFT;
+      } else {
+        var q = (p - 0.25) / 0.75;
+        f.x = step.toX; f.d = step.toD;
+        f.lift = MAX_LIFT * (1 - q * q);
+      }
+    } else {
+      nextStepIn -= dt;
+      if (nextStepIn <= 0) beginStep();
+    }
+  }
+
+  function drawRoom() {
+    var wallY = P(0, 14, 0)[1];
+    ctx.fillStyle = '#f9fafb';
+    ctx.fillRect(0, 0, W, wallY);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillRect(0, wallY, W, H - wallY);
+
+    ctx.lineWidth = 1.5;
+    quad([P(5.5, 14, 0), P(8.5, 14, 0), P(8.5, 14, 11), P(5.5, 14, 11)], '#f1f5f9', '#cbd5e1');
+    quad([P(-9, 14, 0), P(9.5, 14, 0), P(9.5, 14, 0.5), P(-9, 14, 0.5)], '#ffffff', '#cbd5e1');
+
+    quad([P(-7.5, 12, 0), P(-0.5, 12, 0), P(-0.5, 12, 2.2), P(-7.5, 12, 2.2)], '#f1f5f9', '#cbd5e1');
+    quad([P(-7.5, 12.4, 2.2), P(-0.5, 12.4, 2.2), P(-0.5, 12.4, 4.4), P(-7.5, 12.4, 4.4)], '#f1f5f9', '#cbd5e1');
+    quad([P(-8.2, 12, 0), P(-7.3, 12, 0), P(-7.3, 12, 3.2), P(-8.2, 12, 3.2)], '#ffffff', '#cbd5e1');
+    quad([P(-0.7, 12, 0), P(0.2, 12, 0), P(0.2, 12, 3.2), P(-0.7, 12, 3.2)], '#ffffff', '#cbd5e1');
+
+    var lampBase = P(3, 12, 0), lampTop = P(3, 12, 7);
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(lampBase[0], lampBase[1]); ctx.lineTo(lampTop[0], lampTop[1]); ctx.stroke();
+    ctx.lineWidth = 1.5;
+    quad([P(2.3, 12, 6.2), P(3.7, 12, 6.2), P(3.4, 12, 7.6), P(2.6, 12, 7.6)], '#ffffff', '#cbd5e1');
+    quad([P(2.5, 12, 0), P(3.5, 12, 0), P(3.5, 12, 0.15), P(2.5, 12, 0.15)], '#cbd5e1', null);
+
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 1;
+    var first = Math.floor((camX - 12) / 0.6) * 0.6;
+    for (var x = first; x < camX + 12; x += 0.6) {
+      var a = P(x, 0.8, 0), b = P(x, 14, 0);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+    ctx.beginPath(); ctx.moveTo(0, wallY); ctx.lineTo(W, wallY); ctx.stroke();
+  }
+
+  function drawShadow() {
+    if (!step) return;
+    var p = step.t / step.dur;
+    var x = step.toX, d = step.toD;
+    var dn = Math.max(0.35, d - FOOT_L / 2), df = d + FOOT_L / 2;
+    var pts = [P(x - FOOT_W / 2, dn, 0), P(x + FOOT_W / 2, dn, 0), P(x + FOOT_W / 2, df, 0), P(x - FOOT_W / 2, df, 0)];
+    quad(pts, 'rgba(17,24,39,' + (0.08 + 0.3 * p).toFixed(3) + ')', null);
+    ctx.setLineDash([8, 6]);
+    ctx.lineWidth = 2;
+    quad(pts, null, '#991b1b');
+    ctx.setLineDash([]);
+  }
+
+  function drawFoot(f) {
+    var x = f.x, d = f.d, base = f.lift;
+    var dn = Math.max(0.35, d - FOOT_L / 2), df = d + FOOT_L / 2;
+    var hT = 0.16 + base, hH = 0.34 + base;
+    var l = x - FOOT_W / 2, r = x + FOOT_W / 2;
+    var xs = x > camX ? l : r;
+    var da = Math.max(0.35, d + 0.1);
+    var ll = x - LEG_W / 2, lr = x + LEG_W / 2;
+    var lxs = x > camX ? ll : lr;
+    var legBottom = 0.2 + base, legTop = base + 14;
+    ctx.lineWidth = 1.5;
+    ctx.lineJoin = 'round';
+
+    quad([P(xs, dn, base), P(xs, df, base), P(xs, df, hH), P(xs, dn, hT)], '#1d4ed8', '#111827');
+    if (base <= 1) {
+      quad([P(l, dn, hT), P(r, dn, hT), P(r, df, hH), P(l, df, hH)], '#2563eb', '#111827');
+    }
+    quad([P(lxs, da, legBottom), P(lxs, df, legBottom), P(lxs, df, legTop), P(lxs, da, legTop)], '#1e293b', '#111827');
+    quad([P(ll, da, legBottom), P(lr, da, legBottom), P(lr, da, legTop), P(ll, da, legTop)], '#111827', '#111827');
+    if (base > 1) {
+      quad([P(l, dn, base), P(r, dn, base), P(r, df, base), P(l, df, base)], '#64748b', '#111827');
+    }
+    quad([P(l, dn, base), P(r, dn, base), P(r, dn, hT), P(l, dn, hT)], '#1d4ed8', '#111827');
+    quad([P(l, dn, base), P(r, dn, base), P(r, dn, base + 0.05), P(l, dn, base + 0.05)], '#ffffff', '#111827');
+  }
+
+  function drawPlayer() {
+    var s = F / player.d;
+    var g = P(player.x, player.d, 0);
+    var r = PLAYER_R * s;
+    ctx.fillStyle = 'rgba(17,24,39,0.18)';
+    ctx.beginPath(); ctx.ellipse(g[0], g[1], r * 1.1, r * 0.35, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = 1.5;
+    if (player.squashed) {
+      ctx.fillStyle = '#10b981';
+      ctx.strokeStyle = '#065f46';
+      ctx.beginPath(); ctx.ellipse(g[0], g[1], r * 1.6, r * 0.3, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      return;
+    }
+    var cy = g[1] - r;
+    ctx.fillStyle = '#10b981';
+    ctx.strokeStyle = '#065f46';
+    ctx.beginPath(); ctx.arc(g[0], cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    var ex = player.faceX * r * 0.25, ey = -player.faceD * r * 0.15 - r * 0.15;
+    for (var i = -1; i <= 1; i += 2) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(g[0] + i * r * 0.38 + ex, cy + ey, r * 0.28, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#111827';
+      ctx.beginPath(); ctx.arc(g[0] + i * r * 0.38 + ex * 1.5, cy + ey * 1.2, r * 0.13, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function draw() {
+    var k = canvas.width / W;
+    ctx.setTransform(k, 0, 0, k, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    if (shake > 0) ctx.translate((Math.random() - 0.5) * shake * 50, (Math.random() - 0.5) * shake * 50);
+    drawRoom();
+    drawShadow();
+    var items = [
+      { d: feet[0].d, draw: function () { drawFoot(feet[0]); } },
+      { d: feet[1].d, draw: function () { drawFoot(feet[1]); } },
+      { d: player.d, draw: drawPlayer }
+    ];
+    if (player.squashed) items[2].d = 99;
+    items.sort(function (a, b) { return b.d - a.d; });
+    for (var i = 0; i < items.length; i++) items[i].draw();
+    ctx.restore();
+  }
+
+  function frame(now) {
+    var dt = Math.min(0.05, (now - lastTime) / 1000 || 0);
+    lastTime = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  function pointerToWorld(e) {
+    var rect = canvas.getBoundingClientRect();
+    var sx = (e.clientX - rect.left) / rect.width * W;
+    var sy = (e.clientY - rect.top) / rect.height * H;
+    var dy = Math.max(20, sy - HZ);
+    var d = F / dy;
+    return { x: camX + (sx - CX) * d / F, d: d };
+  }
+
+  var keyMap = { A: 'a', D: 'd', W: 'w', S: 's' };
+  window.addEventListener('keydown', function (e) {
+    var k = keyMap[e.key] || e.key;
+    if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+      if (state === 'playing') e.preventDefault();
+    }
+    keys[k] = true;
+  });
+  window.addEventListener('keyup', function (e) {
+    keys[keyMap[e.key] || e.key] = false;
+  });
+  window.addEventListener('blur', function () { keys = {}; pointerDown = false; });
+
+  canvas.addEventListener('pointerdown', function (e) {
+    pointerDown = true;
+    pointerTarget = pointerToWorld(e);
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
+    e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    if (pointerDown) pointerTarget = pointerToWorld(e);
+  });
+  canvas.addEventListener('pointerup', function () { pointerDown = false; });
+  canvas.addEventListener('pointercancel', function () { pointerDown = false; });
+
+  startBtn.addEventListener('click', start);
+  window.addEventListener('resize', resize);
+
+  canvas.tabIndex = 0;
+  reset();
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

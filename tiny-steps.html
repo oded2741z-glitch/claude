@@ -122,7 +122,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   var W = 960, H = 540, CX = 480, HZ = 200, F = 340;
   var FOOT_W = 0.5, FOOT_L = 1.2, SIDE_W = 1.15, SIDE_L = 0.5, LEG_W = 0.3, MAX_LIFT = 3;
   var PLAYER_R = 0.08, PLAYER_SPEED = 1.9;
-  var AREA_MIN_D = 1.15, AREA_MAX_D = 3.6;
+  var AREA_MIN_D = 1.1, AREA_MAX_D = 2.33;
   function xLimit(d) { return (CX - 36) * d / F; }
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -196,7 +196,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     var warn = Math.max(0.5, 1.15 - elapsed * 0.012);
     var lead = Math.min(0.5, elapsed * 0.01) * warn;
     var ax = player.x + player.vx * lead + (Math.random() - 0.5) * 0.3;
-    var ad = player.d + player.vd * lead + (Math.random() - 0.5) * 0.3;
+    var ad = player.d + player.vd * lead + (Math.random() - 0.5) * 0.3 + 0.32;
     movingFoot = ax < (feet[0].x + feet[1].x) / 2 ? 0 : 1;
     var mover = feet[movingFoot];
     var other = feet[1 - movingFoot];
@@ -448,7 +448,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     caught = 0;
     stompReq = false;
     respawnIn = 0;
-    aim.x = 0; aim.d = 2.2;
+    aim.x = 0; aim.d = 1.8;
     if (mode === 'giant') {
       placeMouse();
       timeLabel.textContent = 'Time left';

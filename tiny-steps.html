@@ -270,7 +270,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
 
   function updateReveal(dt) {
     if (!reveal) return;
-    var f = feet[reveal.foot], home = HOME[reveal.foot];
+    var f = feet[reveal.foot], home = reveal.to || HOME[reveal.foot];
     reveal.t += dt;
     var p = (reveal.t - reveal.delay) / 0.5;
     if (p <= 0) return;
@@ -312,7 +312,17 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       dodged++;
       dodgedEl.textContent = dodged;
     }
-    if (hit) reveal = { foot: step.foot, t: 0, x0: f.x, d0: f.d, delay: 0.4 };
+    if (hit) {
+      reveal = { foot: step.foot, t: 0, x0: f.x, d0: f.d, delay: 0.4 };
+    } else {
+      var oi = 1 - step.foot, o = feet[oi];
+      if (feet[1].x - feet[0].x > 1.7 || Math.abs(feet[1].d - feet[0].d) > 1.0) {
+        var gx = f.x + (step.foot === 0 ? 1.0 : -1.0);
+        var gd = f.d + (o.d > f.d ? 0.25 : -0.25);
+        if (overlapsFoot(player.x, player.d, { x: gx, d: gd, side: 0 }, 0.25)) gx += step.foot === 0 ? 0.5 : -0.5;
+        reveal = { foot: oi, t: 0, x0: o.x, d0: o.d, delay: 0.12, to: { x: gx, d: gd } };
+      }
+    }
     movingFoot = 1 - step.foot;
     step = null;
     nextStepIn = Math.max(0.08, 0.35 - elapsed * 0.005);
@@ -698,7 +708,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
 
   function drawSitting() {
     if (!sitImg.complete || !sitImg.naturalWidth) return;
-    var seatY = 286, floorY = 377, hipX = 770;
+    var seatY = 282, floorY = 398, hipX = 760;
     var k = (floorY - seatY) / (720 - 462);
     ctx.drawImage(sitImg, hipX - 99 * k, floorY - 720 * k, sitImg.naturalWidth * k, sitImg.naturalHeight * k);
   }

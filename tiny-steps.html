@@ -845,10 +845,43 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   ];
 
   function buildFoot(ft) {
-    var c = document.createElement('canvas');
-    c.width = ft.img.naturalWidth; c.height = ft.img.naturalHeight;
-    var g = c.getContext('2d');
+    var w = ft.img.naturalWidth, h = ft.img.naturalHeight, g;
+    var tint = document.createElement('canvas');
+    tint.width = w; tint.height = h;
+    g = tint.getContext('2d');
     g.drawImage(ft.img, 0, 0);
+    g.globalCompositeOperation = 'source-in';
+    var grad = g.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, 'rgb(255,226,196)');
+    grad.addColorStop(0.62, 'rgb(250,216,182)');
+    grad.addColorStop(0.86, 'rgb(226,186,150)');
+    grad.addColorStop(1, 'rgb(196,152,116)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, w, h);
+    var glow = document.createElement('canvas');
+    glow.width = w; glow.height = h;
+    g = glow.getContext('2d');
+    g.drawImage(ft.img, 0, 0);
+    g.globalCompositeOperation = 'source-in';
+    g.fillStyle = 'rgb(214,150,96)';
+    g.fillRect(0, 0, w, h);
+    var gr = document.createElement('canvas');
+    gr.width = w; gr.height = h;
+    g = gr.getContext('2d');
+    g.drawImage(ft.img, 0, 0);
+    g.globalCompositeOperation = 'multiply';
+    g.drawImage(tint, 0, 0);
+    g.globalCompositeOperation = 'soft-light';
+    g.globalAlpha = 0.45;
+    g.drawImage(glow, 0, 0);
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(ft.img, 0, 0);
+    ft.gr = gr;
+    var c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    g = c.getContext('2d');
+    g.drawImage(gr, 0, 0);
     g.globalCompositeOperation = 'source-atop';
     g.fillStyle = '#2b2622';
     g.fillRect(ft.toes[0][0], ft.toeTop + ft.toeH - 18, ft.toes[ft.toes.length - 1][1] - ft.toes[0][0], 18);
@@ -870,7 +903,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
         var cw = Math.min(TOE_COL, x1 - x);
         var u = (x + cw / 2 - x0) / (x1 - x0);
         var l = lift * Math.sqrt(Math.sin(Math.PI * u));
-        ctx.drawImage(ft.img, x, ft.toeTop, cw, ft.toeH, ox + x, oy + ft.toeTop, cw + 0.4, ft.toeH - l);
+        ctx.drawImage(ft.gr, x, ft.toeTop, cw, ft.toeH, ox + x, oy + ft.toeTop, cw + 0.4, ft.toeH - l);
       }
     }
   }
@@ -903,7 +936,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     }
     var top = -ay;
     var screenTop = -gy / k - 40;
-    if (screenTop < top) ctx.drawImage(ft.img, 0, 8, w, 2, -ax, screenTop, w, top - screenTop + 10);
+    if (screenTop < top) ctx.drawImage(ft.gr, 0, 8, w, 2, -ax, screenTop, w, top - screenTop + 10);
     ctx.drawImage(ft.base, -ax, top);
     drawToes(ft, -ax, top, idx);
     ctx.restore();

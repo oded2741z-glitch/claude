@@ -311,7 +311,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       dodged++;
       dodgedEl.textContent = dodged;
     }
-    reveal = { foot: step.foot, t: 0, x0: f.x, d0: f.d, delay: hit ? 0.4 : 0.22 };
+    if (hit) reveal = { foot: step.foot, t: 0, x0: f.x, d0: f.d, delay: 0.4 };
     movingFoot = 1 - step.foot;
     step = null;
     nextStepIn = Math.max(0.08, 0.35 - elapsed * 0.005);

@@ -122,7 +122,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   var W = 960, H = 540, CX = 480, HZ = 200, F = 340;
   var FOOT_W = 0.5, FOOT_L = 1.2, SIDE_W = 1.15, SIDE_L = 0.5, LEG_W = 0.3, MAX_LIFT = 3;
   var PLAYER_R = 0.08, PLAYER_SPEED = 1.9;
-  var MIN_X = -2.6, MAX_X = 2.6, MIN_D = 1.3, MAX_D = 3.6;
+  var AREA_MIN_D = 1.15, AREA_MAX_D = 3.6;
+  function xLimit(d) { return (CX - 36) * d / F; }
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   var state = 'ready';
@@ -133,7 +134,6 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   var mode = 'mouse', bestGiant = 0, caught = 0, GIANT_TIME = 60, STOMP_TIME = 0.45;
   var aim = { x: 0, d: 2.2 }, stompReq = false, respawnIn = 0;
   var ai = { tx: 0, td: 2, wait: 0, react: 0 };
-  var G_MIN_X = -1.5, G_MAX_X = 1.5, G_MIN_D = 1.5, G_MAX_D = 3.4;
 
   try { best = parseFloat(localStorage.getItem('tinysteps-best')) || 0; } catch (e) { best = 0; }
   try { bestGiant = parseInt(localStorage.getItem('tinysteps-best-giant'), 10) || 0; } catch (e) { bestGiant = 0; }
@@ -470,8 +470,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
 
   function placeMouse() {
     for (var n = 0; n < 30; n++) {
-      var x = G_MIN_X + Math.random() * (G_MAX_X - G_MIN_X);
-      var d = G_MIN_D + Math.random() * (G_MAX_D - G_MIN_D);
+      var d = AREA_MIN_D + 0.15 + Math.random() * (AREA_MAX_D - AREA_MIN_D - 0.3);
+      var x = (Math.random() * 2 - 1) * xLimit(d) * 0.9;
       if (!overlapsFoot(x, d, feet[0], 0.4) && !overlapsFoot(x, d, feet[1], 0.4)) {
         player.x = x; player.d = d;
         break;
@@ -482,19 +482,27 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     ai.wait = 0.3; ai.tx = player.x; ai.td = player.d;
   }
 
-  function movePlayer(dt, minX, maxX, minD, maxD) {
+  function randomSpot() {
+    ai.td = AREA_MIN_D + 0.1 + Math.random() * (AREA_MAX_D - AREA_MIN_D - 0.2);
+    ai.tx = (Math.random() * 2 - 1) * xLimit(ai.td) * 0.92;
+  }
+
+  function movePlayer(dt) {
     var planted = [], moved = true;
     for (var i = 0; i < 2; i++) {
       if (!(step && step.foot === i)) planted.push(feet[i]);
     }
-    var nx = Math.min(maxX, Math.max(minX, player.x + player.vx * dt));
+    var lim = xLimit(player.d);
+    var nx = Math.min(lim, Math.max(-lim, player.x + player.vx * dt));
     var blocked = false;
     for (var j = 0; j < planted.length; j++) if (overlapsFoot(nx, player.d, planted[j], PLAYER_R)) blocked = true;
     if (!blocked) player.x = nx; else moved = false;
-    var nd = Math.min(maxD, Math.max(minD, player.d + player.vd * dt));
+    var nd = Math.min(AREA_MAX_D, Math.max(AREA_MIN_D, player.d + player.vd * dt));
     blocked = false;
     for (j = 0; j < planted.length; j++) if (overlapsFoot(player.x, nd, planted[j], PLAYER_R)) blocked = true;
     if (!blocked) player.d = nd; else moved = false;
+    lim = xLimit(player.d);
+    player.x = Math.min(lim, Math.max(-lim, player.x));
     return moved;
   }
 
@@ -537,8 +545,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (keys.ArrowRight || keys.d) ax += 1;
     if (keys.ArrowUp || keys.w) ad += 1;
     if (keys.ArrowDown || keys.s) ad -= 1;
-    aim.x = Math.min(1.8, Math.max(-1.8, aim.x + ax * 2.6 * dt));
-    aim.d = Math.min(3.5, Math.max(1.4, aim.d + ad * 2.6 * dt));
+    setAim({ x: aim.x + ax * 2.6 * dt, d: aim.d + ad * 2.6 * dt });
 
     if (stompReq && !step) beginGiantStep();
     stompReq = false;
@@ -569,8 +576,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
         mx = ai.tx - player.x; md = ai.td - player.d;
         if (Math.sqrt(mx * mx + md * md) < 0.08) {
           mx = 0; md = 0;
-          ai.tx = G_MIN_X + Math.random() * (G_MAX_X - G_MIN_X);
-          ai.td = G_MIN_D + Math.random() * (G_MAX_D - G_MIN_D);
+          randomSpot();
           ai.wait = Math.random() * 0.8;
         }
       }
@@ -582,9 +588,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       }
       player.amp += ((ml > 0 ? 1 : 0) - player.amp) * Math.min(1, dt * 12);
       player.vx = mx * speed; player.vd = md * speed;
-      if (!movePlayer(dt, G_MIN_X, G_MAX_X, G_MIN_D, G_MAX_D) && !danger) {
-        ai.tx = G_MIN_X + Math.random() * (G_MAX_X - G_MIN_X);
-        ai.td = G_MIN_D + Math.random() * (G_MAX_D - G_MIN_D);
+      if (!movePlayer(dt) && !danger) {
+        randomSpot();
       }
     }
 
@@ -643,9 +648,9 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     player.vx = mx * PLAYER_SPEED;
     player.vd = md * PLAYER_SPEED;
 
-    movePlayer(dt, MIN_X, MAX_X, MIN_D, MAX_D);
+    movePlayer(dt);
 
-    camX += (player.x * 0.7 - camX) * Math.min(1, dt * 6);
+    camX += (0 - camX) * Math.min(1, dt * 6);
 
     if (step) {
       advanceStep(dt);
@@ -1019,8 +1024,9 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   }
 
   function setAim(w) {
-    aim.x = Math.min(1.8, Math.max(-1.8, w.x));
-    aim.d = Math.min(3.5, Math.max(1.4, w.d));
+    aim.d = Math.min(AREA_MAX_D - 0.1, Math.max(AREA_MIN_D + 0.05, w.d));
+    var lim = xLimit(aim.d);
+    aim.x = Math.min(lim, Math.max(-lim, w.x));
   }
 
   var keyMap = { A: 'a', D: 'd', W: 'w', S: 's' };

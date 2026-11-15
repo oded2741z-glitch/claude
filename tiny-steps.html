@@ -143,8 +143,8 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   function reset() {
     player = { x: 0, d: 1.8, vx: 0, vd: 0, faceX: 0, faceD: 1, dir: 1, walk: 0, amp: 0, squashed: false };
     feet = [
-      { x: -0.4, d: 3.6, lift: 0, side: 0, tap: 0, tapT: -1, tapIn: 2 + Math.random() * 3 },
-      { x: 0.4, d: 4.2, lift: 0, side: 0, tap: 0, tapT: -1, tapIn: 4 + Math.random() * 3 }
+      { x: HOME[0].x, d: HOME[0].d, lift: 0, side: 0, tap: 0, tapT: -1, tapIn: 2 + Math.random() * 3 },
+      { x: HOME[1].x, d: HOME[1].d, lift: 0, side: 0, tap: 0, tapT: -1, tapIn: 4 + Math.random() * 3 }
     ];
     step = null;
     elapsed = 0;
@@ -265,16 +265,24 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   }
 
   var reveal = null;
+  var HOME = [{ x: -0.7, d: 1.9 }, { x: 0.9, d: 1.9 }];
 
   function updateReveal(dt) {
     if (!reveal) return;
-    var f = feet[reveal.foot];
+    var f = feet[reveal.foot], home = HOME[reveal.foot];
     reveal.t += dt;
-    var p = (reveal.t - 0.35) / 0.55;
+    var p = (reveal.t - reveal.delay) / 0.5;
     if (p <= 0) return;
-    if (p >= 1) { f.d = reveal.d0 + 1.4; f.lift = 0; reveal = null; return; }
+    if (p >= 1) {
+      f.x = home.x; f.d = home.d; f.lift = 0;
+      playKnock(0.5, 'sole');
+      reveal = null;
+      return;
+    }
+    var e = 1 - Math.pow(1 - p, 2);
     f.lift = Math.sin(Math.PI * p) * 1.1;
-    f.d = reveal.d0 + 1.4 * (1 - Math.pow(1 - p, 2));
+    f.x = reveal.x0 + (home.x - reveal.x0) * e;
+    f.d = reveal.d0 + (home.d - reveal.d0) * e;
   }
 
   function landStep() {
@@ -284,6 +292,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     if (!reduceMotion) shake = 0.16 + 0.26 * near;
     spawnDust(f);
     playStomp(near);
+    var hit = false;
     if (mode === 'giant') {
       if (!player.squashed && overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
         player.squashed = true;
@@ -291,17 +300,18 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
         caught++;
         dodgedEl.textContent = caught;
         respawnIn = 1.7;
-        reveal = { foot: step.foot, t: 0, d0: f.d };
+        hit = true;
       }
     } else if (overlapsFoot(player.x, player.d, f, PLAYER_R * 0.6)) {
       player.squashed = true;
       playSqueak();
-      reveal = { foot: step.foot, t: 0, d0: f.d };
+      hit = true;
       gameOver();
     } else {
       dodged++;
       dodgedEl.textContent = dodged;
     }
+    reveal = { foot: step.foot, t: 0, x0: f.x, d0: f.d, delay: hit ? 0.4 : 0.22 };
     movingFoot = 1 - step.foot;
     step = null;
     nextStepIn = Math.max(0.08, 0.35 - elapsed * 0.005);
@@ -618,7 +628,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     var TAP = 0.22;
     for (var i = 0; i < 2; i++) {
       var f = feet[i];
-      if (step && step.foot === i) { f.tapT = -1; f.tap = 0; continue; }
+      if ((step && step.foot === i) || (reveal && reveal.foot === i)) { f.tapT = -1; f.tap = 0; continue; }
       if (f.tapT >= 0) {
         var prev = f.tapT;
         f.tapT += dt;
@@ -674,7 +684,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       advanceStep(dt);
     } else {
       nextStepIn -= dt;
-      if (nextStepIn <= 0) beginStep();
+      if (nextStepIn <= 0 && !reveal) beginStep();
     }
   }
 

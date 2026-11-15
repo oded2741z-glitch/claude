@@ -852,10 +852,10 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     g.drawImage(ft.img, 0, 0);
     g.globalCompositeOperation = 'source-in';
     var grad = g.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, 'rgb(255,226,196)');
-    grad.addColorStop(0.62, 'rgb(250,216,182)');
-    grad.addColorStop(0.86, 'rgb(226,186,150)');
-    grad.addColorStop(1, 'rgb(196,152,116)');
+    grad.addColorStop(0, 'rgb(255,242,226)');
+    grad.addColorStop(0.62, 'rgb(255,238,218)');
+    grad.addColorStop(0.86, 'rgb(244,220,196)');
+    grad.addColorStop(1, 'rgb(224,194,168)');
     g.fillStyle = grad;
     g.fillRect(0, 0, w, h);
     var glow = document.createElement('canvas');
@@ -872,7 +872,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     g.globalCompositeOperation = 'multiply';
     g.drawImage(tint, 0, 0);
     g.globalCompositeOperation = 'soft-light';
-    g.globalAlpha = 0.45;
+    g.globalAlpha = 0.2;
     g.drawImage(glow, 0, 0);
     g.globalAlpha = 1;
     g.globalCompositeOperation = 'destination-in';

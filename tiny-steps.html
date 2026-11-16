@@ -316,9 +316,9 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       reveal = { foot: step.foot, t: 0, x0: f.x, d0: f.d, delay: 0.4 };
     } else {
       var oi = 1 - step.foot, o = feet[oi];
-      if (feet[1].x - feet[0].x > 1.7 || Math.abs(feet[1].d - feet[0].d) > 1.0) {
-        var gx = f.x + (step.foot === 0 ? 1.0 : -1.0);
-        var gd = f.d + (o.d > f.d ? 0.25 : -0.25);
+      if (feet[1].x - feet[0].x > 1.15 || Math.abs(feet[1].d - feet[0].d) > 0.55) {
+        var gx = f.x + (step.foot === 0 ? 0.8 : -0.8);
+        var gd = f.d + (o.d > f.d ? 0.15 : -0.15);
         if (overlapsFoot(player.x, player.d, { x: gx, d: gd, side: 0 }, 0.25)) gx += step.foot === 0 ? 0.5 : -0.5;
         reveal = { foot: oi, t: 0, x0: o.x, d0: o.d, delay: 0.12, to: { x: gx, d: gd } };
       }

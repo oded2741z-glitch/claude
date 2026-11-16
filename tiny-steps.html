@@ -33,6 +33,18 @@ h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); margin-botto
 .hud-item { display:flex; flex-direction:column; gap:0.25rem; }
 .hud-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); }
 .hud-value { font-size:1.25rem; font-weight:800; letter-spacing:-0.5px; font-variant-numeric:tabular-nums; }
+.stage-wrap { display:flex; justify-content:center; }
+.stage-wrap:fullscreen { align-items:center; background:var(--text-dark); width:100vw; height:100vh; }
+.stage-wrap:-webkit-full-screen { align-items:center; background:var(--text-dark); width:100vw; height:100vh; }
+.size-row { display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; }
+.size-btn { background:white; color:var(--text-gray); border:1px solid var(--border-color); border-radius:8px; padding:0.4rem 0.8rem; font-size:0.85rem; font-weight:600; cursor:pointer; }
+.size-btn:hover { border-color:var(--primary-accent); }
+.size-btn[aria-pressed="true"] { color:var(--primary-accent); border-color:var(--primary-accent); background:#eff6ff; }
+.size-btn:focus-visible { outline:2px solid var(--text-dark); outline-offset:2px; }
+.stage.size-small { width:min(100%, 640px) !important; }
+.stage.size-large { width:100% !important; }
+.stage-wrap:fullscreen .stage { width:min(100vw, calc(100vh * 16 / 9)) !important; border:none; border-radius:0; }
+.stage-wrap:-webkit-full-screen .stage { width:min(100vw, calc(100vh * 16 / 9)) !important; border:none; border-radius:0; }
 .stage { position:relative; width:min(100%, max(480px, calc((100vh - 330px) * 16 / 9))); margin:0 auto; aspect-ratio:16/9; border:1px solid var(--border-color); border-radius:12px; overflow:hidden; background:var(--bg-light); }
 canvas { display:block; width:100%; height:100%; touch-action:none; cursor:pointer; }
 .overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; padding:1rem; }
@@ -78,8 +90,17 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
       <div class="hud-item"><span class="hud-label" id="time-label">Time</span><span class="hud-value" id="time">0.0 s</span></div>
       <div class="hud-item"><span class="hud-label" id="dodged-label">Steps dodged</span><span class="hud-value" id="dodged">0</span></div>
       <div class="hud-item"><span class="hud-label">Best</span><span class="hud-value" id="best">0.0 s</span></div>
+      <div class="hud-item"><span class="hud-label">Window size</span>
+        <div class="size-row" id="size-row">
+          <button class="size-btn" data-size="small" aria-pressed="false">Small</button>
+          <button class="size-btn" data-size="medium" aria-pressed="true">Medium</button>
+          <button class="size-btn" data-size="large" aria-pressed="false">Large</button>
+          <button class="size-btn" data-size="full" aria-pressed="false">Full screen</button>
+        </div>
+      </div>
     </div>
-    <div class="stage">
+    <div class="stage-wrap" id="stage-wrap">
+    <div class="stage" id="stage">
       <canvas id="game" aria-label="Tiny Steps game area"></canvas>
       <div class="overlay side left" id="overlay">
         <div class="overlay-card">
@@ -88,6 +109,7 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
           <div class="overlay-buttons"><button class="btn-primary" id="start-btn">Play as the man</button><button class="btn-secondary" id="giant-btn">Play as the giant</button></div>
         </div>
       </div>
+    </div>
     </div>
     <p class="hint" id="hint">Man: move with the arrow keys or W A S D, or press and hold the floor where you want to go. Giant: aim with the pointer and click to stomp, or use the arrow keys and Space.</p>
   </div>
@@ -1121,6 +1143,50 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   }
   window.addEventListener('pointerdown', firstTouch);
   window.addEventListener('keydown', firstTouch);
+  var stageEl = document.getElementById('stage');
+  var stageWrap = document.getElementById('stage-wrap');
+  var sizeBtns = document.querySelectorAll('.size-btn');
+  var windowSize = 'medium';
+
+  function isFull() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+
+  function markSize(name) {
+    for (var i = 0; i < sizeBtns.length; i++) sizeBtns[i].setAttribute('aria-pressed', sizeBtns[i].getAttribute('data-size') === name ? 'true' : 'false');
+  }
+
+  function applySize(name) {
+    stageEl.classList.remove('size-small', 'size-large');
+    if (name === 'small') stageEl.classList.add('size-small');
+    if (name === 'large') stageEl.classList.add('size-large');
+    windowSize = name;
+    markSize(name);
+    try { localStorage.setItem('tinysteps-size', name); } catch (e) {}
+    requestAnimationFrame(resize);
+  }
+
+  for (var si = 0; si < sizeBtns.length; si++) {
+    sizeBtns[si].addEventListener('click', function (e) {
+      var name = this.getAttribute('data-size');
+      this.blur();
+      if (name === 'full') {
+        try {
+          var pr = stageWrap.requestFullscreen ? stageWrap.requestFullscreen() : stageWrap.webkitRequestFullscreen();
+          if (pr && pr.catch) pr.catch(function () {});
+        } catch (err) {}
+        return;
+      }
+      if (isFull()) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (err) {} }
+      applySize(name);
+    });
+  }
+  function onFullChange() {
+    markSize(isFull() ? 'full' : windowSize);
+    setTimeout(resize, 60);
+  }
+  document.addEventListener('fullscreenchange', onFullChange);
+  document.addEventListener('webkitfullscreenchange', onFullChange);
+  try { var savedSize = localStorage.getItem('tinysteps-size'); if (savedSize === 'small' || savedSize === 'large') applySize(savedSize); } catch (e) {}
+
   startBtn.addEventListener('click', function () { start('mouse'); });
   giantBtn.addEventListener('click', function () { start('giant'); });
   window.addEventListener('resize', resize);

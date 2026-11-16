@@ -920,16 +920,49 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
     return gr;
   }
 
+  var SKIN_LIGHT = 0.2, SANDAL_DARK = 1;
+
+  function recolorLeg(img, gr) {
+    var w = gr.width, h = gr.height;
+    var oc = document.createElement('canvas');
+    oc.width = w; oc.height = h;
+    var og = oc.getContext('2d');
+    og.drawImage(img, 0, 0);
+    var g = gr.getContext('2d');
+    var od, gd;
+    try { od = og.getImageData(0, 0, w, h); gd = g.getImageData(0, 0, w, h); } catch (e) { return; }
+    var o = od.data, d = gd.data, footTop = h * 0.69;
+    for (var y = 0; y < h; y++) {
+      var zone = Math.min(1, Math.max(0, (y - footTop) / 20));
+      for (var x = 0; x < w; x++) {
+        var i = (y * w + x) * 4;
+        if (d[i + 3] === 0) continue;
+        var lum = (o[i] + o[i + 1] + o[i + 2]) / 3;
+        var sd = Math.min(1, Math.max(0, (118 - lum) / 30)) * zone * SANDAL_DARK;
+        var r = d[i], gg = d[i + 1], b = d[i + 2];
+        var gl = (r + gg + b) / 3;
+        r += (gl - r) * 0.12; gg += (gl - gg) * 0.12; b += (gl - b) * 0.12;
+        r += (255 - r) * SKIN_LIGHT; gg += (255 - gg) * SKIN_LIGHT; b += (255 - b) * SKIN_LIGHT;
+        var v = 10 + lum * 0.32;
+        d[i] = r + (v - r) * sd;
+        d[i + 1] = gg + (v * 0.95 - gg) * sd;
+        d[i + 2] = b + (v * 0.92 - b) * sd;
+      }
+    }
+    g.putImageData(gd, 0, 0);
+  }
+
   function buildFoot(ft) {
     var w = ft.img.naturalWidth, h = ft.img.naturalHeight, g;
     var gr = gradeImage(ft.img, 1.1);
+    recolorLeg(ft.img, gr);
     ft.gr = gr;
     var c = document.createElement('canvas');
     c.width = w; c.height = h;
     g = c.getContext('2d');
     g.drawImage(gr, 0, 0);
     g.globalCompositeOperation = 'source-atop';
-    g.fillStyle = '#2b2622';
+    g.fillStyle = '#141211';
     g.fillRect(ft.toes[0][0], ft.toeTop + ft.toeH - 18, ft.toes[ft.toes.length - 1][1] - ft.toes[0][0], 18);
     ft.base = c;
   }

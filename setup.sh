@@ -41,8 +41,16 @@ RECORDINGS_LIMIT_PERCENT=70
 OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"
 LOCAL_REPO="/var/tmp/kiosk-debs"
 
-if ! dpkg -s gdm3 >/dev/null 2>&1; then
-    echo "Ubuntu Desktop (gdm3) is required."
+for pkg in gdm3 gnome-shell; do
+    if [ "$(dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null)" != "install ok installed" ]; then
+        echo "Ubuntu Desktop is not fully installed (${pkg} is missing)."
+        echo "Reinstall Ubuntu Desktop 22.04 and run setup.sh again."
+        exit 1
+    fi
+done
+if [ ! -d /usr/share/xsessions ]; then
+    echo "Ubuntu Desktop is not fully installed (/usr/share/xsessions is missing)."
+    echo "Reinstall Ubuntu Desktop 22.04 and run setup.sh again."
     exit 1
 fi
 

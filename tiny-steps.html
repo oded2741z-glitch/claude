@@ -891,17 +891,15 @@ body.acc-highlight-links a { background:yellow !important; color:black !importan
   }
 
   function buildFoot(ft) {
-    var w = ft.img.naturalWidth, h = ft.img.naturalHeight, g;
-    var gr = gradeImage(ft.img, 1.1);
-    ft.gr = gr;
     var c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    g = c.getContext('2d');
-    g.drawImage(gr, 0, 0);
+    c.width = ft.img.naturalWidth; c.height = ft.img.naturalHeight;
+    var g = c.getContext('2d');
+    g.drawImage(ft.img, 0, 0);
     g.globalCompositeOperation = 'source-atop';
     g.fillStyle = '#2b2622';
     g.fillRect(ft.toes[0][0], ft.toeTop + ft.toeH - 18, ft.toes[ft.toes.length - 1][1] - ft.toes[0][0], 18);
     ft.base = c;
+    ft.gr = ft.img;
   }
   FEET.forEach(function (ft) {
     ft.img = new Image();

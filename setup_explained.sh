@@ -88,6 +88,8 @@ RECORDINGS_LIMIT_PERCENT=70               # כמה אחוז מהדיסק ההק�
 # התיקייה שבה נמצא הסקריפט (על הדיסק-און-קי), ובתוכה kiosk-offline.
 # dirname "$0" נותן את התיקייה של הסקריפט, ו-pwd הופך אותה לנתיב מלא.
 OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"
+# תמונת הפתיחה: קובץ splash.png באותה תיקייה של הסקריפט. אם אין קובץ, אין תמונה.
+SPLASH_SRC="$(cd "$(dirname "$0")" && pwd)/splash.png"
 # לכאן מעתיקים את חבילות ה-apt. ה-USB לא מתאים: בנתיב שלו יש לפעמים
 # רווחים, ולתוכנת apt אין הרשאה לקרוא ממנו.
 LOCAL_REPO="/var/tmp/kiosk-debs"
@@ -197,6 +199,37 @@ chmod 640 "${VNC_PASS_FILE}"
 mkdir -p "${RECORDINGS}"
 chown "${KIOSK_USER}:${KIOSK_USER}" "${RECORDINGS}"
 chmod 755 "${RECORDINGS}"
+# תמונת הפתיחה. היא חייבת להיות בתיקיית הבית של kiosk, כי Chromium (snap) לא
+# יכול לקרוא קבצים מתיקיות מערכת. מוחקים את הישנה, כדי שהרצה בלי splash.png תבטל אותה.
+SPLASH_DIR="/home/${KIOSK_USER}/kiosk-splash"
+rm -rf "${SPLASH_DIR}"
+if [ -f "${SPLASH_SRC}" ]; then
+    mkdir -p "${SPLASH_DIR}"
+    cp "${SPLASH_SRC}" "${SPLASH_DIR}/splash.png"
+    # דף שמציג את התמונה מתוחה על כל המסך. אחרי 30 שניות הוא עובר לכתובת
+    # שמופיעה אחרי הסימן # (kiosk-session מוסיף אותה). replace: הדף לא נשאר בהיסטוריה.
+    cat > "${SPLASH_DIR}/splash.html" <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: none; user-select: none; }
+img { display: block; width: 100vw; height: 100vh; pointer-events: none; }
+</style>
+</head>
+<body>
+<img src="splash.png" alt="" draggable="false">
+<script>
+setTimeout(function () {
+    location.replace(decodeURIComponent(location.hash.slice(1)));
+}, 30000);
+</script>
+</body>
+</html>
+EOF
+    chmod -R a+rX "${SPLASH_DIR}"
+fi
 
 # -----------------------------------------------------------------------------
 # שלב 5: סשן הקיוסק
@@ -273,6 +306,11 @@ unclutter -idle 1 -root &
 
 # ---- הדפדפן ----
 URL="$(cat /etc/kiosk/url)"     # הכתובת נקראת מהקובץ בכל פעם שהקיוסק עולה
+# בפתיחה הראשונה מציגים את תמונת הפתיחה (אם קיימת), ואחריה את האתר.
+START="$URL"
+if [ -f "$HOME/kiosk-splash/splash.html" ]; then
+    START="file://$HOME/kiosk-splash/splash.html#$URL"
+fi
 # קובץ ההגדרות של Chromium. בגרסת snap הוא נמצא בתוך תיקיית snap.
 PREFS="$HOME/snap/chromium/common/chromium/Default/Preferences"
 
@@ -312,7 +350,9 @@ while true; do
         --check-for-update-interval=31536000 \
         --overscroll-history-navigation=0 \
         --disable-pinch \
-        "$URL"
+        "$START"
+    # אם Chromium נפתח מחדש (אחרי קריסה), הוא הולך ישר לאתר, בלי התמונה.
+    START="$URL"
     sleep 2     # מחכים 2 שניות לפני פתיחה מחדש
 done
 EOF

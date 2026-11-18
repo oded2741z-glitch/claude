@@ -39,6 +39,7 @@ APT_PACKAGES="unclutter ffmpeg x11vnc"
 RECORDINGS="/var/kiosk-recordings"
 RECORDINGS_LIMIT_PERCENT=70
 OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"
+SPLASH_SRC="$(cd "$(dirname "$0")" && pwd)/splash.png"
 LOCAL_REPO="/var/tmp/kiosk-debs"
 
 for pkg in gdm3 gnome-shell; do
@@ -99,6 +100,33 @@ chmod 640 "${VNC_PASS_FILE}"
 mkdir -p "${RECORDINGS}"
 chown "${KIOSK_USER}:${KIOSK_USER}" "${RECORDINGS}"
 chmod 755 "${RECORDINGS}"
+SPLASH_DIR="/home/${KIOSK_USER}/kiosk-splash"
+rm -rf "${SPLASH_DIR}"
+if [ -f "${SPLASH_SRC}" ]; then
+    mkdir -p "${SPLASH_DIR}"
+    cp "${SPLASH_SRC}" "${SPLASH_DIR}/splash.png"
+    cat > "${SPLASH_DIR}/splash.html" <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: none; user-select: none; }
+img { display: block; width: 100vw; height: 100vh; pointer-events: none; }
+</style>
+</head>
+<body>
+<img src="splash.png" alt="" draggable="false">
+<script>
+setTimeout(function () {
+    location.replace(decodeURIComponent(location.hash.slice(1)));
+}, 30000);
+</script>
+</body>
+</html>
+EOF
+    chmod -R a+rX "${SPLASH_DIR}"
+fi
 
 echo "[5/10] Creating kiosk session"
 cat > /usr/local/bin/kiosk-session <<'EOF'
@@ -132,6 +160,10 @@ unclutter -idle 1 -root &
 ) &
 
 URL="$(cat /etc/kiosk/url)"
+START="$URL"
+if [ -f "$HOME/kiosk-splash/splash.html" ]; then
+    START="file://$HOME/kiosk-splash/splash.html#$URL"
+fi
 PREFS="$HOME/snap/chromium/common/chromium/Default/Preferences"
 
 while true; do
@@ -155,7 +187,8 @@ while true; do
         --check-for-update-interval=31536000 \
         --overscroll-history-navigation=0 \
         --disable-pinch \
-        "$URL"
+        "$START"
+    START="$URL"
     sleep 2
 done
 EOF

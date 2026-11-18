@@ -22,6 +22,7 @@
 ## איך הקיוסק עובד (setup.sh)
 - GDM עם התחברות אוטומטית ל-`kiosk`, לסשן X בשם Kiosk (`/usr/share/xsessions/kiosk.desktop` → `/usr/local/bin/kiosk-session`).
 - `kiosk-session`: מכבה שומר מסך, מריץ unclutter, הקלטת ffmpeg בלולאה, x11vnc בלולאה, ו-Chromium `--kiosk` בלולאה. גודל החלון לפי `xrandr`, כי אין מנהל חלונות.
+- תמונת פתיחה: אם יש `splash.png` ליד `setup.sh`, הוא מועתק ל-`/home/kiosk/kiosk-splash/` עם `splash.html`. בעליית הקיוסק Chromium פותח את הדף (התמונה מתוחה למסך מלא), ואחרי 30 שניות עובר לכתובת שאחרי `#`. אחרי קריסה של Chromium: ישר לאתר.
 - הכתובת נשמרת ב-`/etc/kiosk/url`. סיסמת VNC ב-`/etc/kiosk/vncpasswd`.
 - שירות `kiosk-corner` (Python, root, קורא מ-`/dev/input`), פועל רק כשהקיוסק פעיל:
   - לחיצה של 5 שניות על הפינה השמאלית העליונה: `loginctl terminate-user kiosk`, חזרה למסך ההתחברות.

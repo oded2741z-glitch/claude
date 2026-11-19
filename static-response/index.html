@@ -348,150 +348,57 @@ function scream() {
   b.connect(bg); bg.connect(out); b.start(t); b.stop(t + 0.9);
 }
 
-function silhouette(g, x, top, h) {
-  g.fillStyle = '#000';
-  const hr = h * 0.085;
-  g.beginPath(); g.ellipse(x, top + hr, hr * 0.85, hr, 0, 0, Math.PI * 2); g.fill();
-  g.beginPath();
-  g.moveTo(x - hr * 0.4, top + hr * 1.8);
-  g.lineTo(x - hr * 1.9, top + hr * 2.6);
-  g.lineTo(x - hr * 2.3, top + h * 0.62);
-  g.lineTo(x - hr * 1.8, top + h * 0.64);
-  g.lineTo(x - hr * 1.3, top + h * 0.4);
-  g.lineTo(x - hr * 1.1, top + h);
-  g.lineTo(x + hr * 1.1, top + h);
-  g.lineTo(x + hr * 1.3, top + h * 0.4);
-  g.lineTo(x + hr * 1.8, top + h * 0.64);
-  g.lineTo(x + hr * 2.3, top + h * 0.62);
-  g.lineTo(x + hr * 1.9, top + hr * 2.6);
-  g.lineTo(x + hr * 0.4, top + hr * 1.8);
-  g.closePath(); g.fill();
+function loadImg(src) {
+  return new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = src; });
 }
-const IMAGES = {
-  figure(g, w, h, p) {
-    const gr = g.createRadialGradient(w * p.x, h * 0.1, 10, w * p.x, h * 0.4, h * 0.9);
-    gr.addColorStop(0, '#9a9a92'); gr.addColorStop(1, '#0a0a0a');
-    g.fillStyle = gr; g.fillRect(0, 0, w, h);
-    silhouette(g, w * p.x, h * 0.18, h * 0.85);
-  },
-  face(g, w, h, p) {
-    g.fillStyle = '#030303'; g.fillRect(0, 0, w, h);
-    const cx = w * p.x, cy = h * 0.5, r = h * 0.26;
-    const gr = g.createRadialGradient(cx, cy - r * 0.2, r * 0.1, cx, cy, r * 1.2);
-    gr.addColorStop(0, '#d8d5cc'); gr.addColorStop(0.6, '#6f6c66'); gr.addColorStop(1, '#050505');
-    g.fillStyle = gr;
-    g.beginPath(); g.ellipse(cx, cy, r * 0.75, r, 0, 0, Math.PI * 2); g.fill();
-    g.fillStyle = '#000';
-    g.beginPath(); g.ellipse(cx - r * 0.28, cy - r * 0.15, r * 0.14, r * 0.2, 0.15, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.ellipse(cx + r * 0.28, cy - r * 0.15, r * 0.14, r * 0.2, -0.15, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.ellipse(cx, cy + r * 0.45, r * 0.12, r * 0.3, 0, 0, Math.PI * 2); g.fill();
-  },
-  eyes(g, w, h, p) {
-    g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
-    const cx = w * p.x, cy = h * p.y, s = h * 0.05;
-    g.save();
-    g.shadowColor = '#fff'; g.shadowBlur = 18; g.fillStyle = '#f4f1e8';
-    g.beginPath(); g.ellipse(cx - s, cy, s * 0.28, s * 0.18, 0, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.ellipse(cx + s, cy, s * 0.28, s * 0.18, 0, 0, Math.PI * 2); g.fill();
-    g.restore();
-  },
-  hall(g, w, h, p) {
-    g.fillStyle = '#060606'; g.fillRect(0, 0, w, h);
-    const vx = w * p.x, vy = h * 0.45, dw = h * 0.16, dh = h * 0.3;
-    g.fillStyle = '#4a4a45';
-    g.beginPath(); g.moveTo(0, 0); g.lineTo(vx - dw / 2, vy - dh / 2); g.lineTo(vx - dw / 2, vy + dh / 2); g.lineTo(0, h); g.fill();
-    g.fillStyle = '#3a3a36';
-    g.beginPath(); g.moveTo(w, 0); g.lineTo(vx + dw / 2, vy - dh / 2); g.lineTo(vx + dw / 2, vy + dh / 2); g.lineTo(w, h); g.fill();
-    g.fillStyle = '#25251f';
-    g.beginPath(); g.moveTo(0, h); g.lineTo(vx - dw / 2, vy + dh / 2); g.lineTo(vx + dw / 2, vy + dh / 2); g.lineTo(w, h); g.fill();
-    g.fillStyle = '#b7b4a8'; g.fillRect(vx - dw / 2, vy - dh / 2, dw, dh);
-    silhouette(g, vx, vy - dh / 2 + dh * 0.08, dh * 0.92);
-  },
-  hand(g, w, h, p) {
-    g.fillStyle = '#020202'; g.fillRect(0, 0, w, h);
-    const cx = w * p.x, cy = h * 0.6, s = h * 0.22;
-    g.fillStyle = '#c9c5bb';
-    g.beginPath(); g.ellipse(cx, cy, s * 0.55, s * 0.62, 0, 0, Math.PI * 2); g.fill();
-    const fingers = [[-0.42, -0.95, 0.55, -0.25], [-0.15, -1.25, 0.75, -0.08], [0.13, -1.3, 0.8, 0.05], [0.4, -1.12, 0.65, 0.2], [0.62, -0.1, 0.5, 0.9]];
-    fingers.forEach(([fx, fy, len, rot]) => {
-      g.save();
-      g.translate(cx + fx * s, cy + fy * s * 0.5);
-      g.rotate(rot);
-      g.beginPath(); g.ellipse(0, -len * s * 0.5, s * 0.11, len * s * 0.6, 0, 0, Math.PI * 2); g.fill();
-      g.restore();
+const FLASH_SRC = [1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => `img/f${i}.jpg`);
+const FACE_SRC = [1, 2, 3, 4, 5].map(i => `img/s${i}.jpg`);
+let flashImgs = [], faceImgs = [], imagesReady = null;
+function loadImages() {
+  if (!imagesReady) {
+    imagesReady = Promise.all([Promise.all(FLASH_SRC.map(loadImg)), Promise.all(FACE_SRC.map(loadImg))]).then(([f, s]) => {
+      flashImgs = f.filter(Boolean);
+      faceImgs = s.filter(Boolean);
     });
-    g.fillStyle = 'rgba(0,0,0,0.35)';
-    g.beginPath(); g.ellipse(cx, cy + s * 0.1, s * 0.3, s * 0.35, 0, 0, Math.PI * 2); g.fill();
   }
-};
-
-let cracks = [];
-function makeCracks() {
-  cracks = [];
-  for (let i = 0; i < 9; i++) {
-    const pts = []; let x = rand(-0.4, 0.4), y = rand(-0.55, 0.55);
-    for (let j = 0; j < 7; j++) { pts.push([x, y]); x += rand(-0.08, 0.08); y += rand(-0.08, 0.08); }
-    cracks.push(pts);
-  }
+  return imagesReady;
 }
+loadImages();
+
+function drawCover(g, im, w, h, zoom, ox, oy, fit) {
+  const sc = (fit ? Math.min(w / im.width, h / im.height) : Math.max(w / im.width, h / im.height)) * zoom;
+  const dw = im.width * sc, dh = im.height * sc;
+  g.drawImage(im, (w - dw) / 2 + ox, (h - dh) / 2 + oy, dw, dh);
+}
+
+let scareFace = null;
 function drawScare(p) {
   const w = innerWidth, h = innerHeight, g = sctx;
-  const flash = Math.random() < 0.3;
-  g.fillStyle = flash ? '#3a0002' : '#000'; g.fillRect(0, 0, w, h);
-  const s = Math.min(h * 0.95, w * 1.6) * (0.8 + p * 0.6);
-  const cx = w / 2 + rand(-1, 1) * 22 * (1 - p * 0.4), cy = h / 2 + rand(-1, 1) * 22;
-  g.save();
-  g.translate(cx, cy);
-  g.rotate(rand(-0.03, 0.03));
-  const gr = g.createRadialGradient(0, -s * 0.15, s * 0.05, 0, 0, s * 0.62);
-  gr.addColorStop(0, '#efe9dc'); gr.addColorStop(0.55, '#8a8378'); gr.addColorStop(1, '#0c0b0a');
-  g.fillStyle = gr;
-  g.beginPath(); g.ellipse(0, 0, s * 0.42, s * 0.58, 0, 0, Math.PI * 2); g.fill();
-  g.strokeStyle = 'rgba(30,20,18,0.8)'; g.lineWidth = Math.max(1.5, s * 0.004);
-  cracks.forEach(pts => { g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x * s, y * s) : g.moveTo(x * s, y * s)); g.stroke(); });
-  g.fillStyle = '#000';
-  [-1, 1].forEach(side => {
-    g.beginPath(); g.ellipse(side * s * 0.16, -s * 0.12, s * 0.105, s * 0.14, side * -0.2, 0, Math.PI * 2); g.fill();
-    g.fillStyle = 'rgba(0,0,0,0.55)';
-    g.fillRect(side * s * 0.16 - s * 0.012, -s * 0.05, s * 0.024, s * rand(0.18, 0.24));
-    g.fillStyle = '#000';
-  });
-  g.save(); g.shadowColor = '#fff'; g.shadowBlur = 20; g.fillStyle = '#fff';
-  [-1, 1].forEach(side => { g.beginPath(); g.arc(side * s * 0.16 + rand(-2, 2), -s * 0.12, s * 0.012, 0, Math.PI * 2); g.fill(); });
-  g.restore();
-  const mo = 0.75 + 0.25 * Math.sin(p * 40);
-  const my = s * 0.27, mrx = s * 0.17, mry = s * 0.2 * mo;
-  g.fillStyle = '#050000';
-  g.beginPath(); g.ellipse(0, my, mrx, mry, 0, 0, Math.PI * 2); g.fill();
-  g.fillStyle = '#d9d0bd';
-  const teeth = 9;
-  for (let i = 0; i < teeth; i++) {
-    const a1 = Math.PI + (i / teeth) * Math.PI, a2 = Math.PI + ((i + 1) / teeth) * Math.PI, am = (a1 + a2) / 2;
-    g.beginPath();
-    g.moveTo(Math.cos(a1) * mrx, my + Math.sin(a1) * mry);
-    g.lineTo(Math.cos(a2) * mrx, my + Math.sin(a2) * mry);
-    g.lineTo(Math.cos(am) * mrx * 0.7, my + Math.sin(am) * mry * 0.55);
-    g.fill();
-    const b1 = (i / teeth) * Math.PI, b2 = ((i + 1) / teeth) * Math.PI, bm = (b1 + b2) / 2;
-    g.beginPath();
-    g.moveTo(Math.cos(b1) * mrx, my + Math.sin(b1) * mry);
-    g.lineTo(Math.cos(b2) * mrx, my + Math.sin(b2) * mry);
-    g.lineTo(Math.cos(bm) * mrx * 0.7, my + Math.sin(bm) * mry * 0.55);
-    g.fill();
+  g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
+  const shake = 26 * (1 - p * 0.5);
+  if (scareFace) {
+    g.save();
+    g.filter = Math.random() < 0.25 ? 'contrast(1.8) brightness(1.3)' : 'contrast(1.25)';
+    drawCover(g, scareFace, w, h, 1.05 + p * 0.45, rand(-1, 1) * shake, rand(-1, 1) * shake);
+    g.restore();
   }
-  g.restore();
-  drawNoise(g, w, h, 0.18);
-  if (Math.random() < 0.18) {
+  if (Math.random() < 0.3) {
+    g.save(); g.globalCompositeOperation = 'multiply'; g.fillStyle = '#b3060c'; g.fillRect(0, 0, w, h); g.restore();
+  }
+  drawNoise(g, w, h, 0.16);
+  if (Math.random() < 0.15) {
     g.save(); g.globalCompositeOperation = 'difference'; g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.restore();
   }
-  if (Math.random() < 0.4) {
-    const y = rand(0, h), bh = rand(10, 60);
-    g.drawImage(scareCv, 0, y * DPR, w * DPR, bh * DPR, rand(-40, 40), y, w, bh);
+  for (let i = 0; i < 2; i++) {
+    if (Math.random() < 0.45) {
+      const y = rand(0, h), bh = rand(10, 70);
+      g.drawImage(scareCv, 0, y * DPR, w * DPR, bh * DPR, rand(-50, 50), y, w, bh);
+    }
   }
 }
 function jumpscare() {
   return new Promise(res => {
-    makeCracks();
+    scareFace = faceImgs.length ? pick(faceImgs) : null;
     scareCv.hidden = false;
     scream();
     const start = performance.now();
@@ -520,7 +427,10 @@ function render(now) {
     if (age >= 0 && age < currentVisual.dur) {
       ctx.save();
       ctx.globalAlpha = rand(0.75, 1);
-      IMAGES[currentVisual.sub](ctx, W, H, currentVisual);
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+      ctx.filter = 'contrast(1.2) brightness(0.95)';
+      drawCover(ctx, currentVisual.img, W, H, currentVisual.zoom, rand(-3, 3), rand(-3, 3), true);
+      ctx.filter = 'none';
       ctx.restore();
       drawNoise(ctx, W, H, 0.22);
     }
@@ -550,16 +460,17 @@ function buildLevel(n) {
   const D = 30000;
   const count = 5 + n;
   const win = Math.max(650, 1700 - n * 105);
-  const vis = Math.max(130, 480 - n * 35);
+  const vis = Math.max(160, 520 - n * 35);
   const slot = (D - 2500) / count;
   const evs = [];
   for (let i = 0; i < count; i++) {
     const t = 1500 + i * slot + Math.random() * Math.max(0, slot - win - 700);
-    const kind = Math.random() < 0.5 ? 'audio' : 'visual';
+    const kind = flashImgs.length && Math.random() < 0.5 ? 'visual' : 'audio';
     evs.push({
       t, kind, win, dur: vis, state: 'pending',
-      sub: kind === 'audio' ? pick(Object.keys(CUES)) : pick(Object.keys(IMAGES)),
-      x: rand(0.25, 0.75), y: rand(0.25, 0.65)
+      sub: pick(Object.keys(CUES)),
+      img: kind === 'visual' ? pick(flashImgs) : null,
+      zoom: rand(1, 1.08)
     });
   }
   if (n === game.scareLevel) evs[1 + Math.floor(Math.random() * (count - 2))].kind = 'scare';
@@ -652,6 +563,9 @@ function playLevel(n) {
 
 async function runGame() {
   initAudio();
+  hidePanel();
+  showPanel('<h2>LOADING</h2>');
+  await loadImages();
   game = { scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1 };
   startDrone();
   for (let n = 1; n <= LEVELS; n++) {

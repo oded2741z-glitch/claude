@@ -55,11 +55,15 @@ body {
 .scan { background: repeating-linear-gradient(to bottom, rgba(0,0,0,0.28) 0 1px, transparent 1px 3px); }
 .vignette { background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.85) 100%); }
 .roll {
-  background: linear-gradient(to bottom, transparent, rgba(217,220,207,0.04), transparent);
-  height: 18%;
-  animation: roll 7s linear infinite;
+  background: linear-gradient(to bottom, transparent 0%, rgba(217,220,207,0.05) 55%, rgba(217,220,207,0.16) 92%, rgba(240,242,232,0.55) 97%, rgba(217,220,207,0.08) 100%);
+  height: 22%;
+  top: 0;
+  bottom: auto;
+  mix-blend-mode: screen;
+  animation: roll 6s linear infinite;
+  z-index: 1;
 }
-@keyframes roll { from { transform: translateY(-100%); } to { transform: translateY(650%); } }
+@keyframes roll { from { transform: translateY(-100%); } to { transform: translateY(460%); } }
 #hud {
   position: absolute;
   inset: 0;

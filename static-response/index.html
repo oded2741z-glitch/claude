@@ -63,6 +63,14 @@ body {
   animation: roll 6s linear infinite;
   z-index: 1;
 }
+#rollNoise {
+  position: absolute;
+  inset: 0;
+  background-size: 220px 70px;
+  image-rendering: pixelated;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.35) 50%, #000 90%, #000 97%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.35) 50%, #000 90%, #000 97%, transparent 100%);
+}
 @keyframes roll { from { transform: translateY(-100%); } to { transform: translateY(460%); } }
 #hud {
   position: absolute;
@@ -147,7 +155,7 @@ body {
 
 <div id="crt">
   <canvas id="scene"></canvas>
-  <div class="fx roll"></div>
+  <div class="fx roll"><div id="rollNoise"></div></div>
   <div id="hud" hidden>
     <div>
       <div class="row">
@@ -203,6 +211,31 @@ for (let k = 0; k < 6; k++) {
   g.putImageData(img, 0, 0);
   noiseFrames.push(c);
 }
+const rollNoiseEl = document.getElementById('rollNoise');
+const rollFrames = [];
+for (let k = 0; k < 8; k++) {
+  const c = document.createElement('canvas');
+  c.width = 220; c.height = 70;
+  const g = c.getContext('2d');
+  const img = g.createImageData(c.width, c.height);
+  for (let y = 0; y < c.height; y++) {
+    const streak = Math.random() < 0.12 ? 1.8 : 1;
+    for (let x = 0; x < c.width; x++) {
+      const i = (y * c.width + x) * 4;
+      const v = 160 + Math.random() * 95;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+      img.data[i + 3] = Math.min(255, Math.random() * 120 * streak);
+    }
+  }
+  g.putImageData(img, 0, 0);
+  rollFrames.push(`url(${c.toDataURL()})`);
+}
+let rollIdx = 0;
+setInterval(() => {
+  rollIdx = (rollIdx + 1) % rollFrames.length;
+  rollNoiseEl.style.backgroundImage = rollFrames[rollIdx];
+  rollNoiseEl.style.transform = `translateX(${(Math.random() * 6 - 3).toFixed(1)}px)`;
+}, 60);
 const rand = (a, b) => a + Math.random() * (b - a);
 const pick = a => a[Math.floor(Math.random() * a.length)];
 

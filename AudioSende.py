@@ -57,7 +57,7 @@ class AudioStreamerApp:
 
         # Global Hotkeys using the 'keyboard' module
         keyboard.add_hotkey('f4', self.safe_toggle_window)
-        keyboard.add_hotkey('f5', self.safe_toggle_request)
+        keyboard.add_hotkey('f2', self.safe_toggle_request)
 
         self.is_hidden = False
 
@@ -287,7 +287,7 @@ class AudioStreamerApp:
         close_btn = tk.Button(frame, text="Quit", bg=QUIT_COLOR, fg=TEXT_COLOR, font=FONT_MAIN, relief=tk.FLAT, command=help_window.destroy)
         close_btn.pack(anchor=tk.NE, padx=5, pady=5)
 
-        info = "Audio Streamer Usage:\n\nSelect a device from the dropdown.\nClick 'Request Audio' or press F5 (Global) to pull stream.\nCheck 'Sender Only' to disable requesting.\nF4 (Global) toggles window visibility."
+        info = "Audio Streamer Usage:\n\nSelect a device from the dropdown.\nClick 'Request Audio' or press F2 (Global) to pull stream.\nCheck 'Sender Only' to disable requesting.\nF4 (Global) toggles window visibility."
         tk.Label(frame, text=info, bg=BG_COLOR, fg=TEXT_COLOR, font=FONT_MAIN, justify=tk.LEFT, wraplength=280).pack(pady=10, padx=10)
 
     def quit_app(self):

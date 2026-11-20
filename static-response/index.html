@@ -153,7 +153,7 @@ body {
 #panel button.small { font-size: clamp(13px, 2.2vmin, 20px); padding: 0.15em 0.8em; border-color: var(--dim); color: var(--dim); }
 #panel button:disabled { opacity: 0.4; cursor: default; }
 .loadEye {
-  width: min(70%, 640px);
+  width: min(55%, 520px);
   max-width: 100%;
   filter: grayscale(1) contrast(1.2) brightness(0.9);
   animation: eyeIn 3.5s ease-in forwards;
@@ -722,7 +722,7 @@ function waitAnswer(box) {
 }
 
 async function askQuestion(text) {
-  showPanel(`<h2 id="qtext"></h2><div class="answers" id="answers" hidden><button type="button" data-a="yes">YES</button><button type="button" data-a="no">NO</button></div>`);
+  showPanel(`<img class="loadEye" src="img/eye.jpg" alt=""><h2 id="qtext"></h2><div class="answers" id="answers" hidden><button type="button" data-a="yes">YES</button><button type="button" data-a="no">NO</button></div>`);
   await typeText($('#qtext'), text);
   const box = $('#answers');
   box.hidden = false;
@@ -828,8 +828,8 @@ const STAGES = [
 async function runGame(startStage = 0) {
   initAudio();
   hidePanel();
-  showPanel('<img class="loadEye" src="img/eye.jpg" alt=""><h2>LOADING</h2>');
-  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient(), wait(3500)]);
+  showPanel('<h2>LOADING</h2>');
+  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient()]);
   game = { startStage, stage: startStage + 1, scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1, flashStage: 0 };
   startDrone();
   for (let i = startStage; i < STAGES.length; i++) {

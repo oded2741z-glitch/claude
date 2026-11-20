@@ -230,6 +230,13 @@ for (let k = 0; k < 8; k++) {
   g.putImageData(img, 0, 0);
   rollFrames.push(`url(${c.toDataURL()})`);
 }
+const calmMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (!calmMotion) {
+  setInterval(() => {
+    const x = (Math.random() * 2.4 - 1.2).toFixed(2), y = (Math.random() * 2.4 - 1.2).toFixed(2), r = (Math.random() * 0.24 - 0.12).toFixed(3);
+    crt.style.transform = `translate(${x}px, ${y}px) rotate(${r}deg)`;
+  }, 55);
+}
 let rollIdx = 0;
 setInterval(() => {
   rollIdx = (rollIdx + 1) % rollFrames.length;
@@ -467,9 +474,9 @@ function render(now) {
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
       ctx.filter = 'contrast(1.2) brightness(0.95)';
       ctx.translate(W / 2, H / 2);
-      ctx.rotate(rand(-0.025, 0.025));
+      ctx.rotate(rand(-0.006, 0.006));
       ctx.translate(-W / 2, -H / 2);
-      drawCover(ctx, currentVisual.img, W, H, currentVisual.zoom, rand(-14, 14), rand(-14, 14), true);
+      drawCover(ctx, currentVisual.img, W, H, currentVisual.zoom, rand(-4, 4), rand(-4, 4), true);
       ctx.filter = 'none';
       ctx.restore();
       drawNoise(ctx, W, H, 0.22);

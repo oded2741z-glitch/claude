@@ -723,6 +723,7 @@ function showIntro() {
       <li>Do not look away from the screen.</li>
     </ol>
     <p class="warn">CONTAINS LOUD SOUNDS AND SUDDEN FRIGHTENING IMAGES</p>
+    <p class="muted" id="soundHint"${introAudioStarted ? ' hidden' : ''}>CLICK ANYWHERE TO TURN ON SOUND</p>
     <button id="begin" type="button">BEGIN</button>`);
   $('#begin').addEventListener('click', e => { e.stopPropagation(); e.currentTarget.blur(); runGame(); });
 }
@@ -736,6 +737,19 @@ crt.addEventListener('pointerdown', e => {
   if (e.target.closest('button')) return;
   if (game && game.lv) { e.preventDefault(); press(); }
 });
+
+let introAudioStarted = false;
+async function startIntroAudio() {
+  if (introAudioStarted) return;
+  introAudioStarted = true;
+  const h = document.getElementById('soundHint');
+  if (h) h.hidden = true;
+  initAudio();
+  await Promise.all([loadHeart(), loadAmbient()]);
+  startDrone();
+}
+addEventListener('pointerdown', startIntroAudio);
+addEventListener('keydown', startIntroAudio);
 
 showIntro();
 </script>

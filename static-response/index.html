@@ -280,7 +280,7 @@ function env(g, t, peak, a, hold, rel) {
 function startDrone() {
   if (drone) return;
   const out = AC.createGain(); out.gain.value = 0; out.connect(master);
-  out.gain.linearRampToValueAtTime(0.07, AC.currentTime + 2);
+  out.gain.linearRampToValueAtTime(0.025, AC.currentTime + 2);
   const o1 = AC.createOscillator(), o2 = AC.createOscillator();
   o1.frequency.value = 47; o2.frequency.value = 47.6;
   const n = noiseSrc(), lp = AC.createBiquadFilter(), ng = AC.createGain();
@@ -293,7 +293,7 @@ function startDrone() {
     const hb = AC.createBufferSource();
     hb.buffer = heartBuf; hb.loop = true;
     hb.connect(hg); hb.start();
-    hg.gain.linearRampToValueAtTime(0.7, AC.currentTime + 1.5);
+    hg.gain.linearRampToValueAtTime(0.22, AC.currentTime + 1.5);
     nodes.push(hb);
   }
   if (ambientBuf) {
@@ -406,7 +406,7 @@ function playScream() {
   if (!screamBuf) { scream(); return; }
   const src = AC.createBufferSource(), g = AC.createGain();
   src.buffer = screamBuf;
-  g.gain.value = 1.2;
+  g.gain.value = 1.8;
   src.connect(g); g.connect(master);
   src.start();
 }

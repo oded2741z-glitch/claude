@@ -152,6 +152,13 @@ body {
 .answers[hidden] { display: none !important; }
 #panel button.small { font-size: clamp(13px, 2.2vmin, 20px); padding: 0.15em 0.8em; border-color: var(--dim); color: var(--dim); }
 #panel button:disabled { opacity: 0.4; cursor: default; }
+.loadEye {
+  width: min(70%, 640px);
+  max-width: 100%;
+  filter: grayscale(1) contrast(1.2) brightness(0.9);
+  animation: eyeIn 3.5s ease-in forwards;
+}
+@keyframes eyeIn { from { transform: scale(1); opacity: 0.2; } 30% { opacity: 1; } to { transform: scale(1.12); opacity: 1; } }
 #scare { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 50; display: block; background: #000; }
 #scare[hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { .roll { animation: none; } }
@@ -463,6 +470,7 @@ function loadImages() {
   return imagesReady;
 }
 loadImages();
+loadImg('img/eye.jpg');
 
 function drawCover(g, im, w, h, zoom, ox, oy, fit) {
   const sc = (fit ? Math.min(w / im.width, h / im.height) : Math.max(w / im.width, h / im.height)) * zoom;
@@ -820,8 +828,8 @@ const STAGES = [
 async function runGame(startStage = 0) {
   initAudio();
   hidePanel();
-  showPanel('<h2>LOADING</h2>');
-  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient()]);
+  showPanel('<img class="loadEye" src="img/eye.jpg" alt=""><h2>LOADING</h2>');
+  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient(), wait(3500)]);
   game = { startStage, stage: startStage + 1, scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1, flashStage: 0 };
   startDrone();
   for (let i = startStage; i < STAGES.length; i++) {

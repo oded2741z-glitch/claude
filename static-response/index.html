@@ -158,8 +158,8 @@ body {
   aspect-ratio: 16 / 9;
   overflow: hidden;
   margin-bottom: 18px;
-  -webkit-mask-image: radial-gradient(ellipse 40% 34% at 50% 52%, #000 55%, transparent 100%);
-  mask-image: radial-gradient(ellipse 40% 34% at 50% 52%, #000 55%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 62%, transparent 100%);
+  mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 62%, transparent 100%);
   animation: eyeFade 1.2s ease-out, blink 4.6s ease-in-out 1.4s infinite;
 }
 .eyeWrap img {
@@ -173,11 +173,11 @@ body {
 @keyframes eyeFade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes blink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.03); } }
 @keyframes dart {
-  0%, 18% { transform: scale(1.2) translate(0, 0); }
-  21%, 40% { transform: scale(1.2) translate(-5%, 1.5%); }
-  43%, 62% { transform: scale(1.2) translate(4%, -1.5%); }
-  65%, 82% { transform: scale(1.2) translate(-2%, -2.5%); }
-  85%, 100% { transform: scale(1.2) translate(0, 0); }
+  0%, 18% { transform: scale(1.06) translate(0, 0); }
+  21%, 40% { transform: scale(1.06) translate(-2.5%, 1%); }
+  43%, 62% { transform: scale(1.06) translate(2%, -1%); }
+  65%, 82% { transform: scale(1.06) translate(-1%, -1.5%); }
+  85%, 100% { transform: scale(1.06) translate(0, 0); }
 }
 @media (prefers-reduced-motion: reduce) { .eyeWrap, .eyeWrap img { animation: none; } }
 #scare { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 50; display: block; background: #000; }

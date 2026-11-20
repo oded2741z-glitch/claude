@@ -231,11 +231,13 @@ for (let k = 0; k < 8; k++) {
   rollFrames.push(`url(${c.toDataURL()})`);
 }
 const calmMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let shakeDir = 1;
 if (!calmMotion) {
   setInterval(() => {
-    const x = (Math.random() * 1.4 - 0.7).toFixed(2);
+    shakeDir = -shakeDir;
+    const x = (shakeDir * (1 + Math.random() * 1.2)).toFixed(2);
     crt.style.transform = `translateX(${x}px)`;
-  }, 55);
+  }, 28);
 }
 let rollIdx = 0;
 setInterval(() => {
@@ -475,7 +477,7 @@ function render(now) {
       ctx.filter = 'contrast(1.2) brightness(0.95)';
       ctx.translate(W / 2, H / 2);
       ctx.translate(-W / 2, -H / 2);
-      drawCover(ctx, currentVisual.img, W, H, currentVisual.zoom, rand(-2, 2), 0, true);
+      drawCover(ctx, currentVisual.img, W, H, currentVisual.zoom, (Math.random() < 0.5 ? -1 : 1) * rand(2, 4), 0, true);
       ctx.filter = 'none';
       ctx.restore();
       drawNoise(ctx, W, H, 0.22);

@@ -296,6 +296,13 @@ function startDrone() {
     hg.gain.linearRampToValueAtTime(0.7, AC.currentTime + 1.5);
     nodes.push(hb);
   }
+  if (ambientBuf) {
+    const ab = AC.createBufferSource(), ag = AC.createGain();
+    ab.buffer = ambientBuf; ab.loop = true;
+    ag.gain.value = 0.6;
+    ab.connect(ag); ag.connect(hg); ab.start();
+    nodes.push(ab);
+  }
   drone = { out, hg, nodes };
 }
 function stopDrone() {
@@ -380,6 +387,14 @@ async function loadHeart() {
   const d = await heartData;
   if (!d) return;
   try { heartBuf = await AC.decodeAudioData(d.slice(0)); } catch (e) { heartBuf = null; }
+}
+const ambientData = fetch('audio/ambient.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+let ambientBuf = null;
+async function loadAmbient() {
+  if (ambientBuf) return;
+  const d = await ambientData;
+  if (!d) return;
+  try { ambientBuf = await AC.decodeAudioData(d.slice(0)); } catch (e) { ambientBuf = null; }
 }
 async function loadScream() {
   if (screamBuf) return;
@@ -647,7 +662,7 @@ async function runGame() {
   initAudio();
   hidePanel();
   showPanel('<h2>LOADING</h2>');
-  await Promise.all([loadImages(), loadScream(), loadHeart()]);
+  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient()]);
   game = { scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1 };
   startDrone();
   for (let n = 1; n <= LEVELS; n++) {

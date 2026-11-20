@@ -536,6 +536,16 @@ function render(now) {
       drawNoise(ctx, W, H, 0.22);
     }
   }
+  if (blackout) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
+  if (now < scriptFlashUntil && scriptFlashImg) {
+    ctx.save();
+    ctx.globalAlpha = rand(0.75, 1);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    ctx.filter = 'contrast(1.2) brightness(0.95)';
+    drawCover(ctx, scriptFlashImg, W, H, 1.04, (Math.random() < 0.5 ? -1 : 1) * rand(2, 4), 0, true);
+    ctx.restore();
+    drawNoise(ctx, W, H, 0.22);
+  }
   if (Math.random() < 0.015) {
     const y = rand(0, H), bh = rand(2, 14);
     ctx.fillStyle = 'rgba(217,220,207,0.08)'; ctx.fillRect(0, y, W, bh);
@@ -722,6 +732,62 @@ async function stageQuestions() {
   return true;
 }
 
+const ACTIONS = [
+  { text: 'Raise your right hand.', hold: 'Keep it raised.', secs: 5 },
+  { text: 'Close your eyes and count to five.', eyes: true },
+  { text: 'Bring an object from another room.', done: 'Press DONE when you are back.' },
+  { text: 'Turn around and look behind you.', hold: 'Keep looking.', secs: 4 },
+  { text: 'Put your hand on the screen.', hold: 'Do not move it.', secs: 5 },
+  { text: 'Stay completely still.', hold: 'Do not move.', secs: 8 }
+];
+
+let blackout = false, scriptFlashImg = null, scriptFlashUntil = 0;
+
+function waitDone(box) {
+  box.hidden = false;
+  return new Promise(res => {
+    const btn = box.querySelector('button');
+    const done = () => { removeEventListener('keydown', onKey); btn.disabled = true; res(); };
+    const onKey = e => { if (e.code === 'Enter' || e.code === 'KeyD') done(); };
+    addEventListener('keydown', onKey);
+    btn.addEventListener('click', e => { e.stopPropagation(); e.currentTarget.blur(); done(); });
+  });
+}
+
+async function eyesClosed(sub) {
+  sub.textContent = 'Keep them closed.';
+  await wait(1500);
+  hidePanel();
+  blackout = true;
+  await wait(2500);
+  if (AC) pick([cueWhisper, cueKnock])(0.7);
+  await wait(3000);
+  blackout = false;
+  scriptFlashImg = flashImgs[0] || null;
+  scriptFlashUntil = performance.now() + 320;
+  showPanel('<h2>Open your eyes.</h2>');
+  await wait(2000);
+}
+
+async function stageActions() {
+  for (const a of ACTIONS) {
+    showPanel(`<h2 id="qtext"></h2><p id="sub" class="muted"></p><div class="answers" id="answers" hidden><button type="button">DONE</button></div>`);
+    await typeText($('#qtext'), a.text);
+    await wait(900);
+    const sub = $('#sub');
+    if (a.eyes) await eyesClosed(sub);
+    else if (a.done) { sub.textContent = a.done; await waitDone($('#answers')); }
+    else {
+      for (let n = a.secs; n > 0; n--) { sub.textContent = `${a.hold} ${n}`; await wait(1000); }
+    }
+    hidePanel();
+    await wait(900);
+  }
+  showPanel('<h2>Thank you. You did everything we asked.</h2>');
+  await wait(2600);
+  return true;
+}
+
 async function stageReaction() {
   for (let n = 1; n <= LEVELS; n++) {
     game.level = n;
@@ -747,6 +813,7 @@ async function stageReaction() {
 
 const STAGES = [
   { name: 'QUESTIONS', run: stageQuestions },
+  { name: 'ACTIONS', run: stageActions },
   { name: 'REACTION TEST', run: stageReaction }
 ];
 

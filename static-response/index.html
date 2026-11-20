@@ -361,6 +361,22 @@ function distCurve(k) {
   for (let i = 0; i < n; i++) { const x = i * 2 / n - 1; c[i] = (1 + k) * x / (1 + k * Math.abs(x)); }
   return c;
 }
+const screamData = fetch('audio/scream.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+let screamBuf = null;
+async function loadScream() {
+  if (screamBuf) return;
+  const d = await screamData;
+  if (!d) return;
+  try { screamBuf = await AC.decodeAudioData(d.slice(0)); } catch (e) { screamBuf = null; }
+}
+function playScream() {
+  if (!screamBuf) { scream(); return; }
+  const src = AC.createBufferSource(), g = AC.createGain();
+  src.buffer = screamBuf;
+  g.gain.value = 1.2;
+  src.connect(g); g.connect(master);
+  src.start();
+}
 function scream() {
   const t = AC.currentTime, end = t + 1.7;
   const out = AC.createGain();
@@ -446,10 +462,10 @@ function jumpscare() {
   return new Promise(res => {
     scareFace = faceImgs.length ? pick(faceImgs) : null;
     scareCv.hidden = false;
-    scream();
+    playScream();
     const start = performance.now();
     const step = now => {
-      const p = (now - start) / 1500;
+      const p = (now - start) / (screamBuf ? 2600 : 1500);
       if (p >= 1) { scareCv.hidden = true; res(); return; }
       drawScare(p);
       requestAnimationFrame(step);
@@ -613,7 +629,7 @@ async function runGame() {
   initAudio();
   hidePanel();
   showPanel('<h2>LOADING</h2>');
-  await loadImages();
+  await Promise.all([loadImages(), loadScream()]);
   game = { scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1 };
   startDrone();
   for (let n = 1; n <= LEVELS; n++) {

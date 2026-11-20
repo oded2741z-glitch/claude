@@ -384,7 +384,7 @@ function distCurve(k) {
 }
 const screamData = fetch('audio/scream.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
 let screamBuf = null;
-const heartData = fetch('audio/heartbeat.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+const heartData = fetch('audio/heartbeat.wav').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
 let heartBuf = null;
 async function loadHeart() {
   if (heartBuf) return;
@@ -392,7 +392,7 @@ async function loadHeart() {
   if (!d) return;
   try { heartBuf = await AC.decodeAudioData(d.slice(0)); } catch (e) { heartBuf = null; }
 }
-const ambientData = fetch('audio/ambient.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+const ambientData = fetch('audio/ambient.wav').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
 let ambientBuf = null;
 async function loadAmbient() {
   if (ambientBuf) return;

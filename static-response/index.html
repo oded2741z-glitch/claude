@@ -446,7 +446,7 @@ function scream() {
 function loadImg(src) {
   return new Promise(res => { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = src; });
 }
-const FLASH_SRC = [10, 11, 12, 13, 14, 15, 16, 17].map(i => `img/f${i}.jpg`);
+const FLASH_SRC = [18, 19, 20].map(i => `img/f${i}.jpg`);
 const FACE_SRC = [6, 7, 8, 9, 10].map(i => `img/s${i}.jpg`);
 let flashImgs = [], faceImgs = [], imagesReady = null;
 function loadImages() {
@@ -566,7 +566,7 @@ function buildLevel(n) {
     evs.push({
       t, kind, win, dur: vis, state: 'pending',
       sub: pick(Object.keys(CUES)),
-      img: kind === 'visual' ? pick(flashImgs) : null,
+      img: null,
       zoom: rand(1, 1.08)
     });
   }
@@ -604,7 +604,11 @@ function update(dt) {
     ev.start = lv.gt;
     lv.active = ev;
     if (ev.kind === 'audio') CUES[ev.sub](lv.vol);
-    else currentVisual = ev;
+    else {
+      if (game.flashStage < 2) { game.flashStage++; ev.img = flashImgs[0]; ev.clear = false; }
+      else { ev.img = pick(flashImgs.slice(1)); ev.clear = true; }
+      currentVisual = ev;
+    }
     break;
   }
   if (!lv.active && lv.gt >= lv.D) finishLevel(true);
@@ -636,6 +640,7 @@ function press() {
   if (lv.active) {
     const rt = lv.gt - lv.active.start;
     lv.active.state = 'hit';
+    if (lv.active.clear) game.flashStage = 0;
     lv.active = null;
     game.hits++; game.rtSum += rt;
     feedback(`RESPONSE ${(rt / 1000).toFixed(3)} S`, 'ok');
@@ -663,7 +668,7 @@ async function runGame() {
   hidePanel();
   showPanel('<h2>LOADING</h2>');
   await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient()]);
-  game = { scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1 };
+  game = { scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1, flashStage: 0 };
   startDrone();
   for (let n = 1; n <= LEVELS; n++) {
     game.level = n;

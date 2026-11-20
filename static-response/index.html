@@ -151,7 +151,6 @@ body {
 .answers, .stagepick { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; align-items: center; }
 .answers[hidden] { display: none !important; }
 #panel button.small { font-size: clamp(13px, 2.2vmin, 20px); padding: 0.15em 0.8em; border-color: var(--dim); color: var(--dim); }
-#panel h2.accuse { color: var(--blood); text-shadow: 0 0 14px rgba(200,22,29,0.5); }
 #panel button:disabled { opacity: 0.4; cursor: default; }
 #scare { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 50; display: block; background: #000; }
 #scare[hidden] { display: none !important; }
@@ -522,7 +521,6 @@ function render(now) {
   if (game && game.lv && !game.paused) update(dt);
   ctx.fillStyle = '#0b0d0b'; ctx.fillRect(0, 0, W, H);
   drawNoise(ctx, W, H, 0.07);
-  if (now < burstUntil) drawNoise(ctx, W, H, 0.6);
   if (game && game.lv && currentVisual) {
     const age = game.lv.gt - currentVisual.start;
     if (age >= 0 && age < currentVisual.dur) {
@@ -670,34 +668,15 @@ function playLevel(n) {
 }
 
 const QUESTIONS = [
-  { q: 'Are you alone right now?', a: 'We know. We can see who is standing behind you.' },
-  { q: 'Are the lights off?', a: 'You are lying. We watched you turn them off.' },
-  { q: 'Is there a door behind you?', a: 'Then what is standing in the doorway?' },
-  { q: 'Did you lock the front door tonight?', a: 'We know. That is how we came in.' },
-  { q: 'Have you ever felt someone watching you while you sleep?', a: 'You are lying. You felt us last night.' },
-  { q: 'Do you hear anything right now?', a: 'Listen again. It is right behind you.' },
-  { q: 'Would you open the door if someone knocked?', a: 'You are lying. You always open the door.' },
-  { q: 'Are you sure you are alone?', a: 'We know you are not.' }
+  'Are you alone right now?',
+  'Are the lights off?',
+  'Is there a door behind you?',
+  'Did you lock the front door tonight?',
+  'Have you ever felt someone watching you while you sleep?',
+  'Do you hear anything right now?',
+  'Would you open the door if someone knocked?',
+  'Are you sure you are alone?'
 ];
-
-let burstUntil = 0;
-function staticBurst(ms) {
-  burstUntil = performance.now() + ms;
-  if (!AC) return;
-  const t = AC.currentTime, n = noiseSrc(), g = AC.createGain();
-  env(g, t, 0.35, 0.005, ms / 1000, 0.05);
-  n.connect(g); g.connect(master); n.start(t); n.stop(t + ms / 1000 + 0.2);
-  if (drone) {
-    const d = drone;
-    d.out.gain.setTargetAtTime(0, t, 0.02);
-    d.hg.gain.setTargetAtTime(0, t, 0.02);
-    setTimeout(() => {
-      if (drone !== d) return;
-      d.out.gain.setTargetAtTime(0.025, AC.currentTime, 0.6);
-      d.hg.gain.setTargetAtTime(0.22, AC.currentTime, 0.6);
-    }, ms + 1800);
-  }
-}
 
 async function typeText(el, text) {
   el.textContent = '';
@@ -732,23 +711,9 @@ async function askQuestion(text) {
   return waitAnswer(box);
 }
 
-async function accuse(text) {
-  staticBurst(450);
-  showPanel(`<h2 class="accuse">${text}</h2>`);
-  await wait(3000);
-}
-
 async function stageQuestions() {
-  for (const item of QUESTIONS) {
-    let yes = await askQuestion(item.q);
-    if (!yes) {
-      if (Math.random() < 0.5) {
-        showPanel('<h2>Think again.</h2>');
-        await wait(1400);
-        yes = await askQuestion(item.q);
-      }
-      if (!yes) await accuse(item.a);
-    }
+  for (const q of QUESTIONS) {
+    await askQuestion(q);
     hidePanel();
     await wait(800);
   }

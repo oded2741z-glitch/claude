@@ -287,12 +287,22 @@ function startDrone() {
   lp.type = 'lowpass'; lp.frequency.value = 300; ng.gain.value = 0.25;
   o1.connect(out); o2.connect(out); n.connect(lp); lp.connect(ng); ng.connect(out);
   o1.start(); o2.start(); n.start();
-  drone = { out, nodes: [o1, o2, n] };
+  const nodes = [o1, o2, n];
+  const hg = AC.createGain(); hg.gain.value = 0; hg.connect(master);
+  if (heartBuf) {
+    const hb = AC.createBufferSource();
+    hb.buffer = heartBuf; hb.loop = true;
+    hb.connect(hg); hb.start();
+    hg.gain.linearRampToValueAtTime(0.7, AC.currentTime + 1.5);
+    nodes.push(hb);
+  }
+  drone = { out, hg, nodes };
 }
 function stopDrone() {
   if (!drone) return;
   const d = drone; drone = null;
   d.out.gain.setTargetAtTime(0, AC.currentTime, 0.3);
+  d.hg.gain.setTargetAtTime(0, AC.currentTime, 0.3);
   d.nodes.forEach(n => n.stop(AC.currentTime + 1.5));
 }
 function cueKnock(v) {
@@ -363,6 +373,14 @@ function distCurve(k) {
 }
 const screamData = fetch('audio/scream.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
 let screamBuf = null;
+const heartData = fetch('audio/heartbeat.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+let heartBuf = null;
+async function loadHeart() {
+  if (heartBuf) return;
+  const d = await heartData;
+  if (!d) return;
+  try { heartBuf = await AC.decodeAudioData(d.slice(0)); } catch (e) { heartBuf = null; }
+}
 async function loadScream() {
   if (screamBuf) return;
   const d = await screamData;
@@ -629,7 +647,7 @@ async function runGame() {
   initAudio();
   hidePanel();
   showPanel('<h2>LOADING</h2>');
-  await Promise.all([loadImages(), loadScream()]);
+  await Promise.all([loadImages(), loadScream(), loadHeart()]);
   game = { scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1 };
   startDrone();
   for (let n = 1; n <= LEVELS; n++) {

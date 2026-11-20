@@ -153,12 +153,13 @@ body {
 #panel button.small { font-size: clamp(13px, 2.2vmin, 20px); padding: 0.15em 0.8em; border-color: var(--dim); color: var(--dim); }
 #panel button:disabled { opacity: 0.4; cursor: default; }
 .loadEye {
-  width: min(55%, 520px);
+  width: min(50%, 480px);
+  margin-bottom: 18px;
   max-width: 100%;
   filter: grayscale(1) contrast(1.2) brightness(0.9);
   animation: eyeIn 3.5s ease-in forwards;
 }
-@keyframes eyeIn { from { transform: scale(1); opacity: 0.2; } 30% { opacity: 1; } to { transform: scale(1.12); opacity: 1; } }
+@keyframes eyeIn { from { transform: scale(1); opacity: 0.2; } 30% { opacity: 1; } to { transform: scale(1.05); opacity: 1; } }
 #scare { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 50; display: block; background: #000; }
 #scare[hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { .roll { animation: none; } }

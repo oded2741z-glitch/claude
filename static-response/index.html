@@ -1073,21 +1073,67 @@ async function peekFlash() {
   peek.className = '';
 }
 
+const narrData = ['audio/story1.mp3', 'audio/story2.mp3'].map(u => fetch(u).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null));
+let narrBufs = [null, null];
+async function loadNarration() {
+  if (narrBufs[0] || !AC) return;
+  const data = await Promise.all(narrData);
+  narrBufs = await Promise.all(data.map(d => d ? AC.decodeAudioData(d.slice(0)).catch(() => null) : null));
+}
+
+function playNarration(buf) {
+  if (!AC || !buf) return null;
+  const src = AC.createBufferSource(), g = AC.createGain();
+  src.buffer = buf;
+  g.gain.value = 1.3;
+  src.connect(g); g.connect(master);
+  src.start();
+  if (drone) {
+    drone.out.gain.setTargetAtTime(0.01, AC.currentTime, 0.4);
+    drone.hg.gain.setTargetAtTime(0.08, AC.currentTime, 0.4);
+  }
+  return { src, g };
+}
+
+function stopNarration(n) {
+  if (n) {
+    n.g.gain.setTargetAtTime(0, AC.currentTime, 0.1);
+    n.src.stop(AC.currentTime + 0.5);
+  }
+  if (drone) {
+    drone.out.gain.setTargetAtTime(0.025, AC.currentTime, 0.6);
+    drone.hg.gain.setTargetAtTime(0.22, AC.currentTime, 0.6);
+  }
+}
+
 async function stageStory() {
   const peek = $('#peek');
   peek.className = '';
+  await loadNarration();
   const lines = arr => arr.map(l => `<p class="story">${l}</p>`).join('');
   showPanel(`<div class="storyBlock">${lines(STORY_SAD)}</div><div class="answers" id="answers" hidden><button type="button">CONTINUE</button></div>`);
-  await wait(5000);
+  const n1 = playNarration(narrBufs[0]);
+  await wait(n1 ? narrBufs[0].duration * 1000 : 5000);
   await waitDone($('#answers'));
+  stopNarration(n1);
   hidePanel();
   await wait(1200);
   showPanel(`<div class="storyBlock">${lines(STORY_DARK)}<p class="story last">${STORY_LAST}</p></div>`);
-  await wait(5000);
-  await peekFlash();
-  await wait(6000);
-  await peekFlash();
-  await wait(5000);
+  const n2 = playNarration(narrBufs[1]);
+  if (n2) {
+    await wait(23800);
+    await peekFlash();
+    await wait(26200);
+    await peekFlash();
+    await wait(Math.max(0, narrBufs[1].duration * 1000 - 50500));
+  } else {
+    await wait(5000);
+    await peekFlash();
+    await wait(6000);
+    await peekFlash();
+    await wait(5000);
+  }
+  stopNarration(null);
   const words = Array(160).fill('<span>YOU LET HIM IN</span>').join('');
   showPanel(`<div class="wall">${words}</div>`);
   peek.className = 'p3';

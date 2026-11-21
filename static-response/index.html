@@ -16,6 +16,7 @@
   --body: "IBM Plex Mono", ui-monospace, "Courier New", monospace;
   color-scheme: dark;
 }
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   background: var(--void);
@@ -215,6 +216,16 @@ body {
 @keyframes slam { 0% { transform: translate(-50%, -50%) scale(1.45); opacity: 0; filter: contrast(1.2) brightness(2); } 50% { opacity: 1; } 100% { transform: translate(-50%, -50%) scale(1); filter: contrast(1.2) brightness(1); } }
 #panel #sub, #panel #qtext { text-shadow: 0 0 6px #000, 0 0 12px #000, 0 0 2px #000; }
 #panel #sub { color: var(--phosphor); }
+#walker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  height: 100%;
+  aspect-ratio: 480 / 853;
+  transform-origin: 51% 50%;
+}
+#walker img { width: 100%; height: 100%; display: block; filter: contrast(1.15); -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); }
+#walkerHit { position: absolute; left: 39%; top: 35%; width: 24%; height: 36%; cursor: crosshair; }
 #panel p.story {
   font-family: var(--display);
   font-size: clamp(15px, 3.1vmin, 32px);
@@ -260,12 +271,13 @@ body {
     </div>
     <div id="feedback"></div>
     <div class="foot">
-      <span id="hint">PRESS SPACE OR TAP WHEN YOU HEAR A SOUND OR SEE AN IMAGE</span>
+      <span id="hint">PRESS SPACE WHEN YOU HEAR STEPS. CLICK HIM BEFORE HE REACHES YOU.</span>
       <span id="clock"></span>
     </div>
   </div>
   <img id="peek" src="img/f19.jpg" alt="">
   <img id="handX" src="img/xray.jpg" alt="">
+  <div id="walker" hidden><img src="img/walker.jpg" alt=""><div id="walkerHit"></div></div>
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -743,8 +755,8 @@ function update(dt) {
     ev.state = 'missed';
     lv.active = null;
     game.misses++;
-    if (ev.stage === 2) { game.caught = true; finishLevel(false); return; }
-    game.chain = ev.stage + 1;
+    if (ev.stage === 1) { hideWalker(); game.caught = true; finishLevel(false); return; }
+    game.chain = 1;
     feedback('IT IS GETTING CLOSER', 'bad');
   }
   for (const ev of lv.evs) {
@@ -772,10 +784,14 @@ function update(dt) {
       lv.busy = lv.gt + ev.win;
     }
     else {
-      ev.img = ev.stage === 1 ? flashImgs[0] : pick(flashImgs.slice(1));
-      currentVisual = ev;
+      ev.win = Math.max(3000, 6500 - lv.n * 350);
+      showWalker();
     }
     break;
+  }
+  if (lv.active && lv.active.stage === 1) {
+    const k = Math.min(1, (lv.gt - lv.active.start) / lv.active.win);
+    $('#walker').style.transform = `translate(-50%, -50%) scale(${(1 + k * 1.6).toFixed(3)}) translateY(${(Math.sin(lv.gt / 160) * 0.6).toFixed(2)}%)`;
   }
   if (!lv.active && lv.gt >= lv.D) finishLevel(true);
 }
@@ -791,11 +807,38 @@ function strike(msg) {
   if (lv.strikes >= 3) finishLevel(false);
 }
 
+function showWalker() {
+  const w = $('#walker');
+  w.style.transform = 'translate(-50%, -50%) scale(1)';
+  w.hidden = false;
+}
+
+function hideWalker() {
+  $('#walker').hidden = true;
+}
+
+function walkerHit(e) {
+  e.stopPropagation();
+  e.preventDefault();
+  if (!game || !game.lv || game.paused || game.lv.done) return;
+  const lv = game.lv, ev = lv.active;
+  if (!ev || ev.stage !== 1) return;
+  const rt = lv.gt - ev.start;
+  ev.state = 'hit';
+  lv.active = null;
+  game.chain = 0;
+  game.hits++; game.rtSum += rt;
+  hideWalker();
+  feedback(`STOPPED ${(rt / 1000).toFixed(3)} S`, 'ok');
+  lv.grace = lv.gt + 250;
+}
+
 function finishLevel(ok) {
   const lv = game.lv;
   if (lv.done) return;
   lv.done = true;
   currentVisual = null;
+  hideWalker();
   lv.resolve(ok);
 }
 
@@ -803,6 +846,7 @@ function press() {
   if (!game || !game.lv || game.paused || game.lv.done) return;
   const lv = game.lv;
   if (lv.gt < lv.grace) return;
+  if (lv.active && lv.active.stage === 1) return;
   if (lv.active) {
     const rt = lv.gt - lv.active.start;
     lv.active.state = 'hit';
@@ -1081,6 +1125,7 @@ addEventListener('keydown', e => {
     if (game && game.lv) { e.preventDefault(); if (!e.repeat) press(); }
   }
 });
+$('#walkerHit').addEventListener('pointerdown', walkerHit);
 crt.addEventListener('pointerdown', e => {
   if (e.target.closest('button')) return;
   if (game && game.lv) { e.preventDefault(); press(); }

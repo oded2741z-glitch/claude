@@ -221,10 +221,10 @@ body {
   left: 50%;
   top: 50%;
   height: 100%;
-  aspect-ratio: 480 / 853;
-  transform-origin: 51% 50%;
+  aspect-ratio: 720 / 1280;
+  transform: translate(-50%, -50%);
 }
-#walker img { width: 100%; height: 100%; display: block; filter: contrast(1.15); -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); }
+#walker video { width: 100%; height: 100%; display: block; filter: contrast(1.15); -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); }
 #walkerHit { position: absolute; left: 39%; top: 35%; width: 24%; height: 36%; cursor: crosshair; }
 #panel p.story {
   font-family: var(--display);
@@ -277,7 +277,7 @@ body {
   </div>
   <img id="peek" src="img/f19.jpg" alt="">
   <img id="handX" src="img/xray.jpg" alt="">
-  <div id="walker" hidden><img src="img/walker.jpg" alt=""><div id="walkerHit"></div></div>
+  <div id="walker" hidden><video id="walkerVid" src="img/walker.mp4" muted playsinline preload="auto"></video><div id="walkerHit"></div></div>
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -700,6 +700,11 @@ function render(now) {
     }
   }
   if (blackout) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
+  const wv = $('#walkerVid');
+  if (!$('#walker').hidden && game) {
+    if (game.paused && !wv.paused) wv.pause();
+    else if (!game.paused && wv.paused && !wv.ended) { const pr = wv.play(); if (pr) pr.catch(() => {}); }
+  }
   if (now < scriptFlashUntil && scriptFlashImg) {
     ctx.save();
     ctx.globalAlpha = rand(0.75, 1);
@@ -784,14 +789,14 @@ function update(dt) {
       lv.busy = lv.gt + ev.win;
     }
     else {
-      ev.win = Math.max(3000, 6500 - lv.n * 350);
-      showWalker();
+      const rate = 1 + (lv.n - 1) * 0.11;
+      ev.win = 10000 / rate;
+      showWalker(rate);
     }
     break;
   }
   if (lv.active && lv.active.stage === 1) {
-    const k = Math.min(1, (lv.gt - lv.active.start) / lv.active.win);
-    $('#walker').style.transform = `translate(-50%, -50%) scale(${(1 + k * 1.6).toFixed(3)}) translateY(${(Math.sin(lv.gt / 160) * 0.6).toFixed(2)}%)`;
+    placeWalkerHit(Math.min(1, (lv.gt - lv.active.start) / lv.active.win));
   }
   if (!lv.active && lv.gt >= lv.D) finishLevel(true);
 }
@@ -807,14 +812,37 @@ function strike(msg) {
   if (lv.strikes >= 3) finishLevel(false);
 }
 
-function showWalker() {
-  const w = $('#walker');
-  w.style.transform = 'translate(-50%, -50%) scale(1)';
-  w.hidden = false;
+const WALKER_BOX = [
+  [0, 40, 28, 22, 34],
+  [0.35, 36, 26, 30, 50],
+  [0.55, 28, 18, 46, 72],
+  [0.75, 14, 4, 76, 92],
+  [1, 4, 0, 92, 100]
+];
+
+function placeWalkerHit(k) {
+  let i = 0;
+  while (i < WALKER_BOX.length - 2 && k > WALKER_BOX[i + 1][0]) i++;
+  const a = WALKER_BOX[i], b = WALKER_BOX[i + 1];
+  const f = Math.min(1, Math.max(0, (k - a[0]) / (b[0] - a[0])));
+  const v = j => (a[j] + (b[j] - a[j]) * f).toFixed(1) + '%';
+  const h = $('#walkerHit').style;
+  h.left = v(1); h.top = v(2); h.width = v(3); h.height = v(4);
+}
+
+function showWalker(rate) {
+  const vid = $('#walkerVid');
+  placeWalkerHit(0);
+  $('#walker').hidden = false;
+  vid.playbackRate = rate;
+  vid.currentTime = 0;
+  const pr = vid.play();
+  if (pr) pr.catch(() => {});
 }
 
 function hideWalker() {
   $('#walker').hidden = true;
+  $('#walkerVid').pause();
 }
 
 function walkerHit(e) {

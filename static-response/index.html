@@ -226,7 +226,6 @@ body {
   mix-blend-mode: screen;
 }
 #walker video { width: 100%; height: 100%; display: block; filter: contrast(1.15); }
-#walkerHit { position: absolute; left: 39%; top: 35%; width: 24%; height: 36%; cursor: crosshair; }
 #introClown {
   position: absolute;
   right: 3%;
@@ -287,13 +286,13 @@ body {
     </div>
     <div id="feedback"></div>
     <div class="foot">
-      <span id="hint">PRESS SPACE WHEN YOU HEAR STEPS. CLICK HIM BEFORE HE REACHES YOU.</span>
+      <span id="hint">PRESS SPACE OR TAP WHEN YOU HEAR STEPS. STOP HIM BEFORE HE REACHES YOU.</span>
       <span id="clock"></span>
     </div>
   </div>
   <img id="peek" src="img/f19.jpg" alt="">
   <img id="handX" src="img/xray.jpg" alt="">
-  <div id="walker" hidden><video id="walkerVid" src="img/walker.mp4" muted playsinline preload="auto"></video><div id="walkerHit"></div></div>
+  <div id="walker" hidden><video id="walkerVid" src="img/walker.mp4" muted playsinline preload="auto"></video></div>
   <video id="introClown" src="img/intro.mp4" muted loop playsinline preload="auto" hidden></video>
   <div id="panel"></div>
   <div class="fx scan"></div>
@@ -812,9 +811,6 @@ function update(dt) {
     }
     break;
   }
-  if (lv.active && lv.active.stage === 1) {
-    placeWalkerHit(Math.min(1, (lv.gt - lv.active.start) / lv.active.win));
-  }
   if (!lv.active && lv.gt >= lv.D) finishLevel(true);
 }
 
@@ -829,24 +825,8 @@ function strike(msg) {
   if (lv.strikes >= 3) finishLevel(false);
 }
 
-const WALKER_BOX = [
-  [0, 8, 7, 72, 91],
-  [1, 8, 7, 72, 91]
-];
-
-function placeWalkerHit(k) {
-  let i = 0;
-  while (i < WALKER_BOX.length - 2 && k > WALKER_BOX[i + 1][0]) i++;
-  const a = WALKER_BOX[i], b = WALKER_BOX[i + 1];
-  const f = Math.min(1, Math.max(0, (k - a[0]) / (b[0] - a[0])));
-  const v = j => (a[j] + (b[j] - a[j]) * f).toFixed(1) + '%';
-  const h = $('#walkerHit').style;
-  h.left = v(1); h.top = v(2); h.width = v(3); h.height = v(4);
-}
-
 function showWalker(rate) {
   const vid = $('#walkerVid');
-  placeWalkerHit(0);
   $('#walker').hidden = false;
   vid.playbackRate = rate;
   vid.currentTime = 0;
@@ -857,22 +837,6 @@ function showWalker(rate) {
 function hideWalker() {
   $('#walker').hidden = true;
   $('#walkerVid').pause();
-}
-
-function walkerHit(e) {
-  e.stopPropagation();
-  e.preventDefault();
-  if (!game || !game.lv || game.paused || game.lv.done) return;
-  const lv = game.lv, ev = lv.active;
-  if (!ev || ev.stage !== 1) return;
-  const rt = lv.gt - ev.start;
-  ev.state = 'hit';
-  lv.active = null;
-  game.chain = 0;
-  game.hits++; game.rtSum += rt;
-  hideWalker();
-  feedback(`STOPPED ${(rt / 1000).toFixed(3)} S`, 'ok');
-  lv.grace = lv.gt + 250;
 }
 
 function finishLevel(ok) {
@@ -888,14 +852,15 @@ function press() {
   if (!game || !game.lv || game.paused || game.lv.done) return;
   const lv = game.lv;
   if (lv.gt < lv.grace) return;
-  if (lv.active && lv.active.stage === 1) return;
   if (lv.active) {
     const rt = lv.gt - lv.active.start;
+    const wasRun = lv.active.stage === 1;
     lv.active.state = 'hit';
     game.chain = 0;
     lv.active = null;
     game.hits++; game.rtSum += rt;
-    feedback(`RESPONSE ${(rt / 1000).toFixed(3)} S`, 'ok');
+    if (wasRun) hideWalker();
+    feedback(`${wasRun ? 'STOPPED' : 'RESPONSE'} ${(rt / 1000).toFixed(3)} S`, 'ok');
     lv.grace = lv.gt + 250;
   } else {
     lv.grace = lv.gt + 400;
@@ -1175,7 +1140,6 @@ addEventListener('keydown', e => {
     if (game && game.lv) { e.preventDefault(); if (!e.repeat) press(); }
   }
 });
-$('#walkerHit').addEventListener('pointerdown', walkerHit);
 crt.addEventListener('pointerdown', e => {
   if (e.target.closest('button')) return;
   if (game && game.lv) { e.preventDefault(); press(); }

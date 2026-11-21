@@ -221,7 +221,7 @@ body {
   left: 50%;
   top: 50%;
   height: 100%;
-  aspect-ratio: 720 / 1280;
+  aspect-ratio: 1280 / 720;
   transform: translate(-50%, -50%);
 }
 #walker video { width: 100%; height: 100%; display: block; filter: contrast(1.15); -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); }
@@ -789,8 +789,8 @@ function update(dt) {
       lv.busy = lv.gt + ev.win;
     }
     else {
-      const rate = 1 + (lv.n - 1) * 0.11;
-      ev.win = 10000 / rate;
+      const rate = 1 + (lv.n - 1) * 0.05;
+      ev.win = 4070 / rate;
       showWalker(rate);
     }
     break;
@@ -813,11 +813,11 @@ function strike(msg) {
 }
 
 const WALKER_BOX = [
-  [0, 40, 28, 22, 34],
-  [0.35, 36, 26, 30, 50],
-  [0.55, 28, 18, 46, 72],
-  [0.75, 14, 4, 76, 92],
-  [1, 4, 0, 92, 100]
+  [0, 44, 34, 12, 36],
+  [0.35, 42, 30, 14, 50],
+  [0.55, 39, 26, 20, 74],
+  [0.8, 34, 14, 32, 86],
+  [1, 32, 8, 36, 92]
 ];
 
 function placeWalkerHit(k) {

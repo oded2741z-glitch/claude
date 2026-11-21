@@ -752,8 +752,8 @@ function feedback(text, cls) {
 }
 
 function buildLevel(n) {
-  const D = 30000;
-  const count = 5 + n;
+  const D = 81000;
+  const count = Math.round(D / Math.max(6000, 12000 - n * 600));
   const win = Math.max(650, 1700 - n * 105);
   const vis = Math.max(160, 520 - n * 35);
   const slot = (D - 2500) / count;
@@ -1119,7 +1119,7 @@ function showIntro() {
   hud.hidden = true;
   setIntroClown(true);
   showPanel(`<h1>STATIC RESPONSE</h1>
-    <p>This program measures how fast you react to things you do not expect. Each level lasts thirty seconds and moves faster than the one before.</p>
+    <p>This program measures how fast you react to things you do not expect. Each level lasts over a minute and moves faster than the one before.</p>
     <ol>
       <li>Sit in a dark room.</li>
       <li>Wear headphones and turn the volume up.</li>

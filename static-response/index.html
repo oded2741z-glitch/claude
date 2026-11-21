@@ -719,7 +719,7 @@ function render(now) {
   const wv = $('#walkerVid');
   if (!$('#walker').hidden && game) {
     if (game.paused && !wv.paused) { wv.pause(); if (runSteps) runSteps.g.gain.setTargetAtTime(0, AC.currentTime, 0.05); }
-    else if (!game.paused && wv.paused && !wv.ended) { const pr = wv.play(); if (pr) pr.catch(() => {}); if (runSteps) runSteps.g.gain.setTargetAtTime(1, AC.currentTime, 0.05); }
+    else if (!game.paused && wv.paused && !wv.ended) { const pr = wv.play(); if (pr) pr.catch(() => {}); if (runSteps) runSteps.g.gain.setTargetAtTime(RUN_STEP_GAIN, AC.currentTime, 0.05); }
   }
   if (now < scriptFlashUntil && scriptFlashImg) {
     ctx.save();
@@ -832,26 +832,38 @@ function showWalker(rate) {
   vid.currentTime = 0;
   const pr = vid.play();
   if (pr) pr.catch(() => {});
-  if (AC && stepsBuf && !runSteps) {
-    const src = AC.createBufferSource(), g = AC.createGain();
-    src.buffer = stepsBuf;
-    src.loop = true;
-    src.playbackRate.value = rate;
-    g.gain.value = 1;
-    src.connect(g); g.connect(master);
-    src.start();
-    runSteps = { src, g };
+  if (AC && runStepBuf && !runSteps) {
+    const g = AC.createGain();
+    g.gain.value = RUN_STEP_GAIN;
+    g.connect(master);
+    const hit = () => {
+      const src = AC.createBufferSource();
+      src.buffer = runStepBuf;
+      src.playbackRate.value = rand(0.92, 1.08);
+      src.connect(g);
+      src.start();
+    };
+    hit();
+    runSteps = { g, timer: setInterval(hit, 340 / rate) };
   }
 }
 let runSteps = null;
+const RUN_STEP_GAIN = 2.5;
 function stopRunSteps() {
   if (!runSteps) return;
-  const r = runSteps, t = AC.currentTime;
+  const r = runSteps;
   runSteps = null;
-  r.g.gain.setTargetAtTime(0, t, 0.05);
-  r.src.stop(t + 0.4);
+  clearInterval(r.timer);
+  r.g.gain.setTargetAtTime(0, AC.currentTime, 0.05);
 }
-
+const runStepData = fetch('audio/runstep.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+let runStepBuf = null;
+async function loadRunStep() {
+  if (runStepBuf) return;
+  const d = await runStepData;
+  if (!d) return;
+  try { runStepBuf = await AC.decodeAudioData(d.slice(0)); } catch (e) { runStepBuf = null; }
+}
 function hideWalker() {
   $('#walker').hidden = true;
   $('#walkerVid').pause();
@@ -1096,7 +1108,7 @@ async function runGame(startStage = 0) {
   initAudio();
   hidePanel();
   showPanel('<h2>LOADING</h2>');
-  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient(), loadSteps()]);
+  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient(), loadSteps(), loadRunStep()]);
   game = { startStage, stage: startStage + 1, scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1, chain: 0, caught: false };
   startDrone();
   for (let i = startStage; i < STAGES.length; i++) {

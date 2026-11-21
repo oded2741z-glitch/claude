@@ -210,6 +210,8 @@ body {
   pointer-events: none;
 }
 #handX.slam { opacity: 0.9; animation: slam 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+#handX.slam.sway { animation: sway 1.6s ease-in-out infinite; }
+@keyframes sway { 0%, 100% { transform: translate(-50%, -50%); } 25% { transform: translate(-85%, -50%); } 75% { transform: translate(-15%, -50%); } }
 @keyframes slam { 0% { transform: translate(-50%, -50%) scale(1.45); opacity: 0; filter: contrast(1.2) brightness(2); } 50% { opacity: 1; } 100% { transform: translate(-50%, -50%) scale(1); filter: contrast(1.2) brightness(1); } }
 #panel #sub, #panel #qtext { text-shadow: 0 0 6px #000, 0 0 12px #000, 0 0 2px #000; }
 #panel #sub { color: var(--phosphor); }
@@ -870,7 +872,7 @@ const ACTIONS = [
   { text: 'Close your eyes and count to five.', eyes: true },
   { text: 'Bring an object from another room.', done: 'Press DONE when you are back.' },
   { text: 'Turn around and look behind you.', hold: 'Keep looking.', secs: 4 },
-  { text: 'Put your hand on the screen.', hold: 'Do not move it.', secs: 5, hand: true },
+  { text: 'Put your hand on the screen.', hold: 'Do not move it.', secs: 11, hand: true },
   { text: 'Stay completely still.', hold: 'Do not move.', secs: 8 }
 ];
 
@@ -914,9 +916,10 @@ async function stageActions() {
       for (let n = a.secs; n > 0; n--) {
         sub.textContent = `${a.hold} ${n}`;
         if (a.hand && n === a.secs - 2) handSlam();
+        if (a.hand && n === a.secs - 7) $('#handX').classList.add('sway');
         await wait(1000);
       }
-      $('#handX').classList.remove('slam');
+      $('#handX').classList.remove('slam', 'sway');
     }
     hidePanel();
     await wait(900);

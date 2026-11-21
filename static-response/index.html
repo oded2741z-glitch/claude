@@ -269,6 +269,7 @@ body {
   animation: wallFlicker 0.12s steps(2) infinite;
 }
 @keyframes wallFlicker { 50% { opacity: 0.8; } }
+#scareVid { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
 #scare { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 50; display: block; background: #000; }
 #scare[hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) { .roll { animation: none; } }
@@ -301,6 +302,7 @@ body {
   <div class="fx vignette"></div>
 </div>
 <canvas id="scare" hidden></canvas>
+<video id="scareVid" src="img/scare.mp4" muted loop playsinline preload="auto"></video>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -646,8 +648,9 @@ loadImages();
 loadImg('img/eye.jpg');
 
 function drawCover(g, im, w, h, zoom, ox, oy, fit) {
-  const sc = (fit ? Math.min(w / im.width, h / im.height) : Math.max(w / im.width, h / im.height)) * zoom;
-  const dw = im.width * sc, dh = im.height * sc;
+  const iw = im.videoWidth || im.width, ih = im.videoHeight || im.height;
+  const sc = (fit ? Math.min(w / iw, h / ih) : Math.max(w / iw, h / ih)) * zoom;
+  const dw = iw * sc, dh = ih * sc;
   g.drawImage(im, (w - dw) / 2 + ox, (h - dh) / 2 + oy, dw, dh);
 }
 
@@ -659,7 +662,7 @@ function drawScare(p) {
   if (scareFace) {
     g.save();
     g.filter = Math.random() < 0.25 ? 'contrast(1.8) brightness(1.3)' : 'contrast(1.25)';
-    drawCover(g, scareFace, w, h, 1.05 + p * 0.45, rand(-1, 1) * shake, rand(-1, 1) * shake);
+    drawCover(g, scareFace, w, h, 1.1 + p * 0.4, rand(-1, 1) * shake, rand(-1, 1) * shake, true);
     g.restore();
   }
   if (Math.random() < 0.3) {
@@ -678,13 +681,19 @@ function drawScare(p) {
 }
 function jumpscare() {
   return new Promise(res => {
-    scareFace = faceImgs.length ? pick(faceImgs) : null;
+    const sv = $('#scareVid');
+    if (sv.readyState >= 2) {
+      sv.currentTime = 0;
+      const pr = sv.play();
+      if (pr) pr.catch(() => {});
+      scareFace = sv;
+    } else scareFace = faceImgs.length ? pick(faceImgs) : null;
     scareCv.hidden = false;
     playScream();
     const start = performance.now();
     const step = now => {
       const p = (now - start) / (screamBuf ? 2600 : 1500);
-      if (p >= 1) { scareCv.hidden = true; res(); return; }
+      if (p >= 1) { scareCv.hidden = true; sv.pause(); res(); return; }
       drawScare(p);
       requestAnimationFrame(step);
     };

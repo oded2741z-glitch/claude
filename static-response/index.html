@@ -515,20 +515,12 @@ async function loadSteps() {
   try { stepsBuf = await AC.decodeAudioData(d.slice(0)); } catch (e) { stepsBuf = null; }
 }
 function playSteps(v) {
-  if (!stepsBuf) { cueKnock(v); return null; }
+  if (!stepsBuf) { cueKnock(v); return; }
   const src = AC.createBufferSource(), g = AC.createGain();
   src.buffer = stepsBuf;
   g.gain.value = v;
   src.connect(g); g.connect(master);
   src.start();
-  return { src, g };
-}
-function stopSteps(ev) {
-  if (!ev || !ev.snd) return;
-  const t = AC.currentTime;
-  ev.snd.g.gain.setTargetAtTime(0, t, 0.08);
-  ev.snd.src.stop(t + 0.6);
-  ev.snd = null;
 }
 async function loadScream() {
   if (screamBuf) return;
@@ -738,7 +730,7 @@ function buildLevel(n) {
     evs.push({ t, kind: 'chain', win, dur: vis, state: 'pending', img: null, zoom: rand(1, 1.08) });
   }
   if (n === game.scareLevel) evs[1 + Math.floor(Math.random() * (count - 2))].kind = 'scare';
-  return { n, D, evs, gt: 0, strikes: 0, active: null, grace: 0, vol: Math.max(0.35, 1 - n * 0.065), resolve: null, done: false };
+  return { n, D, evs, gt: 0, strikes: 0, active: null, grace: 0, busy: 0, vol: Math.max(0.35, 1 - n * 0.065), resolve: null, done: false };
 }
 
 function update(dt) {
@@ -750,7 +742,6 @@ function update(dt) {
     const ev = lv.active;
     ev.state = 'missed';
     lv.active = null;
-    stopSteps(ev);
     game.misses++;
     if (ev.stage === 2) { game.caught = true; finishLevel(false); return; }
     game.chain = ev.stage + 1;
@@ -759,6 +750,7 @@ function update(dt) {
   for (const ev of lv.evs) {
     if (ev.state !== 'pending' || lv.gt < ev.t) continue;
     if (lv.active) { ev.t = lv.gt + 400; continue; }
+    if (lv.gt < lv.busy) { ev.t = lv.busy + 300; continue; }
     if (ev.kind === 'scare') {
       ev.state = 'done';
       game.paused = true;
@@ -774,7 +766,11 @@ function update(dt) {
     ev.start = lv.gt;
     lv.active = ev;
     ev.stage = game.chain;
-    if (ev.stage === 0) ev.snd = playSteps(lv.vol);
+    if (ev.stage === 0) {
+      playSteps(lv.vol);
+      ev.win = stepsBuf ? stepsBuf.duration * 1000 : ev.win;
+      lv.busy = lv.gt + ev.win;
+    }
     else {
       ev.img = ev.stage === 1 ? flashImgs[0] : pick(flashImgs.slice(1));
       currentVisual = ev;
@@ -810,7 +806,6 @@ function press() {
   if (lv.active) {
     const rt = lv.gt - lv.active.start;
     lv.active.state = 'hit';
-    stopSteps(lv.active);
     game.chain = 0;
     lv.active = null;
     game.hits++; game.rtSum += rt;

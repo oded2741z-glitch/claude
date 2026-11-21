@@ -196,6 +196,22 @@ body {
 #peek.flash { opacity: 0.9; transform: translate(-50%, -50%) scale(1.05); filter: grayscale(1) brightness(0.95) contrast(1.4); }
 #peek.p3 { opacity: 1; transform: translate(-50%, -50%) scale(1.18); filter: grayscale(1) brightness(0.9) contrast(1.3); }
 .storyBlock { display: flex; flex-direction: column; gap: 0.95em; align-items: center; }
+#handX {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  height: 96%;
+  aspect-ratio: 514 / 1000;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 1.4s ease-in-out;
+  -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 65%, transparent 100%);
+  mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 65%, transparent 100%);
+  filter: contrast(1.2);
+  pointer-events: none;
+}
+#handX.on { opacity: 0.8; }
+#panel #sub, #panel #qtext { text-shadow: 0 0 6px #000, 0 0 12px #000, 0 0 2px #000; }
 #panel p.story {
   font-family: var(--display);
   font-size: clamp(15px, 3.1vmin, 32px);
@@ -246,6 +262,7 @@ body {
     </div>
   </div>
   <img id="peek" src="img/f19.jpg" alt="">
+  <img id="handX" src="img/xray.jpg" alt="">
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -824,7 +841,7 @@ const ACTIONS = [
   { text: 'Close your eyes and count to five.', eyes: true },
   { text: 'Bring an object from another room.', done: 'Press DONE when you are back.' },
   { text: 'Turn around and look behind you.', hold: 'Keep looking.', secs: 4 },
-  { text: 'Put your hand on the screen.', hold: 'Do not move it.', secs: 5 },
+  { text: 'Put your hand on the screen.', hold: 'Do not move it.', secs: 5, hand: true },
   { text: 'Stay completely still.', hold: 'Do not move.', secs: 8 }
 ];
 
@@ -865,7 +882,9 @@ async function stageActions() {
     if (a.eyes) await eyesClosed(sub);
     else if (a.done) { sub.textContent = a.done; await waitDone($('#answers')); }
     else {
+      if (a.hand) $('#handX').classList.add('on');
       for (let n = a.secs; n > 0; n--) { sub.textContent = `${a.hold} ${n}`; await wait(1000); }
+      $('#handX').classList.remove('on');
     }
     hidePanel();
     await wait(900);

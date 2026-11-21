@@ -221,10 +221,11 @@ body {
   left: 50%;
   top: 50%;
   height: 100%;
-  aspect-ratio: 1280 / 720;
+  aspect-ratio: 460 / 720;
   transform: translate(-50%, -50%);
+  mix-blend-mode: screen;
 }
-#walker video { width: 100%; height: 100%; display: block; filter: contrast(1.15); -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); }
+#walker video { width: 100%; height: 100%; display: block; filter: contrast(1.15); }
 #walkerHit { position: absolute; left: 39%; top: 35%; width: 24%; height: 36%; cursor: crosshair; }
 #introClown {
   position: absolute;
@@ -806,7 +807,7 @@ function update(dt) {
     }
     else {
       const rate = 1 + (lv.n - 1) * 0.05;
-      ev.win = 4070 / rate;
+      ev.win = 5030 / rate;
       showWalker(rate);
     }
     break;
@@ -829,11 +830,8 @@ function strike(msg) {
 }
 
 const WALKER_BOX = [
-  [0, 44, 34, 12, 36],
-  [0.35, 42, 30, 14, 50],
-  [0.55, 39, 26, 20, 74],
-  [0.8, 34, 14, 32, 86],
-  [1, 32, 8, 36, 92]
+  [0, 8, 7, 72, 91],
+  [1, 8, 7, 72, 91]
 ];
 
 function placeWalkerHit(k) {

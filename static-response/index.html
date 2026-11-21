@@ -718,8 +718,8 @@ function render(now) {
   if (blackout) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
   const wv = $('#walkerVid');
   if (!$('#walker').hidden && game) {
-    if (game.paused && !wv.paused) wv.pause();
-    else if (!game.paused && wv.paused && !wv.ended) { const pr = wv.play(); if (pr) pr.catch(() => {}); }
+    if (game.paused && !wv.paused) { wv.pause(); if (runSteps) runSteps.g.gain.setTargetAtTime(0, AC.currentTime, 0.05); }
+    else if (!game.paused && wv.paused && !wv.ended) { const pr = wv.play(); if (pr) pr.catch(() => {}); if (runSteps) runSteps.g.gain.setTargetAtTime(1, AC.currentTime, 0.05); }
   }
   if (now < scriptFlashUntil && scriptFlashImg) {
     ctx.save();
@@ -832,11 +832,30 @@ function showWalker(rate) {
   vid.currentTime = 0;
   const pr = vid.play();
   if (pr) pr.catch(() => {});
+  if (AC && stepsBuf && !runSteps) {
+    const src = AC.createBufferSource(), g = AC.createGain();
+    src.buffer = stepsBuf;
+    src.loop = true;
+    src.playbackRate.value = rate;
+    g.gain.value = 1;
+    src.connect(g); g.connect(master);
+    src.start();
+    runSteps = { src, g };
+  }
+}
+let runSteps = null;
+function stopRunSteps() {
+  if (!runSteps) return;
+  const r = runSteps, t = AC.currentTime;
+  runSteps = null;
+  r.g.gain.setTargetAtTime(0, t, 0.05);
+  r.src.stop(t + 0.4);
 }
 
 function hideWalker() {
   $('#walker').hidden = true;
   $('#walkerVid').pause();
+  stopRunSteps();
 }
 
 function finishLevel(ok) {

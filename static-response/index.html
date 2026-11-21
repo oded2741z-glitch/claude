@@ -315,6 +315,20 @@ if (!calmMotion) {
     crt.style.transform = `translateX(${x}px)`;
   }, 28);
 }
+function glitchShift() {
+  if (!panel.hidden) {
+    const els = [...panel.querySelectorAll('li, p, h1, h2, .stats, .answers')];
+    if (els.length) {
+      const start = Math.floor(Math.random() * els.length);
+      const block = els.slice(start, start + 1 + Math.floor(Math.random() * 3));
+      const dx = Math.round(20 + Math.random() * 50);
+      block.forEach(el => { el.style.transform = `translateX(${dx}px)`; el.style.filter = 'brightness(1.4)'; });
+      setTimeout(() => block.forEach(el => { el.style.transform = ''; el.style.filter = ''; }), 120 + Math.random() * 160);
+    }
+  }
+  setTimeout(glitchShift, 2000 + Math.random() * 3000);
+}
+if (!calmMotion) setTimeout(glitchShift, 2500);
 let rollIdx = 0;
 setInterval(() => {
   rollIdx = (rollIdx + 1) % rollFrames.length;

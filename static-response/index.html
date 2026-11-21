@@ -184,17 +184,16 @@ body {
   position: absolute;
   left: 50%;
   top: 50%;
-  height: 78%;
-  aspect-ratio: 430 / 640;
+  height: 92%;
+  aspect-ratio: 783 / 1000;
   transform: translate(-50%, -50%) scale(0.92);
   opacity: 0;
-  -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 45%, #000 45%, transparent 80%);
-  mask-image: radial-gradient(ellipse 50% 50% at 50% 45%, #000 45%, transparent 80%);
+  -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%);
+  mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%);
   filter: grayscale(1) brightness(0.7) contrast(1.2);
   pointer-events: none;
 }
 #peek.flash { opacity: 0.9; transform: translate(-50%, -50%) scale(1.05); filter: grayscale(1) brightness(0.95) contrast(1.4); }
-#flashNoise { background-size: 220px 70px; image-rendering: pixelated; }
 #peek.p3 { opacity: 1; transform: translate(-50%, -50%) scale(1.18); filter: grayscale(1) brightness(0.9) contrast(1.3); }
 .storyBlock { display: flex; flex-direction: column; gap: 0.95em; align-items: center; }
 #panel p.story {
@@ -246,8 +245,7 @@ body {
       <span id="clock"></span>
     </div>
   </div>
-  <img id="peek" src="img/peek.jpg" alt="">
-  <div id="flashNoise" class="fx" hidden></div>
+  <img id="peek" src="img/f19.jpg" alt="">
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -290,7 +288,6 @@ for (let k = 0; k < 6; k++) {
   noiseFrames.push(c);
 }
 const rollNoiseEl = document.getElementById('rollNoise');
-const flashNoiseEl = document.getElementById('flashNoise');
 const rollFrames = [];
 for (let k = 0; k < 8; k++) {
   const c = document.createElement('canvas');
@@ -322,7 +319,6 @@ let rollIdx = 0;
 setInterval(() => {
   rollIdx = (rollIdx + 1) % rollFrames.length;
   rollNoiseEl.style.backgroundImage = rollFrames[rollIdx];
-  if (!flashNoiseEl.hidden) flashNoiseEl.style.backgroundImage = rollFrames[(rollIdx + 3) % rollFrames.length];
   rollNoiseEl.style.transform = `translateX(${(Math.random() * 6 - 3).toFixed(1)}px)`;
 }, 60);
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -876,22 +872,11 @@ const STORY = [
   { text: 'Just like you.' }
 ];
 
-function staticHit(ms) {
-  if (!AC) return;
-  const t = AC.currentTime, n = noiseSrc(), g = AC.createGain();
-  env(g, t, 0.45, 0.005, ms / 1000, 0.04);
-  n.connect(g); g.connect(master); n.start(t); n.stop(t + ms / 1000 + 0.1);
-}
-
 async function peekFlash() {
   const peek = $('#peek');
   peek.className = 'flash';
-  flashNoiseEl.style.backgroundImage = rollFrames[0];
-  flashNoiseEl.hidden = false;
-  staticHit(500);
   await wait(500);
   peek.className = '';
-  flashNoiseEl.hidden = true;
 }
 
 async function stageStory() {

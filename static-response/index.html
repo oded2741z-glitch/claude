@@ -196,7 +196,10 @@ body {
 }
 #peek.flash { opacity: 0.9; transform: translate(-50%, -50%) scale(1.05); filter: grayscale(1) brightness(0.95) contrast(1.4); }
 #peek.p3 { opacity: 1; transform: translate(-50%, -50%) scale(1.18); filter: grayscale(1) brightness(0.9) contrast(1.3); }
-.storyBlock { display: flex; flex-direction: column; gap: 0.95em; align-items: center; }
+.storyBlock { display: flex; flex-direction: column; gap: 0.55em; align-items: center; }
+#panel { justify-content: safe center; }
+@media (max-aspect-ratio: 1/1) { #panel p.story { font-size: clamp(11px, 3.3vw, 18px); } .storyBlock { gap: 0.45em; } }
+#panel p.story.last { color: var(--blood); text-shadow: 0 0 10px rgba(200,22,29,0.6), 0 0 6px #000; margin-top: 0.4em; }
 #handX {
   position: absolute;
   left: 50%;
@@ -247,7 +250,7 @@ body {
   font-size: clamp(15px, 3.1vmin, 32px);
   letter-spacing: 0.05em;
   line-height: 1.2;
-  max-width: 40ch;
+  max-width: 56ch;
   margin: 0;
   min-height: 1.2em;
   text-shadow: 0 0 6px #000, 0 0 12px #000;
@@ -1039,16 +1042,29 @@ async function stageActions() {
   return true;
 }
 
-const STORY = [
-  { text: 'Last winter, a man answered the same questions you did.' },
-  { text: 'He said he was alone. He said the lights were off.' },
-  { text: 'He raised his hand. He closed his eyes. He counted to five.' },
-  { text: 'Then he went to another room to bring something back.' },
-  { text: 'He did not notice the door he left open behind him.' },
-  { text: 'When he came back, he sat exactly where you are sitting now.' },
-  { text: 'He never looked at the corner of the screen.' },
-  { text: 'Just like you.' }
+const STORY_SAD = [
+  'When you were six, you ate lunch alone every day, facing the wall so no one would see you cry.',
+  'The other children laughed when you walked by. Your name was the joke.',
+  'For your birthday, your mother set the table with twelve paper cups.',
+  'You waited by the window in your best shirt until it got dark.',
+  'Nobody came.',
+  'Then you heard bells. A clown was standing at the door, smiling just for you.',
+  'He stayed until midnight. He was the first one who ever chose you.',
+  'After that he was always there. He said he would never leave you like the others did.',
+  'Your mother never saw him. She held you and said you made him up because you were so lonely.',
+  'Maybe she was right.'
 ];
+const STORY_DARK = [
+  'But the night you stopped talking to him, he whispered that he would wait until you were alone again.',
+  'Tonight you answered our questions. You said you were alone.',
+  'You put your hand on the screen, and something on the other side pressed back.',
+  'Look at the dark glass. Just behind your shoulder.',
+  'He always used to smile and say, "Now it\'s just you and me."',
+  'He said it every time another child from your class stopped coming to school.',
+  'There is no one left now.',
+  'Only you.'
+];
+const STORY_LAST = '"I saved my best friend for last."';
 
 async function peekFlash() {
   const peek = $('#peek');
@@ -1060,12 +1076,18 @@ async function peekFlash() {
 async function stageStory() {
   const peek = $('#peek');
   peek.className = '';
-  showPanel(`<div class="storyBlock">${STORY.map(l => `<p class="story">${l.text}</p>`).join('')}</div>`);
-  await wait(4500);
-  await peekFlash();
+  const lines = arr => arr.map(l => `<p class="story">${l}</p>`).join('');
+  showPanel(`<div class="storyBlock">${lines(STORY_SAD)}</div><div class="answers" id="answers" hidden><button type="button">CONTINUE</button></div>`);
+  await wait(5000);
+  await waitDone($('#answers'));
+  hidePanel();
+  await wait(1200);
+  showPanel(`<div class="storyBlock">${lines(STORY_DARK)}<p class="story last">${STORY_LAST}</p></div>`);
   await wait(5000);
   await peekFlash();
-  await wait(4000);
+  await wait(6000);
+  await peekFlash();
+  await wait(5000);
   const words = Array(160).fill('<span>YOU LET HIM IN</span>').join('');
   showPanel(`<div class="wall">${words}</div>`);
   peek.className = 'p3';

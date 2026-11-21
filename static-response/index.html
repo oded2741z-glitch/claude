@@ -204,14 +204,15 @@ body {
   aspect-ratio: 514 / 1000;
   transform: translate(-50%, -50%);
   opacity: 0;
-  transition: opacity 1.4s ease-in-out;
   -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 65%, transparent 100%);
   mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 65%, transparent 100%);
   filter: contrast(1.2);
   pointer-events: none;
 }
-#handX.on { opacity: 0.8; }
+#handX.slam { opacity: 0.9; animation: slam 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+@keyframes slam { 0% { transform: translate(-50%, -50%) scale(1.45); opacity: 0; filter: contrast(1.2) brightness(2); } 50% { opacity: 1; } 100% { transform: translate(-50%, -50%) scale(1); filter: contrast(1.2) brightness(1); } }
 #panel #sub, #panel #qtext { text-shadow: 0 0 6px #000, 0 0 12px #000, 0 0 2px #000; }
+#panel #sub { color: var(--phosphor); }
 #panel p.story {
   font-family: var(--display);
   font-size: clamp(15px, 3.1vmin, 32px);
@@ -324,11 +325,11 @@ for (let k = 0; k < 8; k++) {
   rollFrames.push(`url(${c.toDataURL()})`);
 }
 const calmMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-let shakeDir = 1;
+let shakeDir = 1, shakeBoost = 1;
 if (!calmMotion) {
   setInterval(() => {
     shakeDir = -shakeDir;
-    const x = (shakeDir * (1 + Math.random() * 1.2)).toFixed(2);
+    const x = (shakeDir * (1 + Math.random() * 1.2) * shakeBoost).toFixed(2);
     crt.style.transform = `translateX(${x}px)`;
   }, 28);
 }
@@ -517,6 +518,34 @@ function playScream() {
   src.connect(g); g.connect(master);
   src.start();
 }
+function slamHit() {
+  if (!AC) return;
+  const t = AC.currentTime;
+  const o = AC.createOscillator(), og = AC.createGain();
+  o.frequency.setValueAtTime(95, t);
+  o.frequency.exponentialRampToValueAtTime(32, t + 0.45);
+  env(og, t, 1.6, 0.003, 0.05, 0.5);
+  o.connect(og); og.connect(master); o.start(t); o.stop(t + 0.7);
+  const n = noiseSrc(), lp = AC.createBiquadFilter(), ng = AC.createGain();
+  lp.type = 'lowpass'; lp.frequency.value = 2200;
+  env(ng, t, 1.2, 0.002, 0.03, 0.25);
+  n.connect(lp); lp.connect(ng); ng.connect(master); n.start(t); n.stop(t + 0.4);
+  const r = noiseSrc(), bp = AC.createBiquadFilter(), rg = AC.createGain();
+  bp.type = 'bandpass'; bp.frequency.value = 3200; bp.Q.value = 6;
+  env(rg, t + 0.02, 0.5, 0.005, 0.1, 0.45);
+  r.connect(bp); bp.connect(rg); rg.connect(master); r.start(t); r.stop(t + 0.8);
+}
+
+function handSlam() {
+  const h = $('#handX');
+  h.classList.remove('slam');
+  void h.offsetWidth;
+  h.classList.add('slam');
+  slamHit();
+  shakeBoost = 9;
+  setTimeout(() => { shakeBoost = 1; }, 350);
+}
+
 function scream() {
   const t = AC.currentTime, end = t + 1.7;
   const out = AC.createGain();
@@ -882,9 +911,12 @@ async function stageActions() {
     if (a.eyes) await eyesClosed(sub);
     else if (a.done) { sub.textContent = a.done; await waitDone($('#answers')); }
     else {
-      if (a.hand) $('#handX').classList.add('on');
-      for (let n = a.secs; n > 0; n--) { sub.textContent = `${a.hold} ${n}`; await wait(1000); }
-      $('#handX').classList.remove('on');
+      for (let n = a.secs; n > 0; n--) {
+        sub.textContent = `${a.hold} ${n}`;
+        if (a.hand && n === a.secs - 2) handSlam();
+        await wait(1000);
+      }
+      $('#handX').classList.remove('slam');
     }
     hidePanel();
     await wait(900);

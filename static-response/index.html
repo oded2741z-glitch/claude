@@ -1166,7 +1166,6 @@ function showIntro() {
       <li>Do not look away from the screen.</li>
     </ol>
     <p class="warn">CONTAINS LOUD SOUNDS AND SUDDEN FRIGHTENING IMAGES</p>
-    <p class="muted" id="soundHint"${introAudioStarted ? ' hidden' : ''}>CLICK ANYWHERE TO TURN ON SOUND</p>
     <button id="begin" type="button">BEGIN</button>
     <div class="stagepick"><span class="muted">TEST ONE STAGE</span>${STAGES.map((st, i) => `<button type="button" class="small" data-stage="${i}">${i + 1}. ${st.name}</button>`).join('')}</div>`);
   $('#begin').addEventListener('click', e => { e.stopPropagation(); e.currentTarget.blur(); runGame(0); });
@@ -1188,14 +1187,20 @@ let introAudioStarted = false;
 async function startIntroAudio() {
   if (introAudioStarted) return;
   introAudioStarted = true;
-  const h = document.getElementById('soundHint');
-  if (h) h.hidden = true;
   initAudio();
+  showIntro();
   await Promise.all([loadHeart(), loadAmbient()]);
   startDrone();
 }
 addEventListener('pointerdown', startIntroAudio);
 addEventListener('keydown', startIntroAudio);
 
-showIntro();
+function showGate() {
+  hud.hidden = true;
+  showPanel(`<h1>STATIC RESPONSE</h1>
+    <p class="warn">PUT ON HEADPHONES. THIS PROGRAM USES SOUND.</p>
+    <button id="enter" type="button">CLICK TO ENTER</button>`);
+}
+
+showGate();
 </script>

@@ -226,6 +226,21 @@ body {
 }
 #walker video { width: 100%; height: 100%; display: block; filter: contrast(1.15); -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 70%, transparent 100%); }
 #walkerHit { position: absolute; left: 39%; top: 35%; width: 24%; height: 36%; cursor: crosshair; }
+#introClown {
+  position: absolute;
+  right: 3%;
+  bottom: 2%;
+  height: 82%;
+  aspect-ratio: 460 / 720;
+  mix-blend-mode: screen;
+  opacity: 0.85;
+  filter: contrast(1.1);
+  -webkit-mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 75%, transparent 100%);
+  mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 75%, transparent 100%);
+  pointer-events: none;
+}
+@media (max-aspect-ratio: 1/1) { #introClown { right: -12%; opacity: 0.35; } }
+@media (min-aspect-ratio: 1/1) { #panel.withSide { padding-left: 4%; padding-right: 30%; } }
 #panel p.story {
   font-family: var(--display);
   font-size: clamp(15px, 3.1vmin, 32px);
@@ -278,6 +293,7 @@ body {
   <img id="peek" src="img/f19.jpg" alt="">
   <img id="handX" src="img/xray.jpg" alt="">
   <div id="walker" hidden><video id="walkerVid" src="img/walker.mp4" muted playsinline preload="auto"></video><div id="walkerHit"></div></div>
+  <video id="introClown" src="img/intro.mp4" muted loop playsinline preload="auto" hidden></video>
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -1086,7 +1102,15 @@ const STAGES = [
   { name: 'REACTION TEST', run: stageReaction }
 ];
 
+function setIntroClown(on) {
+  const v = $('#introClown');
+  v.hidden = !on;
+  panel.classList.toggle('withSide', on);
+  if (on) { const pr = v.play(); if (pr) pr.catch(() => {}); } else v.pause();
+}
+
 async function runGame(startStage = 0) {
+  setIntroClown(false);
   initAudio();
   hidePanel();
   showPanel('<h2>LOADING</h2>');
@@ -1130,6 +1154,7 @@ function showEnd(won) {
 
 function showIntro() {
   hud.hidden = true;
+  setIntroClown(true);
   showPanel(`<h1>STATIC RESPONSE</h1>
     <p>This program measures how fast you react to things you do not expect. Each level lasts thirty seconds and moves faster than the one before.</p>
     <ol>

@@ -244,6 +244,12 @@ body {
 }
 @media (max-aspect-ratio: 1/1) { #introClown { right: -12%; opacity: 0.35; } }
 @media (min-aspect-ratio: 1/1) { #panel.withSide { padding-left: 4%; padding-right: 30%; } }
+#rlgl { position: absolute; inset: 0; pointer-events: none; }
+#rlglVid { position: absolute; left: 50%; top: 2%; height: 96%; aspect-ratio: 540 / 960; transform: translateX(-50%) scale(0.42); transform-origin: 50% 70%; mix-blend-mode: screen; }
+#rlglBar { position: absolute; left: 6%; right: 6%; bottom: 4%; height: 4px; background: rgba(217,220,207,0.15); }
+#rlglBar div { height: 100%; width: 0; background: var(--phosphor); }
+#rlglInfo { position: absolute; left: 0; right: 0; bottom: 7%; text-align: center; font-family: var(--display); font-size: clamp(16px, 3vmin, 28px); letter-spacing: 0.1em; color: var(--phosphor); text-shadow: 0 0 6px #000; }
+#rlglInfo.stop { color: var(--blood); }
 #mazeCv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 #panel p.story {
   font-family: var(--display);
@@ -300,6 +306,7 @@ body {
   <div id="walker" hidden><video id="walkerVid" src="img/walker.mp4" muted playsinline preload="auto"></video></div>
   <video id="introClown" src="img/intro.mp4" muted loop playsinline preload="auto" hidden></video>
   <canvas id="mazeCv" hidden></canvas>
+  <div id="rlgl" hidden><video id="rlglVid" muted playsinline preload="auto"></video><div id="rlglBar"><div></div></div><div id="rlglInfo"></div></div>
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -1274,12 +1281,113 @@ async function stageMaze() {
   return true;
 }
 
+let turnVideoReady = null;
+function loadTurnVideo() {
+  if (!turnVideoReady) {
+    turnVideoReady = fetch('img/turn.mp4').then(r => r.ok ? r.blob() : null).then(b => {
+      if (b) $('#rlglVid').src = URL.createObjectURL(b);
+    }).catch(() => {});
+  }
+  return turnVideoReady;
+}
+
+const TURN = { backStart: 0.1, backEnd: 4.8, turnStart: 4.95, front: 5.6, frontStart: 6.0, frontEnd: 9.8 };
+
+function stageClownGame() {
+  return new Promise(res => {
+    const wrap = $('#rlgl'), v = $('#rlglVid'), bar = $('#rlglBar div'), info = $('#rlglInfo');
+    let phase = 'back', progress = 0, timer = rand(2.5, 4.5), watchT = 0, holding = false, last = performance.now(), stepT = 0, raf = 0;
+    const down = e => { if (e.code === 'Space') { e.preventDefault(); holding = true; } };
+    const up = e => { if (e.code === 'Space') holding = false; };
+    const pdown = e => { if (!e.target.closest('button')) holding = true; };
+    const pup = () => { holding = false; };
+    const seek = t => { v.currentTime = t; const pr = v.play(); if (pr) pr.catch(() => {}); };
+    const finish = ok => {
+      cancelAnimationFrame(raf);
+      removeEventListener('keydown', down); removeEventListener('keyup', up);
+      crt.removeEventListener('pointerdown', pdown); removeEventListener('pointerup', pup); removeEventListener('pointercancel', pup);
+      res(ok);
+    };
+    const step = now => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      if (phase === 'back') {
+        if (v.currentTime >= TURN.backEnd) seek(TURN.backStart);
+        if (holding) {
+          progress = Math.min(1, progress + dt / 14);
+          stepT -= dt;
+          if (stepT <= 0 && AC && runStepBuf) {
+            const src = AC.createBufferSource(), g = AC.createGain();
+            src.buffer = runStepBuf; src.playbackRate.value = rand(0.85, 0.95);
+            g.gain.value = 1.4; src.connect(g); g.connect(master); src.start();
+            stepT = 0.5;
+          }
+        }
+        timer -= dt;
+        if (progress >= 1) {
+          phase = 'won';
+          wrap.hidden = true;
+          showPanel('<h2>You touched him.</h2>');
+          if (AC) cueWhisper(1);
+          setTimeout(() => { hidePanel(); v.pause(); finish(true); }, 2600);
+          return;
+        }
+        if (timer <= 0) { phase = 'turning'; watchT = 0; seek(TURN.turnStart); }
+      } else if (phase === 'turning') {
+        watchT += dt;
+        if (v.currentTime >= TURN.front || watchT > 1.2) { phase = 'watching'; watchT = 0; timer = rand(1.6, 3.2); }
+      } else if (phase === 'watching') {
+        if (v.currentTime >= TURN.frontEnd) seek(TURN.frontStart);
+        watchT += dt;
+        if (holding && watchT > 0.25) {
+          phase = 'caught';
+          v.pause();
+          wrap.hidden = true;
+          game.failMsg = 'He saw you move.';
+          finish(false);
+          return;
+        }
+        timer -= dt;
+        if (timer <= 0) {
+          phase = 'back';
+          blackout = true;
+          setTimeout(() => { blackout = false; }, 150);
+          seek(TURN.backStart);
+          timer = rand(2, 4.5) * (1 - 0.5 * progress);
+        }
+      }
+      const sc = 0.42 + 0.78 * progress;
+      v.style.transform = `translateX(-50%) scale(${sc.toFixed(3)})`;
+      bar.style.width = (progress * 100).toFixed(1) + '%';
+      info.textContent = phase === 'back' ? 'HOLD SPACE OR PRESS THE SCREEN TO WALK' : 'DO NOT MOVE';
+      info.classList.toggle('stop', phase !== 'back');
+      raf = requestAnimationFrame(step);
+    };
+    addEventListener('keydown', down); addEventListener('keyup', up);
+    crt.addEventListener('pointerdown', pdown); addEventListener('pointerup', pup); addEventListener('pointercancel', pup);
+    wrap.hidden = false;
+    seek(TURN.backStart);
+    raf = requestAnimationFrame(step);
+  });
+}
+
+async function stageClown() {
+  hud.hidden = true;
+  showPanel(`<h2>ONE, TWO, THREE, CLOWN</h2><p class="muted">He wants to play. Walk to him while his back is turned. When he turns around, do not move.</p>`);
+  await wait(4000);
+  hidePanel();
+  const ok = await stageClownGame();
+  $('#rlgl').hidden = true;
+  return ok;
+}
+
 const STAGES = [
   { name: 'QUESTIONS', run: stageQuestions },
   { name: 'ACTIONS', run: stageActions },
   { name: 'STORY', run: stageStory },
   { name: 'REACTION TEST', run: stageReaction },
-  { name: 'MAZE', run: stageMaze }
+  { name: 'MAZE', run: stageMaze },
+  { name: 'CLOWN GAME', run: stageClown }
 ];
 
 function setIntroClown(on) {
@@ -1294,7 +1402,7 @@ async function runGame(startStage = 0) {
   initAudio();
   hidePanel();
   showPanel('<h2>LOADING</h2>');
-  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient(), loadSteps(), loadRunStep()]);
+  await Promise.all([loadImages(), loadScream(), loadHeart(), loadAmbient(), loadSteps(), loadRunStep(), loadTurnVideo()]);
   game = { startStage, stage: startStage + 1, scareLevel: 3 + Math.floor(Math.random() * 6), hits: 0, misses: 0, falses: 0, rtSum: 0, lv: null, paused: false, level: 1, chain: 0, caught: false };
   startDrone();
   for (let i = startStage; i < STAGES.length; i++) {

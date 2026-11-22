@@ -259,6 +259,18 @@ body {
 #hideBar { position: absolute; left: 6%; right: 6%; bottom: 4%; height: 4px; background: rgba(217,220,207,0.15); }
 #hideBar div { height: 100%; width: 100%; background: var(--blood); }
 #hideLabel { position: absolute; left: 0; right: 0; bottom: 7%; text-align: center; font-family: var(--display); font-size: clamp(16px, 3vmin, 28px); letter-spacing: 0.1em; color: var(--phosphor); text-shadow: 0 0 6px #000, 0 0 12px #000; pointer-events: none; }
+#hideView { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; cursor: ns-resize; touch-action: none; }
+#hvBox { position: relative; width: 100%; max-height: 100%; aspect-ratio: 1024 / 572; }
+#hvImg { width: 100%; height: 100%; display: block; filter: contrast(1.1); }
+#hvGap { position: absolute; overflow: hidden; pointer-events: none; }
+#hvSil { position: absolute; bottom: -5%; height: 105%; transform: translateX(-50%); opacity: 0; filter: blur(1.5px); }
+#hvTrack { position: absolute; right: 5%; top: 15%; height: 70%; width: 2px; background: rgba(217,220,207,0.25); pointer-events: none; }
+#hvTarget { position: absolute; left: 50%; width: 18px; height: 18px; border-radius: 50%; transform: translate(-50%, -50%); background: rgba(240,242,232,0.9); box-shadow: 0 0 14px rgba(240,242,232,0.8); }
+#hvMe { position: absolute; left: 50%; width: 34px; height: 2px; transform: translate(-50%, -50%); background: var(--blood); box-shadow: 0 0 6px var(--blood); }
+#hvNoise { position: absolute; left: 6%; right: 12%; bottom: 4%; height: 4px; background: rgba(217,220,207,0.15); pointer-events: none; }
+#hvNoise div { height: 100%; width: 0; background: var(--blood); }
+#hvInfo { position: absolute; left: 0; right: 0; bottom: 7%; text-align: center; font-family: var(--display); font-size: clamp(14px, 2.6vmin, 24px); letter-spacing: 0.1em; color: var(--phosphor); text-shadow: 0 0 6px #000, 0 0 12px #000; pointer-events: none; }
+#panel h2.accuse { color: var(--blood); text-shadow: 0 0 14px rgba(200,22,29,0.5); }
 #mazeCv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 #panel p.story {
   font-family: var(--display);
@@ -317,6 +329,7 @@ body {
   <canvas id="mazeCv" hidden></canvas>
   <div id="rlgl" hidden><video id="rlglVid" muted playsinline preload="auto"></video><div id="rlglBar"><div></div></div><div id="rlglInfo"></div></div>
   <div id="hideRoom" hidden><div id="hideImgBox"><img src="img/hide_room.jpg" alt=""></div><div id="hideBar"><div></div></div><div id="hideLabel"></div></div>
+  <div id="hideView" hidden><div id="hvBox"><img id="hvImg" alt=""><div id="hvGap"><img id="hvSil" src="img/clown_sil.png" alt=""></div></div><div id="hvTrack"><div id="hvTarget"></div><div id="hvMe"></div></div><div id="hvNoise"><div></div></div><div id="hvInfo"></div></div>
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -1444,6 +1457,104 @@ function chooseHidingSpot(seconds) {
   });
 }
 
+const HIDE_VIEWS = {
+  wardrobe: { img: 'img/hide_wardrobe.jpg', gap: [44, 0, 12, 100] },
+  bed: { img: 'img/hide_bed_empty.jpg', near: 'img/hide_bed.jpg' },
+  curtain: { img: 'img/hide_curtain.jpg', gap: [17, 0, 35, 100] },
+  chest: { img: 'img/hide_chest.jpg', gap: [28, 37, 45, 36] }
+};
+const SEARCH_PATH = [[0, 0], [4, 0.3], [8, 0.7], [10, 0.5], [12, 0.2], [16, 0.5], [19, 1], [24, 1], [27, 0.4], [30, 0]];
+
+function searchCloseness(t) {
+  for (let i = 0; i < SEARCH_PATH.length - 1; i++) {
+    const a = SEARCH_PATH[i], b = SEARCH_PATH[i + 1];
+    if (t <= b[0]) return a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]);
+  }
+  return 0;
+}
+
+function hideSequence(spot) {
+  return new Promise(res => {
+    const view = HIDE_VIEWS[spot];
+    const box = $('#hvBox'), img = $('#hvImg'), gap = $('#hvGap'), sil = $('#hvSil');
+    const dot = $('#hvTarget'), me = $('#hvMe'), noiseBar = $('#hvNoise div'), info = $('#hvInfo');
+    img.src = view.img;
+    gap.hidden = !view.gap;
+    if (view.gap) {
+      gap.style.left = view.gap[0] + '%'; gap.style.top = view.gap[1] + '%';
+      gap.style.width = view.gap[2] + '%'; gap.style.height = view.gap[3] + '%';
+    }
+    sil.style.opacity = 0;
+    $('#hideView').hidden = false;
+    let t = -3, phase = 0, speed = 1, my = 0.5, noise = 0, last = performance.now(), stepT = 0, prevC = 0, creaked = false, raf = 0;
+    const g = AC ? AC.createGain() : null;
+    let breath = null;
+    if (AC) {
+      g.gain.value = 0;
+      const f = AC.createBiquadFilter();
+      f.type = 'bandpass'; f.frequency.value = 900; f.Q.value = 0.7;
+      breath = noiseSrc();
+      breath.connect(f); f.connect(g); g.connect(master); breath.start();
+    }
+    const move = e => {
+      const r = $('#hvTrack').getBoundingClientRect();
+      my = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    };
+    crt.addEventListener('pointermove', move);
+    const finish = ok => {
+      cancelAnimationFrame(raf);
+      crt.removeEventListener('pointermove', move);
+      if (breath) { g.gain.setTargetAtTime(0, AC.currentTime, 0.1); breath.stop(AC.currentTime + 0.5); }
+      $('#hideView').hidden = true;
+      res(ok);
+    };
+    const frame = now => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      t += dt;
+      const c = t > 0 ? searchCloseness(t) : 0;
+      if (c > 0.6 && Math.random() < dt * 0.8) speed = rand(0.4, 2.2);
+      if (c <= 0.6) speed += (1 - speed) * dt;
+      phase += dt * speed * Math.PI * 2 / 4.5;
+      const target = 0.5 - 0.36 * Math.sin(phase);
+      dot.style.top = (target * 100).toFixed(2) + '%';
+      me.style.top = (my * 100).toFixed(2) + '%';
+      const err = Math.abs(my - target);
+      if (t > 0) noise = Math.min(1, Math.max(0, noise + (err > 0.1 ? (err - 0.1) * 2.6 : -0.3) * dt));
+      noiseBar.style.width = (noise * 100).toFixed(1) + '%';
+      if (g) g.gain.setTargetAtTime(0.03 + noise * 0.45, AC.currentTime, 0.05);
+      const moving = Math.abs(c - prevC) > dt * 0.02;
+      prevC = c;
+      stepT -= dt;
+      if (t > 0 && moving && stepT <= 0 && AC && runStepBuf) {
+        const src = AC.createBufferSource(), sg = AC.createGain();
+        src.buffer = runStepBuf; src.playbackRate.value = rand(0.75, 0.85);
+        sg.gain.value = 0.2 + c * 1.4; src.connect(sg); sg.connect(master); src.start();
+        stepT = 0.7;
+      }
+      if (!creaked && t > 12) { creaked = true; if (AC) cueCreak(0.6); }
+      if (view.gap) {
+        const vis = Math.max(0, (c - 0.75) * 4);
+        sil.style.opacity = vis.toFixed(2);
+        sil.style.left = (50 + Math.sin(t * 0.7) * 18).toFixed(1) + '%';
+      } else {
+        const near = c > 0.85;
+        const want = near ? view.near : view.img;
+        if (!img.src.endsWith(want)) img.src = want;
+      }
+      info.textContent = t < 0 ? 'KEEP THE MARKER ON THE LIGHT TO BREATHE QUIETLY' : '';
+      if (noise > 0.85 && c > 0.5) {
+        game.failMsg = 'He heard you breathing.';
+        finish(false);
+        return;
+      }
+      if (t >= 30) { finish(true); return; }
+      raf = requestAnimationFrame(frame);
+    };
+    raf = requestAnimationFrame(frame);
+  });
+}
+
 async function stageHide() {
   hud.hidden = true;
   const room = $('#hideRoom');
@@ -1473,6 +1584,12 @@ async function stageHide() {
   await wait(2500);
   hidePanel();
   room.hidden = true;
+  const safe = await hideSequence(spot);
+  if (!safe) return false;
+  showPanel('<h2 class="accuse">Next time...</h2>');
+  if (AC) cueWhisper(1);
+  await wait(3000);
+  hidePanel();
   return true;
 }
 

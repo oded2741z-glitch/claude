@@ -1332,10 +1332,10 @@ function stageClownGame() {
           setTimeout(() => { hidePanel(); v.pause(); finish(true); }, 2600);
           return;
         }
-        if (timer <= 0) { phase = 'turning'; watchT = 0; seek(TURN.turnStart); }
+        if (timer <= 0) { phase = 'turning'; watchT = 0; v.playbackRate = 2.6; seek(TURN.turnStart); }
       } else if (phase === 'turning') {
         watchT += dt;
-        if (v.currentTime >= TURN.front || watchT > 1.2) { phase = 'watching'; watchT = 0; timer = rand(1.6, 3.2); }
+        if (v.currentTime >= TURN.front || watchT > 0.6) { phase = 'watching'; watchT = 0; v.playbackRate = 1; timer = rand(1.6, 3.2); }
       } else if (phase === 'watching') {
         if (v.currentTime >= TURN.frontEnd) seek(TURN.frontStart);
         watchT += dt;
@@ -1371,10 +1371,16 @@ function stageClownGame() {
   });
 }
 
+const playWithMeData = fetch('audio/playwithme.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+
 async function stageClown() {
   hud.hidden = true;
+  const vd = await playWithMeData;
+  const vb = vd && AC ? await AC.decodeAudioData(vd.slice(0)).catch(() => null) : null;
+  const voice = playNarration(vb);
   showPanel(`<h2>ONE, TWO, THREE, CLOWN</h2><p class="muted">He wants to play. Walk to him while his back is turned. When he turns around, do not move.</p>`);
-  await wait(4000);
+  await wait(4500);
+  stopNarration(voice);
   hidePanel();
   const ok = await stageClownGame();
   $('#rlgl').hidden = true;

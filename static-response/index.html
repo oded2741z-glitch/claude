@@ -250,6 +250,15 @@ body {
 #rlglBar div { height: 100%; width: 0; background: var(--phosphor); }
 #rlglInfo { position: absolute; left: 0; right: 0; bottom: 7%; text-align: center; font-family: var(--display); font-size: clamp(16px, 3vmin, 28px); letter-spacing: 0.1em; color: var(--phosphor); text-shadow: 0 0 6px #000; }
 #rlglInfo.stop { color: var(--blood); }
+#hideRoom { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+#hideImgBox { position: relative; width: 100%; max-height: 100%; aspect-ratio: 1024 / 572; }
+#hideImgBox img { width: 100%; height: 100%; display: block; filter: contrast(1.1); transition: filter 0.6s; }
+#hideRoom.dim #hideImgBox img { filter: contrast(1.1) brightness(0.3); }
+#hideImgBox .spot { position: absolute; background: transparent; border: 1px solid transparent; padding: 0; cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; }
+#hideImgBox .spot:hover, #hideImgBox .spot:focus-visible { border-color: rgba(217,220,207,0.6); box-shadow: 0 0 18px rgba(217,220,207,0.25), inset 0 0 30px rgba(217,220,207,0.12); outline: none; }
+#hideBar { position: absolute; left: 6%; right: 6%; bottom: 4%; height: 4px; background: rgba(217,220,207,0.15); }
+#hideBar div { height: 100%; width: 100%; background: var(--blood); }
+#hideLabel { position: absolute; left: 0; right: 0; bottom: 7%; text-align: center; font-family: var(--display); font-size: clamp(16px, 3vmin, 28px); letter-spacing: 0.1em; color: var(--phosphor); text-shadow: 0 0 6px #000, 0 0 12px #000; pointer-events: none; }
 #mazeCv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
 #panel p.story {
   font-family: var(--display);
@@ -307,6 +316,7 @@ body {
   <video id="introClown" src="img/intro.mp4" muted loop playsinline preload="auto" hidden></video>
   <canvas id="mazeCv" hidden></canvas>
   <div id="rlgl" hidden><video id="rlglVid" muted playsinline preload="auto"></video><div id="rlglBar"><div></div></div><div id="rlglInfo"></div></div>
+  <div id="hideRoom" hidden><div id="hideImgBox"><img src="img/hide_room.jpg" alt=""></div><div id="hideBar"><div></div></div><div id="hideLabel"></div></div>
   <div id="panel"></div>
   <div class="fx scan"></div>
   <div class="fx vignette"></div>
@@ -1392,13 +1402,88 @@ async function stageClown() {
   return ok;
 }
 
+const HIDE_SPOTS = [
+  { id: 'wardrobe', name: 'THE WARDROBE', box: [9, 14, 20, 65] },
+  { id: 'bed', name: 'UNDER THE BED', box: [35, 47, 32, 37] },
+  { id: 'curtain', name: 'BEHIND THE CURTAIN', box: [71, 5, 15, 50] },
+  { id: 'chest', name: 'THE TOY CHEST', box: [75, 57, 23, 41] }
+];
+const goHideData = fetch('audio/gohide.mp3').then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+
+function chooseHidingSpot(seconds) {
+  return new Promise(res => {
+    const room = $('#hideRoom'), bar = $('#hideBar div'), label = $('#hideLabel');
+    room.querySelectorAll('.spot').forEach(el => el.remove());
+    let done = false;
+    const end = id => {
+      if (done) return;
+      done = true;
+      clearInterval(tick);
+      room.querySelectorAll('.spot').forEach(el => el.remove());
+      res(id);
+    };
+    HIDE_SPOTS.forEach(sp => {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'spot';
+      el.style.left = sp.box[0] + '%'; el.style.top = sp.box[1] + '%';
+      el.style.width = sp.box[2] + '%'; el.style.height = sp.box[3] + '%';
+      el.setAttribute('aria-label', sp.name);
+      el.addEventListener('pointerenter', () => { label.textContent = sp.name; });
+      el.addEventListener('pointerleave', () => { label.textContent = 'CHOOSE WHERE TO HIDE'; });
+      el.addEventListener('click', e => { e.stopPropagation(); end(sp.id); });
+      $('#hideImgBox').appendChild(el);
+    });
+    label.textContent = 'CHOOSE WHERE TO HIDE';
+    const t0 = performance.now();
+    const tick = setInterval(() => {
+      const k = Math.min(1, (performance.now() - t0) / (seconds * 1000));
+      bar.style.width = ((1 - k) * 100).toFixed(1) + '%';
+      if (k >= 1) end(null);
+    }, 50);
+  });
+}
+
+async function stageHide() {
+  hud.hidden = true;
+  const room = $('#hideRoom');
+  room.classList.add('dim');
+  room.hidden = false;
+  $('#hideBar div').style.width = '100%';
+  $('#hideLabel').textContent = '';
+  const vd = await goHideData;
+  const vb = vd && AC ? await AC.decodeAudioData(vd.slice(0)).catch(() => null) : null;
+  const voice = playNarration(vb);
+  showPanel(`<h2>HIDE AND SEEK</h2><p class="muted">He is counting. Find a place to hide before he opens his eyes.</p>`);
+  await wait(4500);
+  stopNarration(voice);
+  hidePanel();
+  room.classList.remove('dim');
+  const spot = await chooseHidingSpot(10);
+  if (!spot) {
+    room.hidden = true;
+    game.failMsg = 'You did not hide in time.';
+    return false;
+  }
+  game.hideSpot = spot;
+  const sp = HIDE_SPOTS.find(x => x.id === spot);
+  room.classList.add('dim');
+  $('#hideLabel').textContent = '';
+  showPanel(`<h2>${sp.name}</h2><p class="muted">Do not make a sound.</p>`);
+  await wait(2500);
+  hidePanel();
+  room.hidden = true;
+  return true;
+}
+
 const STAGES = [
   { name: 'QUESTIONS', run: stageQuestions },
   { name: 'ACTIONS', run: stageActions },
   { name: 'STORY', run: stageStory },
   { name: 'REACTION TEST', run: stageReaction },
   { name: 'MAZE', run: stageMaze },
-  { name: 'CLOWN GAME', run: stageClown }
+  { name: 'CLOWN GAME', run: stageClown },
+  { name: 'HIDE AND SEEK', run: stageHide }
 ];
 
 function setIntroClown(on) {

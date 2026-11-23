@@ -1462,7 +1462,7 @@ function chooseHidingSpot(seconds) {
 
 const HIDE_VIEWS = {
   wardrobe: { img: 'img/hide_wardrobe.jpg', near: 'img/hide_wardrobe_near.jpg' },
-  bed: { img: 'img/hide_bed_empty.jpg', near: 'img/hide_bed.jpg' },
+  bed: { img: 'img/hide_bed_empty.jpg', mid: 'img/hide_bed_near.jpg', near: 'img/hide_bed.jpg' },
   curtain: { img: 'img/hide_curtain.jpg', near: 'img/hide_curtain_near.jpg' },
   chest: { img: 'img/hide_chest.jpg', gap: [28, 37, 45, 36] }
 };
@@ -1541,8 +1541,7 @@ function hideSequence(spot) {
         sil.style.opacity = vis.toFixed(2);
         sil.style.left = (50 + Math.sin(t * 0.7) * 18).toFixed(1) + '%';
       } else {
-        const near = c > 0.85;
-        const want = near ? view.near : view.img;
+        const want = c > 0.85 ? view.near : (c > 0.6 && view.mid ? view.mid : view.img);
         if (!img.src.endsWith(want)) img.src = want;
       }
       info.textContent = t < 0 ? 'KEEP THE MARKER ON THE LIGHT TO BREATHE QUIETLY' : '';

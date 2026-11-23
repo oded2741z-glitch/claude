@@ -1368,7 +1368,7 @@ function stageClownGame() {
       if (phase === 'back') {
         if (v.currentTime >= TURN.backEnd) seek(TURN.backStart);
         if (holding) {
-          progress = Math.min(1, progress + dt / 18);
+          progress = Math.min(1, progress + dt / 28);
           stepT -= dt;
           if (stepT <= 0 && AC && runStepBuf) {
             const src = AC.createBufferSource(), g = AC.createGain();

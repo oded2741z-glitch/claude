@@ -10,9 +10,10 @@ import numpy as np
 import pygame
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-IMG_DIR = os.path.join(HERE, "img")
-AUDIO_DIR = os.path.join(HERE, "audio")
-FONT_DIR = os.path.join(HERE, "fonts")
+os.chdir(HERE)
+IMG_DIR = "img"
+AUDIO_DIR = "audio"
+FONT_DIR = "fonts"
 
 VOID = (5, 6, 5)
 GLASS = (11, 13, 11)

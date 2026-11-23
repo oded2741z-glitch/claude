@@ -534,6 +534,10 @@ class Assets:
         self.eye = css_filter(read_rgb("eye.jpg"), ("gray", 1), ("contrast", 1.2), ("bright", 0.9))
         self.flash = [css_filter(read_rgb(f"f{i}.jpg"), ("contrast", 1.2), ("bright", 0.95)) for i in (18, 19, 20)]
         self.xray = css_filter(read_rgb("xray.jpg"), ("contrast", 1.2))
+        f19 = read_rgb("f19.jpg")
+        self.peek = {"flash": (css_filter(f19, ("gray", 1), ("bright", 0.95), ("contrast", 1.4)), 0.9, 1.05),
+                     "p3": (css_filter(f19, ("gray", 1), ("bright", 0.9), ("contrast", 1.3)), 1.0, 1.18)}
+        self.narr = [load_sound("story1.mp3", 1.3), load_sound("story2.mp3", 1.3)]
         self.faces = []
         for i in (6, 7, 8, 9, 10):
             try:
@@ -942,7 +946,71 @@ class Eye:
         return [Block(w, h + 18, draw, False, self.gap)]
 
 
+class StoryBlock:
+    def __init__(self, lines, last=None):
+        self.lines = lines
+        self.last = last
+
+    def blocks(self, maxw):
+        avail = P.avail_h
+        base = style("story")["px"]
+        px = base
+        while True:
+            out = self._blocks(maxw, px)
+            total = sum(b.h for b in out) + sum(b.gap or 0 for b in out[1:])
+            if total <= avail - 60 or px <= 11:
+                return out
+            px -= 1
+
+    def _blocks(self, maxw, px):
+        out = []
+        f = font("display", px)
+        maxw = min(maxw, 56 * f.size("0")[0])
+        lh = int(1.2 * px)
+        items = [(ln, PHOSPHOR, SHADOW, 8.8) for ln in self.lines]
+        if self.last:
+            items.append((self.last, BLOOD, ("glow", BLOOD, 0.6, 10), 8.8 + 0.4 * px))
+        for i, (text, color, eff, gap) in enumerate(items):
+            lines = wrap("display", px, text, 0.05, maxw)
+            imgs = [text_image("display", px, ln, color, 0.05, eff) for ln in lines]
+            widths = [text_width("display", px, ln, 0.05) for ln in lines]
+            bw = max(widths)
+
+            def draw(surf, x, y, bright, lines=lines, imgs=imgs, widths=widths, bw=bw, color=color, eff=eff):
+                for j, (img, pad) in enumerate(imgs):
+                    if bright:
+                        img, pad = text_image("display", px, lines[j], brighten(color), 0.05, eff)
+                    surf.blit(img, (int(x + (bw - widths[j]) / 2 - pad), int(y + j * lh + (lh - f.get_height()) / 2 - pad)))
+            out.append(Block(bw, lh * len(lines), draw, True, None if i == 0 else gap))
+        return out
+
+
+class Wall:
+    def draw_abs(self, surf):
+        W, H = surf.get_size()
+        px = clamp(3.4 * vmin(), 16, 34)
+        img, pad = text_image("display", px, "YOU LET HIM IN", BLOOD, 0.06, ("glow", BLOOD, 0.6, 8))
+        w = text_width("display", px, "YOU LET HIM IN", 0.06)
+        lh = font("display", px).get_linesize()
+        layer = pygame.Surface((W, H), pygame.SRCALPHA)
+        padx = 0.03 * W
+        x, y, n = padx, padx, 0
+        while n < 160 and y < H:
+            if x + w > W - padx and x > padx:
+                x = padx
+                y += lh + 0.2 * px
+                continue
+            layer.blit(img, (int(x - pad), int(y - pad)))
+            x += w + 0.9 * px
+            n += 1
+        if (now_ms() // 60) % 2:
+            layer.fill((255, 255, 255, 204), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(layer, (0, 0))
+
+
 class Panel:
+    avail_h = 600
+
     def __init__(self):
         self.elems = []
         self.visible = False
@@ -982,6 +1050,7 @@ class Panel:
         else:
             pl = pr = 0.08 * W
         pt = pb = 0.06 * W
+        self.avail_h = H - pt - pb
         cw = W - pl - pr
         blocks = []
         for e in self.elems:
@@ -1167,6 +1236,7 @@ class Renderer:
             c.fill((0, 0, 0))
         if now_ms() < S.flash_until and S.flash_img is not None:
             self.draw_flash(c, S.flash_img)
+        self.draw_peek(c)
         self.draw_hand(c)
         if S.intro_clown:
             ch = H * 0.82
@@ -1220,6 +1290,19 @@ class Renderer:
                 self._hand_cache.clear()
             self._hand_cache[key] = s
         return s
+
+    def draw_peek(self, c):
+        if not S.peek:
+            return
+        rgb, op, scale = A.peek[S.peek]
+        h = int(self.H * 0.92 * scale)
+        w = int(h * 783 / 1000)
+        key = ("peek", S.peek, w, h)
+        img = self._hand_cache.get(key)
+        if img is None:
+            img = masked_image(rgb, w, h, 0.70, op).convert_alpha()
+            self._hand_cache[key] = img
+        c.blit(img, (int((self.W - w) / 2), int((self.H - h) / 2)))
 
     def draw_hand(self, c):
         hd = S.hand
@@ -1364,6 +1447,7 @@ class State:
     flash_until = 0
     hand = None
     shake_until = 0
+    peek = None
 
 
 S = State()
@@ -1559,9 +1643,76 @@ def stage_actions():
     return True
 
 
+STORY_SAD = [
+    "When you were six, you ate lunch alone every day, facing the wall so no one would see you cry.",
+    "The other children laughed when you walked by. Your name was the joke.",
+    "For your birthday, your mother set the table with twelve paper cups.",
+    "You waited by the window in your best shirt until it got dark.",
+    "Nobody came.",
+    "Then you heard bells. A clown was standing at the door, smiling just for you.",
+    "He stayed until midnight. He was the first one who ever chose you.",
+    "After that he was always there. He said he would never leave you like the others did.",
+    "Your mother never saw him. She held you and said you made him up because you were so lonely.",
+    "Maybe she was right.",
+]
+STORY_DARK = [
+    "But the night you stopped talking to him, he whispered that he would wait until you were alone again.",
+    "Tonight you answered our questions. You said you were alone.",
+    "You put your hand on the screen, and something on the other side pressed back.",
+    "Look at the dark glass. Just behind your shoulder.",
+    'He always used to smile and say, "Now it\'s just you and me."',
+    "He said it every time another child from your class stopped coming to school.",
+    "There is no one left now.",
+    "Only you.",
+]
+STORY_LAST = '"I saved my best friend for last."'
+
+
+def peek_flash():
+    S.peek = "flash"
+    yield 500
+    S.peek = None
+
+
+def stage_story():
+    S.peek = None
+    row = Row([Button("CONTINUE")], hidden=True)
+    show_panel([StoryBlock(STORY_SAD), row])
+    n1 = play_narration(A.narr[0])
+    yield A.narr[0].get_length() * 1000 if n1 else 5000
+    yield from wait_done(row)
+    stop_narration(n1)
+    hide_panel()
+    yield 1200
+    show_panel([StoryBlock(STORY_DARK, STORY_LAST)])
+    n2 = play_narration(A.narr[1])
+    if n2:
+        yield 23800
+        yield from peek_flash()
+        yield 26200
+        yield from peek_flash()
+        yield max(0, A.narr[1].get_length() * 1000 - 50500)
+    else:
+        yield 5000
+        yield from peek_flash()
+        yield 6000
+        yield from peek_flash()
+        yield 5000
+    stop_narration(None)
+    show_panel([Wall()])
+    S.peek = "p3"
+    cue_whisper(0.9)
+    yield 4500
+    hide_panel()
+    S.peek = None
+    yield 2600
+    return True
+
+
 STAGES = [
     ("QUESTIONS", stage_questions),
     ("ACTIONS", stage_actions),
+    ("STORY", stage_story),
 ]
 
 

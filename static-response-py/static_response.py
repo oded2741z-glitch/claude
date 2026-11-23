@@ -553,6 +553,7 @@ class Assets:
                      "p3": (css_filter(f19, ("gray", 1), ("bright", 0.9), ("contrast", 1.3)), 1.0, 1.18)}
         self.narr = [load_sound("story1.mp3", 1.3), load_sound("story2.mp3", 1.3)]
         self.steps = load_sound("steps.mp3")
+        self.playwithme = load_sound("playwithme.mp3", 1.3)
         rs = load_sound("runstep.mp3")
         self.runstep_walk = []
         self.runstep_clown = []
@@ -569,7 +570,8 @@ class Assets:
         self.intro = Clip("intro.mp4", 1.1)
         self.scare = Clip("scare.mp4")
         self.walker = Clip("walker.mp4", 1.15)
-        self.clips = [self.intro, self.scare, self.walker]
+        self.turn = Clip("turn.mp4")
+        self.clips = [self.intro, self.scare, self.walker, self.turn]
         threading.Thread(target=self._load_clips, daemon=True).start()
 
     def _load_clips(self):
@@ -1267,6 +1269,8 @@ class Renderer:
             h = H
             w = h * 460 / 720
             draw_screen_video(c, S.walker_player, ((W - w) / 2, 0, w, h))
+        if S.rlgl:
+            self.draw_rlgl(c)
         if S.intro_clown:
             ch = H * 0.82
             cw = ch * 460 / 720
@@ -1359,6 +1363,28 @@ class Renderer:
             fimg, _ = text_image("display", px, S.feedback, OKC if S.feedback_ok else BLOOD, 0.06)
             top_bottom = by + 3
             c.blit(fimg, (int((W - fimg.get_width()) / 2), int((top_bottom + foot_top - fh) / 2)))
+
+    def draw_rlgl(self, c):
+        W, H = self.W, self.H
+        rg = S.rlgl
+        sc = round(rg["scale"], 3)
+        h0 = H * 0.96
+        w0 = h0 * 540 / 960
+        top0 = H * 0.02
+        h, w = h0 * sc, w0 * sc
+        top = top0 + 0.7 * h0 - 0.7 * h
+        draw_screen_video(c, S.turn_player, ((W - w) / 2, top, w, h))
+        bx, bw = int(0.06 * W), int(0.88 * W)
+        by = int(H - 0.04 * H - 4)
+        bar = pygame.Surface((bw, 4), pygame.SRCALPHA)
+        bar.fill(PHOSPHOR + (38,))
+        c.blit(bar, (bx, by))
+        pygame.draw.rect(c, PHOSPHOR, (bx, by, int(bw * rg["progress"]), 4))
+        if rg["info"]:
+            px = clamp(3 * vmin(), 16, 28)
+            img, pad = text_image("display", px, rg["info"], BLOOD if rg["stop"] else PHOSPHOR, 0.1, ("shadow", (6,)))
+            fh = font("display", px).get_height()
+            c.blit(img, (int((W - img.get_width()) / 2), int(H - 0.07 * H - fh - pad)))
 
     def draw_peek(self, c):
         if not S.peek:
@@ -1527,6 +1553,9 @@ class State:
     walker = False
     walker_player = None
     run_steps = None
+    rlgl = None
+    holding = False
+    turn_player = None
 
 
 S = State()
@@ -1990,11 +2019,130 @@ def stage_reaction():
     return True
 
 
+TURN = dict(backStart=0.1, backEnd=4.8, turnStart=4.95, front=5.6, frontStart=6.0, frontEnd=9.8, revStart=10.0, revEnd=11.3)
+
+
+def next_frame():
+    st = {"n": 0}
+
+    def c():
+        st["n"] += 1
+        return True if st["n"] > 1 else None
+    return c
+
+
+def stage_clown_game():
+    v = S.turn_player
+    rg = dict(scale=0.42, progress=0.0, info="", stop=False)
+    S.rlgl = rg
+    S.holding = False
+    phase = "back"
+    progress = 0.0
+    timer = rand(2.5, 4.5)
+    watch_t = 0.0
+    step_t = 0.0
+    last = now_ms()
+
+    def seek(t):
+        v.seek(t)
+        v.play()
+
+    v.rate = 1.0
+    seek(TURN["backStart"])
+    while True:
+        yield next_frame()
+        t = now_ms()
+        dt = min(0.05, (t - last) / 1000)
+        last = t
+        holding = S.holding
+        caught = False
+        if phase == "back":
+            if v.t >= TURN["backEnd"]:
+                seek(TURN["backStart"])
+            if holding:
+                progress = min(1, progress + dt / 45)
+                step_t -= dt
+                if step_t <= 0 and A.runstep_clown:
+                    play(random.choice(A.runstep_clown))
+                    step_t = 0.5
+            timer -= dt
+            if progress >= 1:
+                S.rlgl = None
+                show_panel([Text("You touched him.", "h2")])
+                cue_whisper(1)
+                yield 2600
+                hide_panel()
+                v.pause()
+                return True
+            if timer <= 0:
+                phase = "turning"
+                watch_t = 0
+                v.rate = 2.6
+                seek(TURN["turnStart"])
+        elif phase == "turning":
+            watch_t += dt
+            if holding and v.t >= (TURN["turnStart"] + TURN["front"]) / 2:
+                caught = True
+            elif v.t >= TURN["front"] or watch_t > 0.6:
+                phase = "watching"
+                watch_t = 0
+                v.rate = 1.0
+                timer = rand(1.6, 3.2)
+        elif phase == "watching":
+            if v.t >= TURN["frontEnd"]:
+                seek(TURN["frontStart"])
+            watch_t += dt
+            if holding:
+                caught = True
+            else:
+                timer -= dt
+                if timer <= 0:
+                    phase = "turningBack"
+                    watch_t = 0
+                    seek(TURN["revStart"])
+        elif phase == "turningBack":
+            if holding:
+                caught = True
+            else:
+                watch_t += dt
+                if v.t >= TURN["revEnd"] or watch_t > 2:
+                    phase = "back"
+                    seek(TURN["backStart"])
+                    timer = rand(2, 4.5) * (1 - 0.5 * progress)
+        if caught:
+            v.pause()
+            S.rlgl = None
+            S.game.fail_msg = "He saw you move."
+            show_walker(1.6)
+            yield 2300
+            hide_walker()
+            return False
+        rg["scale"] = 0.42 + 0.78 * progress
+        rg["progress"] = progress
+        rg["info"] = "HOLD SPACE OR PRESS THE SCREEN TO WALK" if phase == "back" else ("" if phase == "turningBack" else "DO NOT MOVE")
+        rg["stop"] = phase != "back"
+
+
+def stage_clown():
+    S.hud = False
+    voice = play_narration(A.playwithme)
+    show_panel([Text("ONE, TWO, THREE, CLOWN", "h2"),
+                Text("He wants to play. Walk to him while his back is turned. When he turns around, do not move.", color=DIM)])
+    yield 4500
+    stop_narration(voice)
+    hide_panel()
+    ok = yield from stage_clown_game()
+    S.rlgl = None
+    S.holding = False
+    return ok
+
+
 STAGES = [
     ("QUESTIONS", stage_questions),
     ("ACTIONS", stage_actions),
     ("STORY", stage_story),
     ("REACTION TEST", stage_reaction),
+    ("CLOWN GAME", stage_clown),
 ]
 
 
@@ -2119,22 +2267,27 @@ def handle_event(ev):
 
 def on_pointer_down(ev):
     g = S.game
+    if S.rlgl:
+        S.holding = True
     if g and g.lv:
         press()
 
 
 def on_pointer_up(ev):
-    pass
+    S.holding = False
 
 
 def on_key_down(ev):
     g = S.game
+    if ev.key == pygame.K_SPACE and S.rlgl:
+        S.holding = True
     if ev.key == pygame.K_SPACE and g and g.lv:
         press()
 
 
 def on_key_up(ev):
-    pass
+    if ev.key == pygame.K_SPACE:
+        S.holding = False
 
 
 R = None
@@ -2156,6 +2309,7 @@ def main():
     S.intro_player = Player(A.intro, loop=True)
     S.scare_player = Player(A.scare, loop=True)
     S.walker_player = Player(A.walker)
+    S.turn_player = Player(A.turn)
     show_gate()
     clock = pygame.time.Clock()
     last = now_ms()

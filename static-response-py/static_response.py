@@ -158,7 +158,7 @@ class Clip:
             if not ok:
                 break
             if self.contrast != 1.0:
-                f = cv2.convertScaleAbs(f, alpha=self.contrast, beta=127.5 * (1 - self.contrast))
+                f = cv2.addWeighted(f, self.contrast, f, 0, 127.5 * (1 - self.contrast))
             size = (f.shape[1], f.shape[0])
             ok, buf = cv2.imencode(".jpg", f, [cv2.IMWRITE_JPEG_QUALITY, 92])
             if ok:
@@ -512,6 +512,20 @@ def cue_whisper(v):
     play_synth(noise * g, True)
 
 
+def buzz():
+    n = int(0.25 * SR)
+    t = np.arange(n) / SR
+    sq = np.sign(np.sin(2 * np.pi * 92 * t))
+    play_synth(sq * env_curve(n, 0, 0.12, 0.005, 0.12, 0.05))
+
+
+def play_steps(v):
+    if A.steps is None:
+        cue_knock(v)
+        return
+    play(A.steps, v)
+
+
 def slam_hit():
     n = int(0.8 * SR)
     f = exp_slide(n, 95, 32, 0.45)
@@ -538,6 +552,14 @@ class Assets:
         self.peek = {"flash": (css_filter(f19, ("gray", 1), ("bright", 0.95), ("contrast", 1.4)), 0.9, 1.05),
                      "p3": (css_filter(f19, ("gray", 1), ("bright", 0.9), ("contrast", 1.3)), 1.0, 1.18)}
         self.narr = [load_sound("story1.mp3", 1.3), load_sound("story2.mp3", 1.3)]
+        self.steps = load_sound("steps.mp3")
+        rs = load_sound("runstep.mp3")
+        self.runstep_walk = []
+        self.runstep_clown = []
+        if rs is not None:
+            arr = sound_array(rs)
+            self.runstep_walk = [to_sound(np.tanh(resample(arr, r) * 2.5)) for r in np.linspace(0.92, 1.08, 7)]
+            self.runstep_clown = [to_sound(np.tanh(resample(arr, r) * 1.4)) for r in np.linspace(0.85, 0.95, 5)]
         self.faces = []
         for i in (6, 7, 8, 9, 10):
             try:
@@ -546,7 +568,8 @@ class Assets:
                 pass
         self.intro = Clip("intro.mp4", 1.1)
         self.scare = Clip("scare.mp4")
-        self.clips = [self.intro, self.scare]
+        self.walker = Clip("walker.mp4", 1.15)
+        self.clips = [self.intro, self.scare, self.walker]
         threading.Thread(target=self._load_clips, daemon=True).start()
 
     def _load_clips(self):
@@ -1236,8 +1259,14 @@ class Renderer:
             c.fill((0, 0, 0))
         if now_ms() < S.flash_until and S.flash_img is not None:
             self.draw_flash(c, S.flash_img)
+        if S.hud:
+            self.draw_hud(c)
         self.draw_peek(c)
         self.draw_hand(c)
+        if S.walker:
+            h = H
+            w = h * 460 / 720
+            draw_screen_video(c, S.walker_player, ((W - w) / 2, 0, w, h))
         if S.intro_clown:
             ch = H * 0.82
             cw = ch * 460 / 720
@@ -1284,12 +1313,52 @@ class Renderer:
         if s is None:
             rgb = cv2.resize(A.xray, (max(1, w), max(1, h)), interpolation=cv2.INTER_AREA)
             if bright != 1:
-                rgb = cv2.convertScaleAbs(rgb, alpha=bright, beta=0)
+                rgb = cv2.addWeighted(rgb, bright, rgb, 0, 0)
             s = rgba_surface(rgb, ellipse_mask(w, h, 0.65) * opacity).convert_alpha()
             if len(self._hand_cache) > 40:
                 self._hand_cache.clear()
             self._hand_cache[key] = s
         return s
+
+    def draw_hud(self, c):
+        W, H = self.W, self.H
+        g = S.game
+        lv = g.lv if g else None
+        px = clamp(2.4 * vmin(), 14, 24)
+        f = font("display", px)
+        pt = clamp(0.03 * W, 10, 28)
+        pl = clamp(0.04 * W, 14, 40)
+        fh = f.get_height()
+        img, _ = text_image("display", px, S.hud_level, PHOSPHOR, 0.06)
+        c.blit(img, (int(pl), int(pt)))
+        box = int(0.9 * px)
+        strikes = lv.strikes if lv else 0
+        for i in range(3):
+            x = int(W - pl - (3 - i) * box - (2 - i) * 6)
+            y = int(pt + (fh - box) / 2)
+            if i < strikes:
+                pygame.draw.rect(c, BLOOD, (x, y, box, box))
+            else:
+                pygame.draw.rect(c, DIM, (x, y, box, box), 1)
+        by = int(pt + fh + 6)
+        bw = int(W - 2 * pl)
+        bar = pygame.Surface((bw, 3), pygame.SRCALPHA)
+        bar.fill(PHOSPHOR + (31,))
+        c.blit(bar, (int(pl), by))
+        if lv:
+            pygame.draw.rect(c, DIM, (int(pl), by, int(bw * min(1, lv.gt / lv.D)), 3))
+        hint, _ = text_image("display", px, "PRESS SPACE OR TAP WHEN YOU HEAR STEPS. STOP HIM BEFORE HE REACHES YOU.", DIM, 0.06)
+        d = datetime.datetime.now()
+        h12 = d.hour % 12 or 12
+        clock = f"{d.month}/{d.day}/{d.year}, {h12}:{d.minute:02d}:{d.second:02d} {'AM' if d.hour < 12 else 'PM'}"
+        cimg, _ = text_image("display", px, clock, DIM, 0.06)
+        foot_top = H - pt - fh * 2 - 4
+        c.blit(hint, (int((W - hint.get_width()) / 2), int(foot_top)))
+        c.blit(cimg, (int((W - cimg.get_width()) / 2), int(foot_top + fh + 4)))
+        if S.feedback and now_ms() < S.feedback_until:
+            fimg, _ = text_image("display", px, S.feedback, OKC if S.feedback_ok else BLOOD, 0.06)
+            top_bottom = by + 3
+            c.blit(fimg, (int((W - fimg.get_width()) / 2), int((top_bottom + foot_top - fh) / 2)))
 
     def draw_peek(self, c):
         if not S.peek:
@@ -1342,9 +1411,9 @@ class Renderer:
             dw, dh = max(1, int(iw * k)), max(1, int(ih * k))
             rgb = cv2.resize(rgb, (dw, dh), interpolation=cv2.INTER_LINEAR)
             if random.random() < 0.25:
-                rgb = cv2.convertScaleAbs(rgb, alpha=1.8 * 1.3, beta=127.5 * (1 - 1.8) * 1.3)
+                rgb = cv2.addWeighted(rgb, 1.8 * 1.3, rgb, 0, 127.5 * (1 - 1.8) * 1.3)
             else:
-                rgb = cv2.convertScaleAbs(rgb, alpha=1.25, beta=127.5 * (1 - 1.25))
+                rgb = cv2.addWeighted(rgb, 1.25, rgb, 0, 127.5 * (1 - 1.25))
             x, y = (w - dw) / 2 + ox, (h - dh) / 2 + oy
             g.blit(rgb_surface(rgb), (int(x), int(y)))
             feather(g, x, y, dw, dh)
@@ -1405,8 +1474,9 @@ class Runner:
         self.gen = None
         self.cond = None
 
-    def start(self, gen):
-        KEYS.clear()
+    def start(self, gen, clear_keys=True):
+        if clear_keys:
+            KEYS.clear()
         self.gen = gen
         self.cond = None
         self.step(None)
@@ -1433,6 +1503,7 @@ class Runner:
 
 
 RUN = Runner()
+SIDE = Runner()
 KEYS = []
 
 
@@ -1448,6 +1519,14 @@ class State:
     hand = None
     shake_until = 0
     peek = None
+    hud = False
+    hud_level = ""
+    feedback = ""
+    feedback_ok = True
+    feedback_until = 0
+    walker = False
+    walker_player = None
+    run_steps = None
 
 
 S = State()
@@ -1709,10 +1788,213 @@ def stage_story():
     return True
 
 
+class Level:
+    def __init__(self, n):
+        g = S.game
+        D = 81000
+        count = round(D / max(6000, 12000 - n * 600))
+        win = max(650, 1700 - n * 105)
+        vis = max(160, 520 - n * 35)
+        slot = (D - 2500) / count
+        self.evs = []
+        for i in range(count):
+            t = 1500 + i * slot + random.random() * max(0, slot - win - 700)
+            self.evs.append(dict(t=t, kind="chain", win=win, dur=vis, state="pending", start=0, stage=0))
+        if n == g.scare_level:
+            self.evs[1 + random.randint(0, count - 3)]["kind"] = "scare"
+        self.n = n
+        self.D = D
+        self.gt = 0.0
+        self.strikes = 0
+        self.active = None
+        self.grace = 0.0
+        self.busy = 0.0
+        self.vol = max(0.35, 1 - n * 0.065)
+        self.result = None
+        self.done = False
+
+
+def feedback(text, ok):
+    S.feedback = text
+    S.feedback_ok = ok
+    S.feedback_until = now_ms() + 1100
+
+
+def show_walker(rate):
+    S.walker = True
+    pl = S.walker_player
+    pl.rate = rate
+    pl.seek(0)
+    pl.play()
+    if A.runstep_walk and not S.run_steps:
+        S.run_steps = dict(interval=340 / rate, next=now_ms(), voices=[])
+
+
+def stop_run_steps():
+    rs = S.run_steps
+    if not rs:
+        return
+    S.run_steps = None
+    for v in rs["voices"]:
+        v.fade_out(0.05, 0.3)
+
+
+def update_run_steps():
+    rs = S.run_steps
+    if not rs:
+        return
+    t = now_ms()
+    if t >= rs["next"]:
+        v = play(random.choice(A.runstep_walk))
+        if v:
+            rs["voices"] = [x for x in rs["voices"] if x.alive()] + [v]
+        rs["next"] += rs["interval"]
+
+
+def hide_walker():
+    S.walker = False
+    S.walker_player.pause()
+    stop_run_steps()
+
+
+def finish_level(ok):
+    lv = S.game.lv
+    if lv.done:
+        return
+    lv.done = True
+    hide_walker()
+    lv.result = ok
+
+
+def scare_in_level(lv):
+    yield from jumpscare()
+    lv.grace = lv.gt + 900
+    AU.start_drone()
+    S.game.paused = False
+
+
+def level_update(dt):
+    g = S.game
+    lv = g.lv
+    if lv.done:
+        return
+    lv.gt += dt
+    if lv.active and lv.gt - lv.active["start"] > lv.active["win"]:
+        ev = lv.active
+        ev["state"] = "missed"
+        lv.active = None
+        g.misses += 1
+        if ev["stage"] == 1:
+            hide_walker()
+            g.caught = True
+            finish_level(False)
+            return
+        g.chain = 1
+        feedback("IT IS GETTING CLOSER", False)
+    for ev in lv.evs:
+        if ev["state"] != "pending" or lv.gt < ev["t"]:
+            continue
+        if lv.active:
+            ev["t"] = lv.gt + 400
+            continue
+        if lv.gt < lv.busy:
+            ev["t"] = lv.busy + 300
+            continue
+        if ev["kind"] == "scare":
+            ev["state"] = "done"
+            g.paused = True
+            AU.stop_drone()
+            SIDE.start(scare_in_level(lv), clear_keys=False)
+            return
+        ev["state"] = "active"
+        ev["start"] = lv.gt
+        lv.active = ev
+        ev["stage"] = g.chain
+        if ev["stage"] == 0:
+            play_steps(lv.vol)
+            ev["win"] = A.steps.get_length() * 1000 if A.steps else ev["win"]
+            lv.busy = lv.gt + ev["win"]
+        else:
+            rate = 1 + (lv.n - 1) * 0.05
+            ev["win"] = 5030 / rate
+            show_walker(rate)
+        break
+    if not lv.active and lv.gt >= lv.D:
+        finish_level(True)
+
+
+def strike(msg):
+    lv = S.game.lv
+    lv.strikes += 1
+    feedback(msg, False)
+    buzz()
+    R.hit_until = now_ms() + 220
+    if lv.strikes >= 3:
+        finish_level(False)
+
+
+def press():
+    g = S.game
+    if not g or not g.lv or g.paused or g.lv.done:
+        return
+    lv = g.lv
+    if lv.gt < lv.grace:
+        return
+    if lv.active:
+        rt = lv.gt - lv.active["start"]
+        was_run = lv.active["stage"] == 1
+        lv.active["state"] = "hit"
+        g.chain = 0
+        lv.active = None
+        g.hits += 1
+        g.rt_sum += rt
+        if was_run:
+            hide_walker()
+        feedback(f"{'STOPPED' if was_run else 'RESPONSE'} {rt / 1000:.3f} S", True)
+        lv.grace = lv.gt + 250
+    else:
+        lv.grace = lv.gt + 400
+        g.falses += 1
+        strike("NO STIMULUS DETECTED")
+
+
+def play_level(n):
+    g = S.game
+    g.lv = Level(n)
+    S.hud_level = f"LEVEL {n} / {LEVELS}"
+    S.feedback = ""
+    S.hud = True
+    lv = g.lv
+    return (yield (lambda: lv.result))
+
+
+def stage_reaction():
+    g = S.game
+    for n in range(1, LEVELS + 1):
+        g.level = n
+        S.hud = False
+        show_panel([Text(f"LEVEL {n}", "h2"), Text("Eyes on the screen.", color=DIM)])
+        yield 2200
+        hide_panel()
+        ok = yield from play_level(n)
+        g.lv = None
+        S.hud = False
+        if not ok:
+            return False
+        show_panel([Text(f"LEVEL {n} COMPLETED", "h2")])
+        yield 2000
+        if n < LEVELS:
+            for sec in range(5, 0, -1):
+                show_panel([Text(f"LEVEL {n} COMPLETED", "h2"), Text(f"The next level begins in {sec} second{'s' if sec > 1 else ''}")])
+                yield 1000
+    return True
+
+
 STAGES = [
     ("QUESTIONS", stage_questions),
     ("ACTIONS", stage_actions),
     ("STORY", stage_story),
+    ("REACTION TEST", stage_reaction),
 ]
 
 
@@ -1836,7 +2118,9 @@ def handle_event(ev):
 
 
 def on_pointer_down(ev):
-    pass
+    g = S.game
+    if g and g.lv:
+        press()
 
 
 def on_pointer_up(ev):
@@ -1844,7 +2128,9 @@ def on_pointer_up(ev):
 
 
 def on_key_down(ev):
-    pass
+    g = S.game
+    if ev.key == pygame.K_SPACE and g and g.lv:
+        press()
 
 
 def on_key_up(ev):
@@ -1869,6 +2155,7 @@ def main():
     A.load()
     S.intro_player = Player(A.intro, loop=True)
     S.scare_player = Player(A.scare, loop=True)
+    S.walker_player = Player(A.walker)
     show_gate()
     clock = pygame.time.Clock()
     last = now_ms()
@@ -1878,14 +2165,23 @@ def main():
         t = now_ms()
         dt = min(0.05, (t - last) / 1000)
         last = t
-        RUN.update()
-        for pl in PLAYERS:
-            pl.update(dt)
-        AU.update()
-        P.update()
-        R.update()
-        R.render()
+        tick(dt)
         clock.tick(60)
+
+
+def tick(dt):
+    g = S.game
+    if g and g.lv and not g.paused:
+        level_update(dt * 1000)
+    RUN.update()
+    SIDE.update()
+    for pl in PLAYERS:
+        pl.update(dt)
+    update_run_steps()
+    AU.update()
+    P.update()
+    R.update()
+    R.render()
 
 
 if __name__ == "__main__":

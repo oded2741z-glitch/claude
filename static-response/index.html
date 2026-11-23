@@ -687,7 +687,23 @@ function drawCover(g, im, w, h, zoom, ox, oy, fit) {
   const iw = im.videoWidth || im.width, ih = im.videoHeight || im.height;
   const sc = (fit ? Math.min(w / iw, h / ih) : Math.max(w / iw, h / ih)) * zoom;
   const dw = iw * sc, dh = ih * sc;
-  g.drawImage(im, (w - dw) / 2 + ox, (h - dh) / 2 + oy, dw, dh);
+  const x = (w - dw) / 2 + ox, y = (h - dh) / 2 + oy;
+  g.drawImage(im, x, y, dw, dh);
+  return [x, y, dw, dh];
+}
+
+function featherEdges(g, r) {
+  const [x, y, dw, dh] = r, f = dw * 0.3;
+  let gr = g.createLinearGradient(x, 0, x + f, 0);
+  gr.addColorStop(0, '#000'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(x - 2, y, f + 2, dh);
+  gr = g.createLinearGradient(x + dw, 0, x + dw - f, 0);
+  gr.addColorStop(0, '#000'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(x + dw - f, y, f + 2, dh);
+  const fb = dh * 0.22;
+  gr = g.createLinearGradient(0, y + dh, 0, y + dh - fb);
+  gr.addColorStop(0, '#000'); gr.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = gr; g.fillRect(x - 2, y + dh - fb, dw + 4, fb + 2);
 }
 
 let scareFace = null;
@@ -698,7 +714,9 @@ function drawScare(p) {
   if (scareFace) {
     g.save();
     g.filter = Math.random() < 0.25 ? 'contrast(1.8) brightness(1.3)' : 'contrast(1.25)';
-    drawCover(g, scareFace, w, h, 1.1 + p * 0.4, rand(-1, 1) * shake, rand(-1, 1) * shake, true);
+    const r = drawCover(g, scareFace, w, h, 1.1 + p * 0.4, rand(-1, 1) * shake, rand(-1, 1) * shake, true);
+    g.filter = 'none';
+    featherEdges(g, r);
     g.restore();
   }
   if (Math.random() < 0.3) {

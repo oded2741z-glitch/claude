@@ -469,6 +469,60 @@ def play_scream():
     play(A.scream)
 
 
+def tone_phase(freqs):
+    return 2 * np.pi * np.cumsum(freqs) / SR
+
+
+def exp_slide(n, f0, f1, secs, start=0.0):
+    t = np.arange(n) / SR - start
+    k = np.clip(t / secs, 0, 1)
+    return f0 * (f1 / f0) ** k
+
+
+def play_synth(mono, soft=False):
+    if soft:
+        mono = np.tanh(mono)
+    return play(mono_sound(mono))
+
+
+def cue_knock(v):
+    n = int(0.75 * SR)
+    out = np.zeros(n)
+    for i in range(3):
+        tt = i * 0.2
+        f = exp_slide(n, 110, 40, 0.15, tt)
+        out += np.sin(tone_phase(f)) * env_curve(n, tt, 0.9 * v, 0.004, 0.02, 0.18)
+        noise = fft_filter(np.random.uniform(-1, 1, n), "lowpass", 900)
+        out += noise * env_curve(n, tt, 0.4 * v, 0.002, 0.01, 0.06)
+    play_synth(out, True)
+
+
+def cue_whisper(v):
+    pts = [(0.0, 0.0001)]
+    tt = 0.0
+    for _ in range(5):
+        pts.append((tt + 0.06, rand(0.5, 0.9) * v))
+        pts.append((tt + rand(0.14, 0.22), 0.05 * v))
+        tt += rand(0.16, 0.26)
+    pts.append((tt + 0.1, 0.0001))
+    n = int((tt + 0.2) * SR)
+    t = np.arange(n) / SR
+    g = np.interp(t, [p[0] for p in pts], [p[1] for p in pts])
+    noise = fft_filter(np.random.uniform(-1, 1, n), "bandpass", rand(2000, 3400), 1.4)
+    play_synth(noise * g, True)
+
+
+def slam_hit():
+    n = int(0.8 * SR)
+    f = exp_slide(n, 95, 32, 0.45)
+    out = np.sin(tone_phase(f)) * env_curve(n, 0, 1.6, 0.003, 0.05, 0.5)
+    lp = fft_filter(np.random.uniform(-1, 1, n), "lowpass", 2200)
+    out += lp * env_curve(n, 0, 1.2, 0.002, 0.03, 0.25)
+    bp = fft_filter(np.random.uniform(-1, 1, n), "bandpass", 3200, 6)
+    out += bp * env_curve(n, 0.02, 0.5, 0.005, 0.1, 0.45)
+    play_synth(out, True)
+
+
 # ---------------------------------------------------------------- assets
 
 class Assets:
@@ -478,6 +532,8 @@ class Assets:
         self.ambient = load_sound("ambient.wav")
         self.scream = load_sound("scream.mp3", 1.8)
         self.eye = css_filter(read_rgb("eye.jpg"), ("gray", 1), ("contrast", 1.2), ("bright", 0.9))
+        self.flash = [css_filter(read_rgb(f"f{i}.jpg"), ("contrast", 1.2), ("bright", 0.95)) for i in (18, 19, 20)]
+        self.xray = css_filter(read_rgb("xray.jpg"), ("contrast", 1.2))
         self.faces = []
         for i in (6, 7, 8, 9, 10):
             try:
@@ -829,6 +885,19 @@ DART = [(0.0, 0, 0), (0.18, 0, 0), (0.21, -0.025, 0.01), (0.40, -0.025, 0.01), (
         (0.65, -0.01, -0.015), (0.82, -0.01, -0.015), (0.85, 0, 0), (1.0, 0, 0)]
 
 
+def cubic_bezier(x1, y1, x2, y2, x):
+    lo, hi = 0.0, 1.0
+    for _ in range(30):
+        t = (lo + hi) / 2
+        bx = 3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t * t * x2 + t ** 3
+        if bx < x:
+            lo = t
+        else:
+            hi = t
+    t = (lo + hi) / 2
+    return 3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t * t * y2 + t ** 3
+
+
 def keyframes(frames, k):
     for i in range(len(frames) - 1):
         a, b = frames[i], frames[i + 1]
@@ -1063,6 +1132,9 @@ class Renderer:
 
     def update(self):
         t = now_ms()
+        if S.shake_until and t >= S.shake_until:
+            self.shake_boost = 1.0
+            S.shake_until = 0
         if t >= self.next_shake:
             self.shake_dir = -self.shake_dir
             self.shake_x = self.shake_dir * (1 + random.random() * 1.2) * self.shake_boost
@@ -1091,6 +1163,11 @@ class Renderer:
             band = pygame.Surface((W, int(bh) + 1), pygame.SRCALPHA)
             band.fill(PHOSPHOR + (20,))
             c.blit(band, (0, int(y)))
+        if S.blackout:
+            c.fill((0, 0, 0))
+        if now_ms() < S.flash_until and S.flash_img is not None:
+            self.draw_flash(c, S.flash_img)
+        self.draw_hand(c)
         if S.intro_clown:
             ch = H * 0.82
             cw = ch * 460 / 720
@@ -1107,6 +1184,66 @@ class Renderer:
         scr.blit(c, (self.cx + sx, self.cy))
         scr.blit(self.frames[1 if now_ms() < self.hit_until else 0], (self.cx + sx - 10, self.cy - 10))
         pygame.display.flip()
+
+    def draw_flash(self, c, rgb):
+        W, H = self.W, self.H
+        key = (id(rgb), W, H)
+        if self._flash_key != key:
+            ih, iw = rgb.shape[:2]
+            k = min(W / iw, H / ih) * 1.04
+            self._flash_surf = rgb_surface(cv2.resize(rgb, (max(1, int(iw * k)), max(1, int(ih * k))), interpolation=cv2.INTER_AREA))
+            self._flash_key = key
+        img = self._flash_surf
+        layer = pygame.Surface((W, H)).convert()
+        layer.fill((0, 0, 0))
+        dx = (-1 if random.random() < 0.5 else 1) * rand(2, 4)
+        layer.blit(img, (int((W - img.get_width()) / 2 + dx), int((H - img.get_height()) / 2)))
+        layer.set_alpha(int(rand(0.75, 1) * 255))
+        c.blit(layer, (0, 0))
+        self.draw_noise(c, self.noise, 0.22)
+
+    _flash_key = None
+    _flash_surf = None
+    _hand_cache = {}
+
+    def hand_surface(self, scale, opacity, bright):
+        h = int(self.H * 0.96 * scale)
+        w = int(h * 514 / 1000)
+        key = (w, h, round(opacity, 2), round(bright, 2))
+        s = self._hand_cache.get(key)
+        if s is None:
+            rgb = cv2.resize(A.xray, (max(1, w), max(1, h)), interpolation=cv2.INTER_AREA)
+            if bright != 1:
+                rgb = cv2.convertScaleAbs(rgb, alpha=bright, beta=0)
+            s = rgba_surface(rgb, ellipse_mask(w, h, 0.65) * opacity).convert_alpha()
+            if len(self._hand_cache) > 40:
+                self._hand_cache.clear()
+            self._hand_cache[key] = s
+        return s
+
+    def draw_hand(self, c):
+        hd = S.hand
+        if not hd:
+            return
+        t = (now_ms() - hd["t0"]) / 1000
+        if hd["mode"] == "slam" and t < 0.22:
+            k = t / 0.22
+            if k < 0.5:
+                op = cubic_bezier(0.2, 0.9, 0.3, 1.2, k / 0.5)
+            else:
+                op = 1 + (0.9 - 1) * cubic_bezier(0.2, 0.9, 0.3, 1.2, (k - 0.5) / 0.5)
+            e = cubic_bezier(0.2, 0.9, 0.3, 1.2, k)
+            scale = 1.45 + (1 - 1.45) * e
+            bright = 2 + (1 - 2) * e
+            img = self.hand_surface(round(scale, 2), clamp(op, 0, 1), round(bright, 1))
+            dx = 0
+        else:
+            img = self.hand_surface(1, 0.9, 1)
+            dx = 0
+            if hd["mode"] == "sway":
+                st = ((now_ms() - hd["sway0"]) / 1000 % 1.6) / 1.6
+                dx = keyframes([(0, 0.0), (0.25, -0.35), (0.75, 0.35), (1.0, 0.0)], st)[0] * img.get_width()
+        c.blit(img, (int((self.W - img.get_width()) / 2 + dx), int((self.H - img.get_height()) / 2)))
 
     def draw_scare(self):
         sc = S.scare
@@ -1222,6 +1359,11 @@ class State:
     intro_player = None
     scare = None
     game = None
+    blackout = False
+    flash_img = None
+    flash_until = 0
+    hand = None
+    shake_until = 0
 
 
 S = State()
@@ -1334,8 +1476,92 @@ def stage_questions():
     return True
 
 
+ACTIONS = [
+    dict(text="Raise your right hand.", hold="Keep it raised.", secs=5),
+    dict(text="Close your eyes and count to five.", eyes=True),
+    dict(text="Bring an object from another room.", done="Press DONE when you are back."),
+    dict(text="Turn around and look behind you.", hold="Keep looking.", secs=4),
+    dict(text="Put your hand on the screen.", hold="Do not move it.", secs=11, hand=True),
+    dict(text="Stay completely still.", hold="Do not move.", secs=8),
+]
+
+
+def wait_done(row):
+    row.hidden = False
+    box = {"v": None}
+
+    def done():
+        if box["v"] is None:
+            box["v"] = True
+            row.children[0].disabled = True
+
+    row.children[0].cb = done
+
+    def key(k):
+        if k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_d):
+            done()
+
+    KEYS.append(key)
+    yield (lambda: box["v"])
+    if key in KEYS:
+        KEYS.remove(key)
+
+
+def hand_slam():
+    S.hand = dict(mode="slam", t0=now_ms())
+    slam_hit()
+    R.shake_boost = 9
+    S.shake_until = now_ms() + 350
+
+
+def eyes_closed(sub):
+    sub.text = "Keep them closed."
+    yield 1500
+    hide_panel()
+    S.blackout = True
+    yield 2500
+    random.choice([cue_whisper, cue_knock])(0.7)
+    yield 3000
+    S.blackout = False
+    S.flash_img = A.flash[0]
+    S.flash_until = now_ms() + 320
+    show_panel([Text("Open your eyes.", "h2")])
+    yield 2000
+
+
+def stage_actions():
+    for a in ACTIONS:
+        q = Text("", "h2", eff=SHADOW)
+        sub = Text("", "p", eff=SHADOW)
+        row = Row([Button("DONE")], hidden=True)
+        show_panel([q, sub, row])
+        yield from type_text(q, a["text"])
+        yield 900
+        if a.get("eyes"):
+            yield from eyes_closed(sub)
+        elif a.get("done"):
+            sub.text = a["done"]
+            yield from wait_done(row)
+        else:
+            for n in range(a["secs"], 0, -1):
+                sub.text = f"{a['hold']} {n}"
+                if a.get("hand") and n == a["secs"] - 2:
+                    hand_slam()
+                if a.get("hand") and n == a["secs"] - 7 and S.hand:
+                    S.hand["mode"] = "sway"
+                    S.hand["sway0"] = now_ms()
+                yield 1000
+            S.hand = None
+        hide_panel()
+        yield 900
+    show_panel([Text("Thank you. You did everything we asked.", "h2")])
+    yield 2600
+    return True
+
+
 STAGES = [
     ("QUESTIONS", stage_questions),
+    ("ACTIONS", stage_actions),
 ]
 
 

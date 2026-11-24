@@ -593,6 +593,7 @@ class Assets:
         self.steps = load_sound("steps.mp3")
         self.playwithme = load_sound("playwithme.mp3", 1.3)
         self.music_box = make_music_box()
+        self.room_empty = read_rgb("room_empty.jpg")
         rs = load_sound("runstep.mp3")
         self.runstep_walk = []
         self.runstep_clown = []
@@ -1410,10 +1411,11 @@ class Renderer:
 
     def glass_frame(self, clip, t, mode):
         W, H = self.W, self.H
-        key = (id(clip), clip.index(t), W, H, mode)
+        still = isinstance(clip, np.ndarray)
+        key = (id(clip), 0 if still else clip.index(t), W, H, mode)
         surf = self._glass_cache.get(key)
         if surf is None:
-            rgb = clip.rgb(t)
+            rgb = clip if still else clip.rgb(t)
             ih, iw = rgb.shape[:2]
             k = max(W / iw, H / ih)
             r = cv2.resize(rgb, (int(iw * k) + 1, int(ih * k) + 1), interpolation=cv2.INTER_AREA)
@@ -1457,7 +1459,8 @@ class Renderer:
         else:
             lit = t < gl["flash_until"]
             pl = gl["room_player"]
-            c.blit(self.glass_frame(pl.clip, pl.t, "lit" if lit else "glass"), (0, 0))
+            src = A.room_empty if gl["clown"] == "away" else pl.clip
+            c.blit(self.glass_frame(src, pl.t, "lit" if lit else "glass"), (0, 0))
             c.blit(self.glare(), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
             if lit:
                 k = (gl["flash_until"] - t) / 300
@@ -2351,7 +2354,7 @@ def glass_night(n):
         last = now
         gl["t"] += dt
         if gl["tv"]:
-            gl["charge"] = min(1.0, gl["charge"] + dt / 5.0)
+            gl["charge"] = min(1.0, gl["charge"] + dt / 8.0)
         if gl["clown"] == "away":
             gl["cooldown"] -= dt
             if gl["cooldown"] <= 0:

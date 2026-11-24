@@ -153,7 +153,7 @@ $urls = @([Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.Add
 $arrowY = [Console]::CursorTop
 $arrowX = $urls[0].Length + 1
 $urls | ForEach-Object { Write-Host "${white}$_$reset" }
-Write-Host "Press Ctrl+C to stop."
+Write-Host "Press Ctrl+Q to stop."
 $endY = [Console]::CursorTop
 [Console]::CursorVisible = $false
 [Console]::TreatControlCAsInput = $true
@@ -167,7 +167,7 @@ while ($true) {
     while (-not $listener.Pending()) {
         if ([Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true)
-            if ($key.Key -eq 'C' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {
+            if ($key.Key -eq 'Q' -and ($key.Modifiers -band [ConsoleModifiers]::Control)) {
                 $listener.Stop()
                 exit
             }

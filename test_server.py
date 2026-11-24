@@ -31,6 +31,10 @@ header {{ padding:1.5rem 6%; background:#ffffff; border-bottom:1px solid var(--b
 .label {{ font-size:0.85rem; font-weight:700; text-transform:uppercase; color:var(--text-gray); letter-spacing:2px; }}
 .counter {{ font-size:8rem; font-weight:800; letter-spacing:-4px; line-height:1; color:var(--primary-accent); }}
 .time {{ font-size:2.2rem; font-weight:700; letter-spacing:-1px; color:var(--text-dark); }}
+.input-panel {{ margin-top:2rem; background:#ffffff; border:1px solid var(--border-color); border-radius:12px; padding:2rem; display:flex; flex-direction:column; gap:0.75rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }}
+.input-panel input, .input-panel textarea {{ width:100%; padding:0.9rem 1rem; font-size:1.25rem; color:var(--text-dark); background:var(--bg-light); border:1px solid var(--border-color); border-radius:8px; outline:none; }}
+.input-panel textarea {{ min-height:8rem; resize:vertical; }}
+.input-panel input:focus, .input-panel textarea:focus {{ border-color:var(--primary-accent); }}
 .site-footer {{ padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; }}
 @media (max-width:600px) {{ .counter {{ font-size:5rem; }} }}
 </style>
@@ -44,6 +48,12 @@ header {{ padding:1.5rem 6%; background:#ffffff; border-bottom:1px solid var(--b
     <div class="counter">#{count}</div>
     <div class="label">Loaded at</div>
     <div class="time">{time}</div>
+  </div>
+  <div class="input-panel">
+    <div class="label">Single line</div>
+    <input type="text" dir="auto" placeholder="Type here">
+    <div class="label">Multiple lines</div>
+    <textarea dir="auto" placeholder="Type here"></textarea>
   </div>
 </div>
 <footer class="site-footer">Each refresh increases the load number by one.</footer>

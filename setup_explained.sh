@@ -82,7 +82,7 @@ exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 # -----------------------------------------------------------------------------
 URL="$1"                                  # הכתובת שהועברה בהרצה
 KIOSK_USER="kiosk"                        # שם המשתמש של הקיוסק
-APT_PACKAGES="unclutter ffmpeg x11vnc"    # הסתרת סמן, הקלטה, שליטה מרחוק
+APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 fonts-culmus"    # הסתרת סמן, הקלטה, שליטה מרחוק, נגן וידאו, מקלדת וירטואלית, גופני עברית
 RECORDINGS="/var/kiosk-recordings"        # תיקיית ההקלטות
 RECORDINGS_LIMIT_PERCENT=70               # כמה אחוז מהדיסק ההקלטות יכולות לתפוס
 # התיקייה שבה נמצא הסקריפט (על הדיסק-און-קי), ובתוכה kiosk-offline.
@@ -304,6 +304,40 @@ unclutter -idle 1 -root &
     done
 ) &
 
+# ---- מקלדת וירטואלית ----
+# שתי שפות: עברית (il) ראשונה, ולכן היא פעילה בהתחלה, ואנגלית (us).
+# grp:caps_toggle: מקש Caps מחליף שפה. בעברית אין אותיות גדולות, אז הוא לא חסר.
+setxkbmap -layout il,us -option grp:caps_toggle
+# הגדרות Onboard למשתמש kiosk:
+# toolkit-accessibility: מפעיל את מערכת הנגישות (at-spi), שדרכה Onboard יודע
+#   מתי נגעו בשדה טקסט.
+# auto-show: המקלדת קופצת בשדה טקסט ונעלמת כשיוצאים ממנו.
+# tablet-mode-detection-enabled false: להציג תמיד, בלי לבדוק אם זה מצב טאבלט.
+# start-minimized: מוסתרת בהתחלה.
+# docking: צמודה לתחתית המסך, לכל הרוחב (dock-expand).
+# lockdown: בלי הגדרות ובלי יציאה מ-Onboard.
+gsettings set org.gnome.desktop.interface toolkit-accessibility true
+gsettings set org.onboard use-system-defaults false
+gsettings set org.onboard show-status-icon false
+gsettings set org.onboard start-minimized true
+gsettings set org.onboard.auto-show enabled true
+gsettings set org.onboard.auto-show tablet-mode-detection-enabled false
+gsettings set org.onboard.icon-palette in-use false
+gsettings set org.onboard.window docking-enabled true
+gsettings set org.onboard.window docking-edge bottom
+gsettings set org.onboard.window force-to-top true
+gsettings set org.onboard.window.landscape dock-expand true
+gsettings set org.onboard.window.portrait dock-expand true
+gsettings set org.onboard.lockdown disable-preferences true
+gsettings set org.onboard.lockdown disable-quit true
+
+(
+    while true; do
+        onboard >/dev/null 2>&1
+        sleep 2
+    done
+) &
+
 # ---- הדפדפן ----
 URL="$(cat /etc/kiosk/url)"     # הכתובת נקראת מהקובץ בכל פעם שהקיוסק עולה
 # בפתיחה הראשונה מציגים את תמונת הפתיחה (אם קיימת), ואחריה את האתר.
@@ -338,6 +372,7 @@ while true; do
     # --check-for-update-interval=... : לא לבדוק עדכונים (פעם בשנה, בשניות)
     # --overscroll-history-navigation=0: החלקה הצידה לא חוזרת לדף הקודם
     # --disable-pinch                 : בלי הגדלה בשתי אצבעות
+    # --force-renderer-accessibility : מדווח למערכת הנגישות על שדות טקסט, בשביל המקלדת הווירטואלית
     /snap/bin/chromium \
         --kiosk \
         "${WINDOW[@]}" \
@@ -350,6 +385,7 @@ while true; do
         --check-for-update-interval=31536000 \
         --overscroll-history-navigation=0 \
         --disable-pinch \
+        --force-renderer-accessibility \
         "$START"
     # אם Chromium נפתח מחדש (אחרי קריסה), הוא הולך ישר לאתר, בלי התמונה.
     START="$URL"

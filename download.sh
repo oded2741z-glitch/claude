@@ -6,7 +6,7 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-APT_PACKAGES="unclutter evtest ffmpeg x11vnc"
+APT_PACKAGES="unclutter evtest ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 fonts-culmus"
 SNAPS="snapd chromium"
 ATTEMPTS=5
 

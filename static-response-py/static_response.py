@@ -60,6 +60,11 @@ def read_rgb(name):
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+def read_optional(name):
+    bgr = cv2.imread(os.path.join(IMG_DIR, name), cv2.IMREAD_COLOR)
+    return None if bgr is None else cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
 def css_filter(arr, *ops):
     a = arr.astype(np.float32) / 255.0
     for op, v in ops:
@@ -593,8 +598,8 @@ class Assets:
         self.steps = load_sound("steps.mp3")
         self.playwithme = load_sound("playwithme.mp3", 1.3)
         self.music_box = make_music_box()
-        self.room_empty = read_rgb("room_empty.jpg")
-        self.tv_set = read_rgb("tv_set.jpg")
+        self.room_empty = read_optional("room_empty.jpg")
+        self.tv_set = read_optional("tv_set.jpg")
         rs = load_sound("runstep.mp3")
         self.runstep_walk = []
         self.runstep_clown = []
@@ -1486,12 +1491,15 @@ class Renderer:
             c.blit(self.glass_frame(pl.clip, pl.t, "close"), (0, 0))
         elif gl["tv"]:
             pl = gl["tv_player"]
-            c.blit(self.glass_frame(A.tv_set, 0, "set"), (0, 0))
-            c.blit(self.tv_screen(pl.clip, pl.t), (int(TV_SCREEN[0] * W), int(TV_SCREEN[1] * H)), special_flags=pygame.BLEND_RGB_ADD)
+            if A.tv_set is not None:
+                c.blit(self.glass_frame(A.tv_set, 0, "set"), (0, 0))
+                c.blit(self.tv_screen(pl.clip, pl.t), (int(TV_SCREEN[0] * W), int(TV_SCREEN[1] * H)), special_flags=pygame.BLEND_RGB_ADD)
+            else:
+                c.blit(self.glass_frame(pl.clip, pl.t, "tv"), (0, 0))
         else:
             lit = t < gl["flash_until"]
             pl = gl["room_player"]
-            src = A.room_empty if gl["clown"] == "away" else pl.clip
+            src = A.room_empty if gl["clown"] == "away" and A.room_empty is not None else pl.clip
             c.blit(self.glass_frame(src, pl.t, "lit" if lit else "glass"), (0, 0))
             c.blit(self.glare(), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
             if lit:

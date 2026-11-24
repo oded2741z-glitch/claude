@@ -1491,13 +1491,14 @@ class Renderer:
         img, pad = text_image("display", px, hint, DIM, 0.06, ("shadow", (6, 2)))
         fh = f.get_height()
         c.blit(img, (int((W - img.get_width()) / 2), int(H - pt - fh - pad)))
-        bw = int(W * 0.13)
-        bx, by = int(pl_), int(H - pt - 8)
-        img, pad = text_image("display", int(px * 0.8), "FLASH", DIM, 0.06, ("shadow", (6,)))
-        c.blit(img, (bx - pad, int(by - img.get_height() + pad - 4)))
-        pygame.draw.rect(c, DIM, (bx, by, bw, 8), 1)
+        bw = int(W * 0.24)
+        bh = max(12, int(H * 0.028))
+        bx, by = int(pl_), int(H - pt - fh - bh - 14)
+        img, pad = text_image("display", px, "FLASH", BLOOD, 0.1, ("shadow", (6,)))
+        c.blit(img, (bx - pad, int(by - img.get_height() + pad - 2)))
+        pygame.draw.rect(c, BLOOD, (bx, by, bw, bh), 2)
         charge = gl["charge"]
-        pygame.draw.rect(c, PHOSPHOR if charge >= 1 else BLOOD, (bx + 2, by + 2, int((bw - 4) * charge), 4))
+        pygame.draw.rect(c, BLOOD, (bx + 4, by + 4, int((bw - 8) * charge), bh - 8))
 
     def draw_rlgl(self, c):
         W, H = self.W, self.H
@@ -2350,7 +2351,7 @@ def glass_night(n):
         last = now
         gl["t"] += dt
         if gl["tv"]:
-            gl["charge"] = min(1.0, gl["charge"] + dt / 3.0)
+            gl["charge"] = min(1.0, gl["charge"] + dt / 5.0)
         if gl["clown"] == "away":
             gl["cooldown"] -= dt
             if gl["cooldown"] <= 0:

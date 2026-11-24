@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk
 import threading
 import socket
+import sys
 import struct
 import os
 import time
@@ -30,10 +31,12 @@ CMD_PORT = 5001
 TIMEOUT = 2.0
 RECV_BUFFER = 65536
 HEADER = struct.Struct("!I")
+LOCALHOST = "127.0.0.1"
 
 class AudioStreamerApp:
-    def __init__(self, root):
+    def __init__(self, root, cmd_socket):
         self.root = root
+        self.cmd_socket = cmd_socket
         self.root.title("Audio Streamer")
         self.root.geometry("450x170")
         self.root.overrideredirect(True)
@@ -126,6 +129,13 @@ class AudioStreamerApp:
         else:
             self.root.withdraw()
             self.is_hidden = True
+
+    def show_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes('-topmost', True)
+        self.root.after(100, lambda: self.root.attributes('-topmost', False))
+        self.is_hidden = False
 
     def load_ips_from_file(self):
         filename = "ips.txt"
@@ -358,13 +368,7 @@ class AudioStreamerApp:
 
     # --- PASSIVE SERVER (Control Listener) LOGIC ---
     def control_listener_task(self):
-        cmd_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            cmd_socket.bind(('0.0.0.0', CMD_PORT))
-        except Exception as e:
-            self.log(f"Could not bind command port {CMD_PORT}.")
-            return
-
+        cmd_socket = self.cmd_socket
         self.log(f"Listening for commands on port {CMD_PORT}...")
         while True:
             try:
@@ -378,6 +382,8 @@ class AudioStreamerApp:
                 elif command == "STOP":
                     self.log(f"Received STOP command from {requester_ip}")
                     self.stop_sending()
+                elif command == "SHOW" and requester_ip == LOCALHOST:
+                    self.root.after(0, self.show_window)
             except Exception as e:
                 self.log(f"Control Listener Error: {e}")
 
@@ -551,7 +557,28 @@ class AudioStreamerApp:
                 if "10054" not in str(e):
                     pass
 
+def acquire_command_socket():
+    cmd_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        cmd_socket.bind(('0.0.0.0', CMD_PORT))
+        return cmd_socket
+    except OSError:
+        cmd_socket.close()
+        return None
+
+def show_running_instance():
+    try:
+        notify_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        notify_socket.sendto(b"SHOW", (LOCALHOST, CMD_PORT))
+        notify_socket.close()
+    except OSError:
+        pass
+
 if __name__ == "__main__":
+    cmd_socket = acquire_command_socket()
+    if cmd_socket is None:
+        show_running_instance()
+        sys.exit(0)
     root = tk.Tk()
-    app = AudioStreamerApp(root)
+    app = AudioStreamerApp(root, cmd_socket)
     root.mainloop()

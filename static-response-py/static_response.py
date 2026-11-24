@@ -1484,7 +1484,10 @@ class Renderer:
         hour = int(gl["t"] / gl["hour_len"])
         img, pad = text_image("display", px, f"{12 if hour == 0 else hour}:00 AM", PHOSPHOR, 0.06, ("shadow", (6,)))
         c.blit(img, (int(W - pl_ - img.get_width() + pad), int(pt - pad)))
-        hint = "SPACE  TURN OFF THE TV" if gl["tv"] else "CLICK ON HIM TO FLASH    SPACE  TV ON"
+        if gl["tv"]:
+            hint = "CHARGING THE FLASH    SPACE  TURN OFF THE TV" if gl["charge"] < 1 else "SPACE  TURN OFF THE TV"
+        else:
+            hint = "CLICK ON HIM TO FLASH    SPACE  TV ON" if gl["charge"] >= 1 else "THE FLASH CHARGES ONLY WHILE THE TV IS ON"
         img, pad = text_image("display", px, hint, DIM, 0.06, ("shadow", (6, 2)))
         fh = f.get_height()
         c.blit(img, (int((W - img.get_width()) / 2), int(H - pt - fh - pad)))
@@ -2346,7 +2349,8 @@ def glass_night(n):
         dt = min(0.05, (now - last) / 1000)
         last = now
         gl["t"] += dt
-        gl["charge"] = min(1.0, gl["charge"] + dt / 3.0)
+        if gl["tv"]:
+            gl["charge"] = min(1.0, gl["charge"] + dt / 3.0)
         if gl["clown"] == "away":
             gl["cooldown"] -= dt
             if gl["cooldown"] <= 0:
@@ -2413,7 +2417,7 @@ def stage_glass():
                    charge=1.0, flash_until=0, static_until=0, flash_pos=(0, 0), tv_name=None)
     show_panel([Text("DARK GLASS", "h2"),
                 Text("He is somewhere behind you. Do not turn around. Turn the TV off and watch the room in the dark glass. "
-                     "When you see him, click on him to use the flash. Turn the TV back on to keep him calm. Survive until 6 AM.", color=DIM)])
+                     "When you see him, click on him to use the flash. The flash charges only while the TV is on. Survive until 6 AM.", color=DIM)])
     yield 7000
     hide_panel()
     ok = True

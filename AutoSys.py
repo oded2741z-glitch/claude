@@ -69,28 +69,29 @@ class EnforcerWindow(tk.Toplevel):
         # enforcer never lists its own GUI windows (which show up as "tk").
         try:
             pid = ctypes.c_ulong()
-            ctypes.windll.user32.GetWindowThreadProcessId(win._hWnd, ctypes.byref(pid))
+            ctypes.windll.user32.GetWindowThreadProcessId(ctypes.c_void_p(win._hWnd), ctypes.byref(pid))
             return pid.value == os.getpid()
         except Exception:
             return False
     def _is_real_window(self, win):
-        # Keep only windows that actually appear in the taskbar (like Alt-Tab),
-        # filtering out ghost UWP apps (Media Player, Calculator...) that stay
-        # alive as cloaked background processes after being closed.
+        # Keep real taskbar-style windows; hide tool windows, owned popups and
+        # cloaked ghost UWP apps. HWNDs are wrapped in c_void_p so they are not
+        # truncated on 64-bit Windows — otherwise every check fails and the
+        # list comes back empty.
         try:
-            hwnd = win._hWnd
-            user32 = ctypes.windll.user32
-            if not user32.IsWindowVisible(hwnd): return False
-            if user32.GetWindow(hwnd, 4): return False  # GW_OWNER: owned popups
-            ex_style = user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+            u = ctypes.windll.user32
+            hwnd = ctypes.c_void_p(win._hWnd)
+            if not u.IsWindowVisible(hwnd): return False
+            u.GetWindow.restype = ctypes.c_void_p
+            if u.GetWindow(hwnd, 4): return False  # GW_OWNER: owned popups
+            ex_style = u.GetWindowLongW(hwnd, -20) & 0xFFFFFFFF  # GWL_EXSTYLE
             if ex_style & 0x00000080: return False  # WS_EX_TOOLWINDOW
             cloaked = ctypes.c_int(0)
-            ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))  # DWMWA_CLOAKED
-            if cloaked.value and not win.isMinimized: return False
-            if cloaked.value and win.isMinimized:
-                # Minimized UWP windows are cloaked too; ghost (closed) UWP
-                # apps have zero size while real minimized ones keep theirs.
-                if win.width <= 0 or win.height <= 0: return False
+            try:
+                ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))  # DWMWA_CLOAKED
+            except Exception:
+                pass
+            if cloaked.value and not win.isMinimized: return False  # ghost UWP
             if win.title in ("Program Manager", "Windows Input Experience", "Microsoft Text Input Application"): return False
             return True
         except Exception:

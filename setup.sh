@@ -35,7 +35,7 @@ exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 
 URL="$1"
 KIOSK_USER="kiosk"
-APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 fonts-culmus"
+APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 culmus"
 RECORDINGS="/var/kiosk-recordings"
 RECORDINGS_LIMIT_PERCENT=70
 OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"

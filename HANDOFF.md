@@ -10,7 +10,7 @@
 ## קבצים במאגר
 | קובץ | תפקיד |
 |---|---|
-| `download.sh` | במחשב עם אינטרנט: מוריד לקיוסק (Chromium snap, unclutter, evtest, ffmpeg, x11vnc, vlc, onboard, gir1.2-atspi-2.0, fonts-culmus) ל-`kiosk-offline/`. ממשיך מאיפה שנעצר, ניסיונות חוזרים, רק amd64 |
+| `download.sh` | במחשב עם אינטרנט: מוריד לקיוסק (Chromium snap, unclutter, evtest, ffmpeg, x11vnc, vlc, onboard, gir1.2-atspi-2.0, culmus) ל-`kiosk-offline/`. ממשיך מאיפה שנעצר, ניסיונות חוזרים, רק amd64 |
 | `setup.sh` | בטאבלט: מתקין את הקיוסק. `sudo bash setup.sh <URL>` |
 | `setup_explained.sh` | אותו קוד כמו `setup.sh` עם הסברים בעברית. חייב להישאר זהה בקוד |
 | `download_update.sh` | במחשב עם אינטרנט: מוריד עדכון של Ubuntu + `ubuntu-desktop` + `gdm3` ל-`ubuntu-update/` |
@@ -24,7 +24,7 @@
 - `kiosk-session`: מכבה שומר מסך, מריץ unclutter, הקלטת ffmpeg בלולאה, x11vnc בלולאה, ו-Chromium `--kiosk` בלולאה. גודל החלון לפי `xrandr`, כי אין מנהל חלונות.
 - תמונת פתיחה: אם יש `splash.png` ליד `setup.sh`, הוא מועתק ל-`/home/kiosk/kiosk-splash/` עם `splash.html`. בעליית הקיוסק Chromium פותח את הדף (התמונה מתוחה למסך מלא), ואחרי 30 שניות עובר לכתובת שאחרי `#`. אחרי קריסה של Chromium: ישר לאתר.
 - מקלדת וירטואלית: Onboard ב-`kiosk-session`, בלולאה. קופצת אוטומטית בשדה טקסט (auto-show דרך at-spi, ולכן Chromium רץ עם `--force-renderer-accessibility`, וגם `gir1.2-atspi-2.0` נדרש). צמודה לתחתית ברוחב מלא. שפות: `setxkbmap -layout il,us -option grp:caps_toggle`, עברית בהתחלה, ומקש Caps מחליף שפה. ההגדרות ב-gsettings של kiosk בכל עלייה. **עוד לא נבדק בטאבלט.**
-- VLC מותקן לצפייה בהקלטות בתור `user`. `fonts-culmus`: גופני עברית.
+- VLC מותקן לצפייה בהקלטות בתור `user`. `culmus`: גופני עברית.
 - הכתובת נשמרת ב-`/etc/kiosk/url`. סיסמת VNC ב-`/etc/kiosk/vncpasswd`.
 - שירות `kiosk-corner` (Python, root, קורא מ-`/dev/input`), פועל רק כשהקיוסק פעיל:
   - לחיצה של 5 שניות על הפינה השמאלית העליונה: `loginctl terminate-user kiosk`, חזרה למסך ההתחברות.

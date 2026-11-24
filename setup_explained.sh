@@ -82,7 +82,7 @@ exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 # -----------------------------------------------------------------------------
 URL="$1"                                  # הכתובת שהועברה בהרצה
 KIOSK_USER="kiosk"                        # שם המשתמש של הקיוסק
-APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 fonts-culmus"    # הסתרת סמן, הקלטה, שליטה מרחוק, נגן וידאו, מקלדת וירטואלית, גופני עברית
+APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 culmus"    # הסתרת סמן, הקלטה, שליטה מרחוק, נגן וידאו, מקלדת וירטואלית, גופני עברית
 RECORDINGS="/var/kiosk-recordings"        # תיקיית ההקלטות
 RECORDINGS_LIMIT_PERCENT=70               # כמה אחוז מהדיסק ההקלטות יכולות לתפוס
 # התיקייה שבה נמצא הסקריפט (על הדיסק-און-קי), ובתוכה kiosk-offline.

@@ -2308,6 +2308,7 @@ def glass_flash(pos):
         mx, my = (x1 - x0) * 0.25, (y1 - y0) * 0.15
         if x0 - mx <= pos[0] <= x1 + mx and y0 - my <= pos[1] <= y1 + my:
             gl["clown"] = "retreat"
+            gl["room_player"].rate = 3.0
             gl["room_player"].play()
             gl["hits"] += 1
 
@@ -2353,6 +2354,7 @@ def glass_night(n):
                 gl["spot"] = random.choice(choices)
                 sp = GLASS_SPOTS[gl["spot"]]
                 rp.clip = A.glass[sp["clip"]]
+                rp.rate = 1.0
                 rp.seek(0)
                 rp.play()
                 gl["clown"] = "peek"

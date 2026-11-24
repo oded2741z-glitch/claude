@@ -611,7 +611,9 @@ class Assets:
         self.scare = Clip("scare.mp4")
         self.walker = Clip("walker.mp4", 1.15)
         self.turn = Clip("turn.mp4")
-        self.glass = {k: Clip(f"{k}.mp4") for k in ("room_left", "room_right", "room_closet", "room_close", "tv_show", "tv_wrong", "tv_empty")}
+        self.tv_shows = sorted(os.path.splitext(f)[0] for f in os.listdir(IMG_DIR) if f.startswith("tv_show") and f.endswith(".mp4"))
+        names = ["room_left", "room_right", "room_closet", "room_close", "tv_wrong", "tv_empty"] + self.tv_shows
+        self.glass = {k: Clip(f"{k}.mp4") for k in names}
         self.clips = [self.intro, self.scare, self.walker, self.turn] + list(self.glass.values())
         threading.Thread(target=self._load_clips, daemon=True).start()
 
@@ -2321,10 +2323,18 @@ def glass_flash(pos):
 
 
 def glass_set_tv_clip(gl, name):
-    if gl["tv_name"] == name:
-        return
-    gl["tv_name"] = name
     pl = gl["tv_player"]
+    if name == "tv_show":
+        cur = gl["tv_name"]
+        if cur in A.tv_shows and not pl.ended:
+            return
+        name = random.choice([k for k in A.tv_shows if k != cur] or A.tv_shows)
+        pl.loop = False
+    else:
+        if gl["tv_name"] == name:
+            return
+        pl.loop = True
+    gl["tv_name"] = name
     pl.clip = A.glass[name]
     pl.seek(0)
     pl.play()

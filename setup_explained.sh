@@ -82,7 +82,7 @@ exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 # -----------------------------------------------------------------------------
 URL="$1"                                  # הכתובת שהועברה בהרצה
 KIOSK_USER="kiosk"                        # שם המשתמש של הקיוסק
-APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 culmus"    # הסתרת סמן, הקלטה, שליטה מרחוק, נגן וידאו, מקלדת וירטואלית, גופני עברית
+APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0"    # הסתרת סמן, הקלטה, שליטה מרחוק, נגן וידאו, מקלדת וירטואלית
 RECORDINGS="/var/kiosk-recordings"        # תיקיית ההקלטות
 RECORDINGS_LIMIT_PERCENT=70               # כמה אחוז מהדיסק ההקלטות יכולות לתפוס
 # התיקייה שבה נמצא הסקריפט (על הדיסק-און-קי), ובתוכה kiosk-offline.
@@ -305,9 +305,8 @@ unclutter -idle 1 -root &
 ) &
 
 # ---- מקלדת וירטואלית ----
-# שתי שפות: עברית (il) ראשונה, ולכן היא פעילה בהתחלה, ואנגלית (us).
-# grp:caps_toggle: מקש Caps מחליף שפה. בעברית אין אותיות גדולות, אז הוא לא חסר.
-setxkbmap -layout il,us -option grp:caps_toggle
+# שפת המקלדת: אנגלית בלבד (us). -option "" מוחק הגדרות קודמות של החלפת שפה.
+setxkbmap -layout us -option ""
 # הגדרות Onboard למשתמש kiosk:
 # toolkit-accessibility: מפעיל את מערכת הנגישות (at-spi), שדרכה Onboard יודע
 #   מתי נגעו בשדה טקסט.

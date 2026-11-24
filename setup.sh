@@ -35,7 +35,7 @@ exec > >(tee -a /var/log/kiosk-setup.log) 2>&1
 
 URL="$1"
 KIOSK_USER="kiosk"
-APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0 culmus"
+APT_PACKAGES="unclutter ffmpeg x11vnc vlc onboard gir1.2-atspi-2.0"
 RECORDINGS="/var/kiosk-recordings"
 RECORDINGS_LIMIT_PERCENT=70
 OFFLINE="$(cd "$(dirname "$0")" && pwd)/kiosk-offline"
@@ -159,7 +159,7 @@ unclutter -idle 1 -root &
     done
 ) &
 
-setxkbmap -layout il,us -option grp:caps_toggle
+setxkbmap -layout us -option ""
 gsettings set org.gnome.desktop.interface toolkit-accessibility true
 gsettings set org.onboard use-system-defaults false
 gsettings set org.onboard show-status-icon false

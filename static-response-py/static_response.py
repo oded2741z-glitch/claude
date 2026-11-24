@@ -339,6 +339,7 @@ class Voice:
         self.sound = sound
         self.gain = Param(gain)
         self.stop_at = None
+        self.pan = None
         self.ch = sound.play(loops=loops) if sound else None
         self.apply()
         VOICES.append(self)
@@ -348,7 +349,11 @@ class Voice:
 
     def apply(self):
         if self.alive():
-            self.ch.set_volume(clamp(self.gain.value() * MASTER, 0, 1))
+            v = clamp(self.gain.value() * MASTER, 0, 1)
+            if self.pan:
+                self.ch.set_volume(v * self.pan[0], v * self.pan[1])
+            else:
+                self.ch.set_volume(v)
 
     def fade_out(self, tau, stop_after):
         self.gain.toward(0, tau)
@@ -526,6 +531,39 @@ def play_steps(v):
     play(A.steps, v)
 
 
+def camera_flash():
+    n = int(0.35 * SR)
+    hp = fft_filter(np.random.uniform(-1, 1, n), "highpass", 2500)
+    out = hp * env_curve(n, 0, 0.7, 0.002, 0.03, 0.2)
+    f = exp_slide(n, 180, 50, 0.12)
+    out += np.sin(tone_phase(f)) * env_curve(n, 0, 0.6, 0.002, 0.02, 0.15)
+    play_synth(out, True)
+
+
+def tv_click():
+    n = int(0.12 * SR)
+    lp = fft_filter(np.random.uniform(-1, 1, n), "lowpass", 3000)
+    play_synth(lp * env_curve(n, 0, 0.35, 0.001, 0.01, 0.08), True)
+
+
+def make_music_box():
+    notes = [76, 79, 84, 79, 81, 77, 74, 77, 76, 72, 74, 71, 72, 76, 79, 0]
+    step = 0.38
+    n = int(len(notes) * step * SR)
+    out = np.zeros(n)
+    t = np.arange(int(1.6 * SR)) / SR
+    for i, m in enumerate(notes):
+        if not m:
+            continue
+        f = 440 * 2 ** ((m - 69) / 12)
+        tone = (np.sin(2 * np.pi * f * t) + 0.3 * np.sin(2 * np.pi * f * 2.01 * t)) * np.exp(-t * 3.2)
+        a = int(i * step * SR)
+        seg = tone[:n - a]
+        out[a:a + len(seg)] += seg
+    out += np.roll(out, int(0.11 * SR)) * 0.25
+    return mono_sound(out / np.abs(out).max() * 0.9)
+
+
 def slam_hit():
     n = int(0.8 * SR)
     f = exp_slide(n, 95, 32, 0.45)
@@ -554,6 +592,7 @@ class Assets:
         self.narr = [load_sound("story1.mp3", 1.3), load_sound("story2.mp3", 1.3)]
         self.steps = load_sound("steps.mp3")
         self.playwithme = load_sound("playwithme.mp3", 1.3)
+        self.music_box = make_music_box()
         rs = load_sound("runstep.mp3")
         self.runstep_walk = []
         self.runstep_clown = []
@@ -571,7 +610,8 @@ class Assets:
         self.scare = Clip("scare.mp4")
         self.walker = Clip("walker.mp4", 1.15)
         self.turn = Clip("turn.mp4")
-        self.clips = [self.intro, self.scare, self.walker, self.turn]
+        self.glass = {k: Clip(f"{k}.mp4") for k in ("room_left", "room_right", "room_closet", "room_close", "tv_show", "tv_wrong", "tv_empty")}
+        self.clips = [self.intro, self.scare, self.walker, self.turn] + list(self.glass.values())
         threading.Thread(target=self._load_clips, daemon=True).start()
 
     def _load_clips(self):
@@ -1271,6 +1311,8 @@ class Renderer:
             draw_screen_video(c, S.walker_player, ((W - w) / 2, 0, w, h))
         if S.rlgl:
             self.draw_rlgl(c)
+        if S.glass:
+            self.draw_glass(c)
         if S.intro_clown:
             ch = H * 0.82
             cw = ch * 460 / 720
@@ -1363,6 +1405,96 @@ class Renderer:
             fimg, _ = text_image("display", px, S.feedback, OKC if S.feedback_ok else BLOOD, 0.06)
             top_bottom = by + 3
             c.blit(fimg, (int((W - fimg.get_width()) / 2), int((top_bottom + foot_top - fh) / 2)))
+
+    _glass_cache = {}
+
+    def glass_frame(self, clip, t, mode):
+        W, H = self.W, self.H
+        key = (id(clip), clip.index(t), W, H, mode)
+        surf = self._glass_cache.get(key)
+        if surf is None:
+            rgb = clip.rgb(t)
+            ih, iw = rgb.shape[:2]
+            k = max(W / iw, H / ih)
+            r = cv2.resize(rgb, (int(iw * k) + 1, int(ih * k) + 1), interpolation=cv2.INTER_AREA)
+            y0, x0 = (r.shape[0] - H) // 2, (r.shape[1] - W) // 2
+            r = r[y0:y0 + H, x0:x0 + W]
+            if mode == "tv":
+                r = cv2.addWeighted(r, 1.1, r, 0, 127.5 * (1 - 1.1))
+            else:
+                r = np.ascontiguousarray(r[:, ::-1])
+                r = cv2.GaussianBlur(r, (0, 0), 1.2)
+                gain = {"glass": 0.38, "lit": 0.85, "close": 0.75}[mode]
+                r = cv2.addWeighted(r, gain, r, 0, 0)
+            surf = rgb_surface(r).convert()
+            if len(self._glass_cache) > 40:
+                self._glass_cache.clear()
+            self._glass_cache[key] = surf
+        return surf
+
+    def glare(self):
+        key = ("glare", self.W, self.H)
+        g = self._glass_cache.get(key)
+        if g is None:
+            y, x = np.mgrid[0:self.H, 0:self.W]
+            a = np.clip(1 - np.abs((x / self.W) + (y / self.H) * 0.6 - 0.55) / 0.12, 0, 1) * 18
+            g = rgb_surface(np.repeat(a[..., None], 3, axis=2).astype(np.uint8)).convert()
+            self._glass_cache[key] = g
+        return g
+
+    def draw_glass(self, c):
+        gl = S.glass
+        W, H = self.W, self.H
+        t = now_ms()
+        if gl["mode"] == "intro":
+            return
+        if gl["mode"] == "close":
+            pl = gl["close_player"]
+            c.blit(self.glass_frame(pl.clip, pl.t, "close"), (0, 0))
+        elif gl["tv"]:
+            pl = gl["tv_player"]
+            c.blit(self.glass_frame(pl.clip, pl.t, "tv"), (0, 0))
+        else:
+            lit = t < gl["flash_until"]
+            pl = gl["room_player"]
+            c.blit(self.glass_frame(pl.clip, pl.t, "lit" if lit else "glass"), (0, 0))
+            c.blit(self.glare(), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+            if lit:
+                k = (gl["flash_until"] - t) / 300
+                fx, fy = gl["flash_pos"]
+                rad = int(H * 0.55)
+                key = ("flash", rad)
+                spot = self._glass_cache.get(key)
+                if spot is None:
+                    m = ellipse_mask(2 * rad, 2 * rad, 0.0) ** 2 * 140
+                    spot = rgb_surface(np.repeat(m[..., None], 3, axis=2).astype(np.uint8)).convert()
+                    self._glass_cache[key] = spot
+                spot.set_alpha(int(255 * clamp(k, 0, 1)))
+                c.blit(spot, (int(fx - rad), int(fy - rad)), special_flags=pygame.BLEND_RGB_ADD)
+        if t < gl["static_until"]:
+            self.draw_noise(c, self.noise, 0.55)
+        if gl["mode"] == "close":
+            return
+        px = clamp(2.4 * vmin(), 14, 24)
+        f = font("display", px)
+        pt = clamp(0.03 * W, 10, 28)
+        pl_ = clamp(0.04 * W, 14, 40)
+        img, pad = text_image("display", px, f"NIGHT {gl['night']}", PHOSPHOR, 0.06, ("shadow", (6,)))
+        c.blit(img, (int(pl_ - pad), int(pt - pad)))
+        hour = int(gl["t"] / gl["hour_len"])
+        img, pad = text_image("display", px, f"{12 if hour == 0 else hour}:00 AM", PHOSPHOR, 0.06, ("shadow", (6,)))
+        c.blit(img, (int(W - pl_ - img.get_width() + pad), int(pt - pad)))
+        hint = "SPACE  TURN OFF THE TV" if gl["tv"] else "CLICK ON HIM TO FLASH    SPACE  TV ON"
+        img, pad = text_image("display", px, hint, DIM, 0.06, ("shadow", (6, 2)))
+        fh = f.get_height()
+        c.blit(img, (int((W - img.get_width()) / 2), int(H - pt - fh - pad)))
+        bw = int(W * 0.13)
+        bx, by = int(pl_), int(H - pt - 8)
+        img, pad = text_image("display", int(px * 0.8), "FLASH", DIM, 0.06, ("shadow", (6,)))
+        c.blit(img, (bx - pad, int(by - img.get_height() + pad - 4)))
+        pygame.draw.rect(c, DIM, (bx, by, bw, 8), 1)
+        charge = gl["charge"]
+        pygame.draw.rect(c, PHOSPHOR if charge >= 1 else BLOOD, (bx + 2, by + 2, int((bw - 4) * charge), 4))
 
     def draw_rlgl(self, c):
         W, H = self.W, self.H
@@ -1556,6 +1688,7 @@ class State:
     rlgl = None
     holding = False
     turn_player = None
+    glass = None
 
 
 S = State()
@@ -2137,12 +2270,177 @@ def stage_clown():
     return ok
 
 
+GLASS_SPOTS = {
+    "left": dict(clip="room_left", rect=(0.04, 0.18, 0.22, 0.72), pan=(1.0, 0.25)),
+    "right": dict(clip="room_right", rect=(0.74, 0.18, 0.98, 0.75), pan=(0.25, 1.0)),
+    "closet": dict(clip="room_closet", rect=(0.38, 0.2, 0.62, 0.8), pan=(0.7, 0.7)),
+}
+GLASS_HOLD = 0.3
+NIGHTS = 5
+
+
+def glass_spot_rect(spot):
+    x0, y0, x1, y1 = GLASS_SPOTS[spot]["rect"]
+    return (1 - x1) * R.W, y0 * R.H, (1 - x0) * R.W, y1 * R.H
+
+
+def glass_toggle_tv():
+    gl = S.glass
+    if not gl or gl["mode"] != "night":
+        return
+    gl["tv"] = not gl["tv"]
+    gl["static_until"] = now_ms() + 150
+    tv_click()
+    if gl["music"]:
+        gl["music"].gain.toward(0.16 if gl["tv"] else 0.0, 0.15)
+
+
+def glass_flash(pos):
+    gl = S.glass
+    if not gl or gl["mode"] != "night" or gl["tv"] or gl["charge"] < 1:
+        return
+    gl["charge"] = 0.0
+    gl["flash_until"] = now_ms() + 300
+    gl["flash_pos"] = pos
+    camera_flash()
+    if gl["clown"] == "peek":
+        x0, y0, x1, y1 = glass_spot_rect(gl["spot"])
+        mx, my = (x1 - x0) * 0.25, (y1 - y0) * 0.15
+        if x0 - mx <= pos[0] <= x1 + mx and y0 - my <= pos[1] <= y1 + my:
+            gl["clown"] = "retreat"
+            gl["room_player"].play()
+            gl["hits"] += 1
+
+
+def glass_set_tv_clip(gl, name):
+    if gl["tv_name"] == name:
+        return
+    gl["tv_name"] = name
+    pl = gl["tv_player"]
+    pl.clip = A.glass[name]
+    pl.seek(0)
+    pl.play()
+    if gl["tv"]:
+        gl["static_until"] = now_ms() + 120
+
+
+def glass_night(n):
+    gl = S.glass
+    night_len = 90.0
+    gl.update(night=n, t=0.0, hour_len=night_len / 6, tv=True, charge=1.0, flash_until=0, static_until=0,
+              clown="away", spot=None, threat=0.0, cooldown=rand(6, 9) - n * 0.6, fake=rand(8, 14), mode="night")
+    threat_time = 7.4 - 0.9 * n
+    gl["tv_name"] = None
+    glass_set_tv_clip(gl, "tv_show")
+    rp = gl["room_player"]
+    rp.clip = A.glass["room_left"]
+    rp.seek(rp.clip.duration)
+    rp.pause()
+    gl["music"] = Voice(A.music_box, 0.0, loops=-1)
+    gl["music"].gain.toward(0.16, 0.3)
+    last = now_ms()
+    while True:
+        yield next_frame()
+        now = now_ms()
+        dt = min(0.05, (now - last) / 1000)
+        last = now
+        gl["t"] += dt
+        gl["charge"] = min(1.0, gl["charge"] + dt / 3.0)
+        if gl["clown"] == "away":
+            gl["cooldown"] -= dt
+            if gl["cooldown"] <= 0:
+                choices = [k for k in GLASS_SPOTS if k != gl["spot"]]
+                gl["spot"] = random.choice(choices)
+                sp = GLASS_SPOTS[gl["spot"]]
+                rp.clip = A.glass[sp["clip"]]
+                rp.seek(0)
+                rp.play()
+                gl["clown"] = "peek"
+                gl["threat"] = 0.0
+                if A.runstep_walk:
+                    v = play(random.choice(A.runstep_walk), 0.35)
+                    if v:
+                        v.pan = sp["pan"]
+                        v.apply()
+        elif gl["clown"] == "peek":
+            if rp.t >= GLASS_HOLD * rp.clip.duration:
+                rp.pause()
+            gl["threat"] += dt / threat_time * (0.35 if gl["tv"] else 1.0)
+            if gl["threat"] >= 1:
+                break
+        elif gl["clown"] == "retreat":
+            if rp.ended:
+                gl["clown"] = "away"
+                gl["cooldown"] = rand(5.5, 9.5) * (1 - 0.1 * (n - 1))
+        if n >= 3:
+            gl["fake"] -= dt
+            if gl["fake"] <= 0:
+                gl["fake"] = rand(7, 13)
+                if A.runstep_walk:
+                    v = play(random.choice(A.runstep_walk), 0.3)
+                    if v:
+                        v.pan = random.choice([sp["pan"] for sp in GLASS_SPOTS.values()])
+                        v.apply()
+        if gl["clown"] == "peek" and gl["threat"] >= 0.8:
+            glass_set_tv_clip(gl, "tv_empty")
+        elif gl["clown"] == "peek" and gl["threat"] >= 0.5:
+            glass_set_tv_clip(gl, "tv_wrong")
+        else:
+            glass_set_tv_clip(gl, "tv_show")
+        if gl["t"] >= night_len:
+            gl["music"].fade_out(0.2, 1.0)
+            gl["mode"] = "intro"
+            return True
+    gl["music"].fade_out(0.05, 0.3)
+    gl["mode"] = "close"
+    gl["tv"] = False
+    gl["static_until"] = now_ms() + 200
+    cp = gl["close_player"]
+    cp.seek(0)
+    cp.play()
+    yield cp.clip.duration * 1000
+    S.game.fail_msg = "He was standing right behind you."
+    return False
+
+
+def stage_glass():
+    S.hud = False
+    S.glass = dict(mode="intro", tv=True, room_player=Player(A.glass["room_left"]), tv_player=Player(A.glass["tv_show"], loop=True),
+                   close_player=Player(A.glass["room_close"]), music=None, hits=0, night=1, t=0.0, hour_len=15.0,
+                   charge=1.0, flash_until=0, static_until=0, flash_pos=(0, 0), tv_name=None)
+    show_panel([Text("DARK GLASS", "h2"),
+                Text("He is somewhere behind you. Do not turn around. Turn the TV off and watch the room in the dark glass. "
+                     "When you see him, click on him to use the flash. Turn the TV back on to keep him calm. Survive until 6 AM.", color=DIM)])
+    yield 7000
+    hide_panel()
+    ok = True
+    for n in range(1, NIGHTS + 1):
+        S.glass["mode"] = "intro"
+        show_panel([Text(f"NIGHT {n}", "h2"), Text("12:00 AM", color=DIM)])
+        yield 2200
+        hide_panel()
+        ok = yield from glass_night(n)
+        if not ok:
+            break
+        show_panel([Text("6:00 AM", "h2"), Text(f"NIGHT {n} SURVIVED", color=DIM)])
+        yield 2400
+        hide_panel()
+    gl = S.glass
+    for p in (gl["room_player"], gl["tv_player"], gl["close_player"]):
+        p.pause()
+        if p in PLAYERS:
+            PLAYERS.remove(p)
+    S.glass = None
+    return ok
+
+
 STAGES = [
     ("QUESTIONS", stage_questions),
     ("ACTIONS", stage_actions),
     ("STORY", stage_story),
     ("REACTION TEST", stage_reaction),
     ("CLOWN GAME", stage_clown),
+    ("DARK GLASS", stage_glass),
 ]
 
 
@@ -2267,6 +2565,8 @@ def handle_event(ev):
 
 def on_pointer_down(ev):
     g = S.game
+    if S.glass and ev.button == 1:
+        glass_flash(R.to_crt(ev.pos))
     if S.rlgl:
         S.holding = True
     if g and g.lv:
@@ -2279,6 +2579,8 @@ def on_pointer_up(ev):
 
 def on_key_down(ev):
     g = S.game
+    if ev.key == pygame.K_SPACE and S.glass:
+        glass_toggle_tv()
     if ev.key == pygame.K_SPACE and S.rlgl:
         S.holding = True
     if ev.key == pygame.K_SPACE and g and g.lv:

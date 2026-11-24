@@ -594,6 +594,7 @@ class Assets:
         self.playwithme = load_sound("playwithme.mp3", 1.3)
         self.music_box = make_music_box()
         self.room_empty = read_rgb("room_empty.jpg")
+        self.tv_set = read_rgb("tv_set.jpg")
         rs = load_sound("runstep.mp3")
         self.runstep_walk = []
         self.runstep_clown = []
@@ -1423,7 +1424,9 @@ class Renderer:
             r = cv2.resize(rgb, (int(iw * k) + 1, int(ih * k) + 1), interpolation=cv2.INTER_AREA)
             y0, x0 = (r.shape[0] - H) // 2, (r.shape[1] - W) // 2
             r = r[y0:y0 + H, x0:x0 + W]
-            if mode == "tv":
+            if mode == "set":
+                pass
+            elif mode == "tv":
                 r = cv2.addWeighted(r, 1.1, r, 0, 127.5 * (1 - 1.1))
             else:
                 r = np.ascontiguousarray(r[:, ::-1])
@@ -1433,6 +1436,32 @@ class Renderer:
             surf = rgb_surface(r).convert()
             if len(self._glass_cache) > 40:
                 self._glass_cache.clear()
+            self._glass_cache[key] = surf
+        return surf
+
+    def tv_screen(self, clip, t):
+        W, H = self.W, self.H
+        sw = int((TV_SCREEN[2] - TV_SCREEN[0]) * W)
+        sh = int((TV_SCREEN[3] - TV_SCREEN[1]) * H)
+        key = ("screen", id(clip), clip.index(t), sw, sh)
+        surf = self._glass_cache.get(key)
+        if surf is None:
+            rgb = clip.rgb(t)
+            ih, iw = rgb.shape[:2]
+            k = max(sw / iw, sh / ih)
+            r = cv2.resize(rgb, (int(iw * k) + 1, int(ih * k) + 1), interpolation=cv2.INTER_AREA)
+            y0, x0 = (r.shape[0] - sh) // 2, (r.shape[1] - sw) // 2
+            r = r[y0:y0 + sh, x0:x0 + sw]
+            r = cv2.addWeighted(r, 1.1, r, 0, 127.5 * (1 - 1.1))
+            mkey = ("screenmask", sw, sh)
+            m = self._glass_cache.get(mkey)
+            if m is None:
+                yy = (np.arange(sh) + 0.5) / sh * 2 - 1
+                xx = (np.arange(sw) + 0.5) / sw * 2 - 1
+                d = (np.abs(xx[None, :]) ** 6 + np.abs(yy[:, None]) ** 6) ** (1 / 6)
+                m = (np.clip((1.0 - d) / 0.08, 0, 1) * (1 - 0.45 * np.clip(d - 0.55, 0, 1) / 0.45))[..., None].astype(np.float32)
+                self._glass_cache[mkey] = m
+            surf = rgb_surface((r * m).astype(np.uint8)).convert()
             self._glass_cache[key] = surf
         return surf
 
@@ -1457,7 +1486,8 @@ class Renderer:
             c.blit(self.glass_frame(pl.clip, pl.t, "close"), (0, 0))
         elif gl["tv"]:
             pl = gl["tv_player"]
-            c.blit(self.glass_frame(pl.clip, pl.t, "tv"), (0, 0))
+            c.blit(self.glass_frame(A.tv_set, 0, "set"), (0, 0))
+            c.blit(self.tv_screen(pl.clip, pl.t), (int(TV_SCREEN[0] * W), int(TV_SCREEN[1] * H)), special_flags=pygame.BLEND_RGB_ADD)
         else:
             lit = t < gl["flash_until"]
             pl = gl["room_player"]
@@ -2285,6 +2315,7 @@ GLASS_SPOTS = {
     "closet": dict(clip="room_closet", rect=(0.38, 0.2, 0.62, 0.8), pan=(0.7, 0.7)),
 }
 GLASS_HOLD = 0.3
+TV_SCREEN = (0.4135, 0.284, 0.5835, 0.514)
 NIGHTS = 5
 
 

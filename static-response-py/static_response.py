@@ -2398,9 +2398,10 @@ def glass_night(n):
     gl["tv"] = False
     gl["static_until"] = now_ms() + 200
     cp = gl["close_player"]
+    cp.rate = 2.0
     cp.seek(0)
     cp.play()
-    yield cp.clip.duration * 1000
+    yield cp.clip.duration * 1000 / cp.rate
     S.game.fail_msg = "He was standing right behind you."
     return False
 

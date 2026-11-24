@@ -32,6 +32,8 @@ TIMEOUT = 2.0
 RECV_BUFFER = 65536
 HEADER = struct.Struct("!I")
 LOCALHOST = "127.0.0.1"
+KEEPALIVE_INTERVAL = 3.0
+TARGET_TIMEOUT = 10.0
 
 class AudioStreamerApp:
     def __init__(self, root, cmd_socket):
@@ -43,12 +45,14 @@ class AudioStreamerApp:
         self.root.configure(bg=BG_COLOR)
         self.center_window()
 
-        self.is_sending = False
         self.is_requesting = False
         self.requested_ip = None
-        self.send_generation = 0
+        self.keepalive_job = None
+        self.targets = {}
+        self.sender_running = False
         self.sender_thread = None
         self.send_lock = threading.Lock()
+        self.monitor_ips = self.load_monitor_ips()
         self.audio = pyaudio.PyAudio()
 
         self.settings_file = "settings.json"
@@ -130,6 +134,20 @@ class AudioStreamerApp:
             self.root.withdraw()
             self.is_hidden = True
 
+    def load_monitor_ips(self):
+        filename = "monitor.txt"
+        monitor_ips = set()
+        if os.path.exists(filename):
+            try:
+                with open(filename, "r", encoding="utf-8") as f:
+                    for line in f:
+                        ip = line.split('-', 1)[0].split(',', 1)[0].strip()
+                        if ip:
+                            monitor_ips.add(ip)
+            except Exception as e:
+                self.log(f"Error reading {filename}: {e}")
+        return monitor_ips
+
     def show_window(self):
         self.root.deiconify()
         self.root.lift()
@@ -208,6 +226,7 @@ class AudioStreamerApp:
 
         self.ip_combobox = ttk.Combobox(self.controls_frame, textvariable=self.ip_var, values=display_names, font=FONT_MAIN, style="Dark.TCombobox")
         self.ip_combobox.grid(row=0, column=1, padx=10, pady=2, sticky=tk.EW)
+        self.ip_combobox.bind("<<ComboboxSelected>>", self.on_target_selected)
 
         # Checkboxes Frame
         self.chk_frame = tk.Frame(self.controls_frame, bg=BG_COLOR)
@@ -301,7 +320,8 @@ class AudioStreamerApp:
         tk.Label(frame, text=info, bg=BG_COLOR, fg=TEXT_COLOR, font=FONT_MAIN, justify=tk.LEFT, wraplength=280).pack(pady=10, padx=10)
 
     def quit_app(self):
-        self.is_sending = False
+        if self.is_requesting and self.requested_ip:
+            self.send_command(self.requested_ip, "STOP")
         try:
             keyboard.unhook_all()
         except:
@@ -336,8 +356,34 @@ class AudioStreamerApp:
         self.requested_ip = target_ip
         self.is_requesting = True
         self.update_request_buttons(True)
+        self.schedule_keepalive()
+
+    def schedule_keepalive(self):
+        self.cancel_keepalive()
+        self.keepalive_job = self.root.after(int(KEEPALIVE_INTERVAL * 1000), self.send_keepalive)
+
+    def cancel_keepalive(self):
+        if self.keepalive_job:
+            self.root.after_cancel(self.keepalive_job)
+            self.keepalive_job = None
+
+    def send_keepalive(self):
+        self.keepalive_job = None
+        if self.is_requesting and self.requested_ip:
+            self.send_command(self.requested_ip, "KEEP")
+            self.schedule_keepalive()
+
+    def on_target_selected(self, event=None):
+        if not self.is_requesting:
+            return
+        selected_name = self.ip_var.get().strip()
+        target_ip = self.name_to_ip.get(selected_name, selected_name)
+        if target_ip and target_ip != self.requested_ip:
+            self.send_stop_request()
+            self.send_start_request()
 
     def send_stop_request(self, event=None):
+        self.cancel_keepalive()
         target_ip = self.requested_ip
         if not target_ip:
             selected_name = self.ip_var.get().strip()
@@ -378,32 +424,48 @@ class AudioStreamerApp:
 
                 if command == "START":
                     self.log(f"Received START command from {requester_ip}")
-                    self.start_sending_to(requester_ip)
+                    self.add_target(requester_ip, explicit=True)
+                elif command == "KEEP":
+                    self.add_target(requester_ip, explicit=False)
                 elif command == "STOP":
                     self.log(f"Received STOP command from {requester_ip}")
-                    self.stop_sending()
+                    self.remove_target(requester_ip)
                 elif command == "SHOW" and requester_ip == LOCALHOST:
                     self.root.after(0, self.show_window)
             except Exception as e:
                 self.log(f"Control Listener Error: {e}")
 
-    def start_sending_to(self, target_ip):
+    def add_target(self, ip, explicit):
         with self.send_lock:
-            self.send_generation += 1
-            generation = self.send_generation
-            previous_thread = self.sender_thread
-            self.is_sending = True
-            self.sender_thread = threading.Thread(target=self.sender_task, args=(target_ip, generation, previous_thread), daemon=True)
-            self.sender_thread.start()
+            now = time.time()
+            regular_targets = [t for t in self.targets if t not in self.monitor_ips]
+            if ip in self.monitor_ips or ip in self.targets:
+                self.targets[ip] = now
+            elif explicit or not regular_targets:
+                for t in regular_targets:
+                    del self.targets[t]
+                    self.log(f"Receiver {t} replaced by {ip}.")
+                self.targets[ip] = now
+            else:
+                return
+            if not self.sender_running:
+                self.sender_running = True
+                self.sender_thread = threading.Thread(target=self.sender_task, daemon=True)
+                self.sender_thread.start()
 
-    def stop_sending(self):
+    def remove_target(self, ip):
         with self.send_lock:
-            self.send_generation += 1
-            self.is_sending = False
-        self.log("Streaming stopped by remote command.")
+            self.targets.pop(ip, None)
 
-    def is_current_sender(self, generation):
-        return self.is_sending and generation == self.send_generation
+    def current_targets(self):
+        with self.send_lock:
+            now = time.time()
+            for ip in [ip for ip, seen in self.targets.items() if now - seen > TARGET_TIMEOUT]:
+                del self.targets[ip]
+                self.log(f"Receiver {ip} timed out.")
+            if not self.targets:
+                self.sender_running = False
+            return list(self.targets)
 
     def to_stereo(self, data, channels):
         if channels == CHANNELS:
@@ -415,13 +477,8 @@ class AudioStreamerApp:
         return b''.join(data[i:i + stereo_size] for i in range(0, len(data), frame_size))
 
     # --- SENDER LOGIC (Triggered remotely) ---
-    def sender_task(self, target_ip, generation, previous_thread):
-        if previous_thread and previous_thread.is_alive():
-            previous_thread.join(timeout=TIMEOUT)
-        if not self.is_current_sender(generation):
-            return
-
-        self.log(f"Streaming audio to {target_ip}...")
+    def sender_task(self):
+        self.log("Streaming audio...")
         stream = None
         udp_socket = None
         try:
@@ -461,9 +518,17 @@ class AudioStreamerApp:
 
             udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-            while self.is_current_sender(generation):
+            while True:
                 data = stream.read(CHUNK, exception_on_overflow=False)
-                udp_socket.sendto(header + self.to_stereo(data, channels), (target_ip, PORT))
+                targets = self.current_targets()
+                if not targets:
+                    break
+                packet = header + self.to_stereo(data, channels)
+                for ip in targets:
+                    try:
+                        udp_socket.sendto(packet, (ip, PORT))
+                    except OSError:
+                        pass
 
         except Exception as e:
             self.log(f"Sender Error: {str(e)}")
@@ -477,8 +542,9 @@ class AudioStreamerApp:
             if udp_socket:
                 udp_socket.close()
             with self.send_lock:
-                if generation == self.send_generation:
-                    self.is_sending = False
+                if self.sender_thread is threading.current_thread() and self.sender_running:
+                    self.sender_running = False
+                    self.targets.clear()
             self.log("Stream task ended.")
 
     # --- AUTO RECEIVER LOGIC ---
@@ -521,41 +587,42 @@ class AudioStreamerApp:
 
             try:
                 packet, addr = udp_socket.recvfrom(RECV_BUFFER)
-                if len(packet) <= HEADER.size:
-                    continue
-                rate = HEADER.unpack_from(packet)[0]
-                data = packet[HEADER.size:]
-                current_time = time.time()
-
-                if is_playing and rate != current_rate:
-                    self.close_playback(stream)
-                    stream = None
-                    is_playing = False
-
-                if not is_playing:
-                    self.log("Incoming audio detected. Playing...")
-                    try:
-                        stream = self.audio.open(format=FORMAT, channels=CHANNELS, rate=rate, output=True, frames_per_buffer=CHUNK)
-                        current_rate = rate
-                        is_playing = True
-                    except Exception as e:
-                        self.log("Error opening playback stream.")
-
-                if stream:
-                    stream.write(data)
-
-                last_receive_time = current_time
-
             except socket.timeout:
-                if is_playing and (time.time() - last_receive_time > TIMEOUT):
-                    self.log("Stream ended. Returning to standby.")
-                    self.close_playback(stream)
-                    stream = None
-                    current_rate = None
-                    is_playing = False
-            except Exception as e:
-                if "10054" not in str(e):
+                packet, addr = None, None
+            except Exception:
+                continue
+
+            if packet and addr[0] == self.requested_ip and len(packet) > HEADER.size:
+                try:
+                    rate = HEADER.unpack_from(packet)[0]
+                    data = packet[HEADER.size:]
+
+                    if is_playing and rate != current_rate:
+                        self.close_playback(stream)
+                        stream = None
+                        is_playing = False
+
+                    if not is_playing:
+                        self.log("Incoming audio detected. Playing...")
+                        try:
+                            stream = self.audio.open(format=FORMAT, channels=CHANNELS, rate=rate, output=True, frames_per_buffer=CHUNK)
+                            current_rate = rate
+                            is_playing = True
+                        except Exception as e:
+                            self.log("Error opening playback stream.")
+
+                    if stream:
+                        stream.write(data)
+
+                    last_receive_time = time.time()
+                except Exception:
                     pass
+            elif is_playing and (time.time() - last_receive_time > TIMEOUT):
+                self.log("Stream ended. Returning to standby.")
+                self.close_playback(stream)
+                stream = None
+                current_rate = None
+                is_playing = False
 
 def acquire_command_socket():
     cmd_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

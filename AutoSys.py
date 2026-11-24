@@ -121,9 +121,10 @@ class EnforcerWindow(tk.Toplevel):
 #           NETWORK SCANNER
 # ==========================================
 class NetworkScanner:
-    def __init__(self, master, app_path):
+    def __init__(self, master, app_path, add_to_main_callback=None):
         self.master = master; self.app_path = app_path; self.networks_file = os.path.join(app_path, "networks.txt")
-        master.configure(bg='#121212'); self.stop_scan = False; self.scanning = False   
+        self.add_to_main_callback = add_to_main_callback
+        master.configure(bg='#121212'); self.stop_scan = False; self.scanning = False
         self.networks = self.load_networks()
         tk.Label(master, text="Select network to scan:", bg='#121212', fg='#FFA500', font=("Arial", 10, "bold")).pack(pady=5)
         self.network_var = tk.StringVar(); self.network_combo = ttk.Combobox(master, textvariable=self.network_var, values=self.networks, width=47)
@@ -131,11 +132,19 @@ class NetworkScanner:
         if self.networks: self.network_combo.current(0)
         else: self.network_combo.set("No networks available")
         btn_f = tk.Frame(master, bg='#121212'); btn_f.pack(pady=5)
-        tk.Button(btn_f, text="Scan", command=self.start_scan, bg="#333333", width=10, bd=0, fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_f, text="Stop", command=self.stop_scanning, bg="#CC0303", width=10, bd=0, fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_f, text="Add Network", command=self.add_network, bg="#333333", width=15, bd=0, fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_f, text="Scan", command=self.start_scan, bg="#333333", width=8, bd=0, fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_f, text="Stop", command=self.stop_scanning, bg="#CC0303", width=8, bd=0, fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_f, text="Add Network", command=self.add_network, bg="#333333", width=12, bd=0, fg="white", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=4)
+        tk.Button(btn_f, text="Add to Main", command=self.export_to_main, bg="#FFA500", width=12, bd=0, fg="black", font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=4)
         self.progress = ttk.Progressbar(master, orient="horizontal", length=450, mode="determinate"); self.progress.pack(pady=5)
-        self.tree = ttk.Treeview(master, columns=("ip",), show="headings", height=15); self.tree.heading("ip", text="Active IPs"); self.tree.column("ip", width=480, anchor="center"); self.tree.pack(pady=10)
+        self.tree = ttk.Treeview(master, columns=("ip",), show="headings", height=15, selectmode="extended"); self.tree.heading("ip", text="Active IPs"); self.tree.column("ip", width=480, anchor="center"); self.tree.pack(pady=10)
+    def export_to_main(self):
+        # Send selected IPs (or all if none selected) to the Main tab.
+        if not self.add_to_main_callback: return
+        selected = self.tree.selection()
+        items = selected if selected else self.tree.get_children()
+        ips = [self.tree.item(i)["values"][0] for i in items if self.tree.item(i)["values"]]
+        if ips: self.add_to_main_callback(ips)
     def load_networks(self):
         if not os.path.exists(self.networks_file): return ["192.168.1.0/24"]
         try:
@@ -199,6 +208,7 @@ class AutoSysApp(tk.Tk):
         
         self.use_user_startup_var = tk.BooleanVar(value=False)
         self.keep_pinging = False
+        self.last_clicked_idx = None
         self._main_status_timer = None
         self.btn_style = {"bg": "#333333", "fg": "white", "bd": 0, "font": ("Arial", 9, "bold"), "cursor": "hand2"}
 
@@ -305,7 +315,21 @@ class AutoSysApp(tk.Tk):
         h.pack(fill="x")
         tk.Label(h, text=" LAN IP Scanner", bg="#121212", fg="#FFA500", font=("Arial", 10, "bold")).pack(side="left")
         tk.Button(h, text="X", bg="#CC0303", fg="white", bd=0, command=sw.destroy).pack(side="right")
-        NetworkScanner(sw, self.application_path)
+        NetworkScanner(sw, self.application_path, add_to_main_callback=self.add_scanned_ips_to_main)
+
+    def add_scanned_ips_to_main(self, ip_list):
+        existing = [self.get_pure_ip(self.ip_listbox.get(i)) for i in range(self.ip_listbox.size())]
+        added = 0
+        for ip in ip_list:
+            pure = str(ip).strip()
+            if pure and pure not in existing:
+                self.ip_listbox.insert(tk.END, f"[ ] {pure}")
+                existing.append(pure); added += 1
+        if added:
+            self.save_ips()
+            self.set_main_status(f"Added {added} IPs from Scanner!", "#FFA500")
+        else:
+            self.set_main_status("IPs already in Main list!", "#FFA500")
 
     # ================= MAIN TAB LOGIC =================
     def setup_main_tab(self):
@@ -339,13 +363,53 @@ class AutoSysApp(tk.Tk):
         tk.Button(row2, text="Edit", command=self.edit_ip, **self.btn_style).pack(side="left", fill="x", expand=True, padx=2, ipady=2)
         tk.Button(row2, text="Del", command=self.del_ip, bg="#CC0303", fg="white", bd=0, font=("Arial", 9, "bold"), cursor="hand2").pack(side="left", fill="x", expand=True, padx=(2, 0), ipady=2)
         
+        cmd_f = tk.Frame(self.tab_main, bg='#121212')
+        cmd_f.pack(fill="x", padx=15, pady=(0, 2))
         self.open_cmd_var = tk.BooleanVar()
-        tk.Checkbutton(self.tab_main, text="Open External CMD Ping", variable=self.open_cmd_var, bg="#121212", fg="white", selectcolor="#333333").pack(anchor="w", padx=15)
-        
-        self.ip_listbox = tk.Listbox(self.tab_main, bg="#121212", fg="white", bd=0, font=("Consolas", 9), selectmode=tk.MULTIPLE, selectbackground="#121212", selectforeground="#FFA500", highlightthickness=0, activestyle="none")
+        tk.Checkbutton(cmd_f, text="Open External CMD Ping", variable=self.open_cmd_var, bg="#121212", fg="white", selectcolor="#333333", activebackground="#121212", activeforeground="white").pack(side="left")
+        tk.Button(cmd_f, text="Close CMDs", command=self.close_cmd_pings, bg="#CC0303", fg="white", bd=0, font=("Arial", 8, "bold"), padx=6, pady=2, cursor="hand2").pack(side="right")
+
+        self.ip_listbox = tk.Listbox(self.tab_main, bg="#121212", fg="white", bd=0, font=("Consolas", 9), selectbackground="#121212", selectforeground="#FFA500", highlightthickness=0, activestyle="none")
         self.ip_listbox.pack(fill="both", expand=True, padx=15, pady=5)
-        
-        self.ip_listbox.bind('<<ListboxSelect>>', self.on_ip_select)
+        self.ip_listbox.bind('<ButtonRelease-1>', self.on_ip_click)
+
+    def close_cmd_pings(self):
+        # Close the external CMD ping windows this app opened.
+        def kill_task():
+            try:
+                subprocess.run('taskkill /FI "WINDOWTITLE eq AutoSys_Ping_*" /T /F', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+                subprocess.run('taskkill /F /IM PING.EXE /T', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+                self.after(0, lambda: self.set_main_status("Closed external CMD pings!", "#FFA500"))
+            except: pass
+        threading.Thread(target=kill_task, daemon=True).start()
+
+    def get_checked_indices(self):
+        # Indices of rows checked with [X].
+        return [i for i in range(self.ip_listbox.size()) if self.ip_listbox.get(i).startswith("[X]")]
+
+    def on_ip_click(self, event):
+        idx = self.ip_listbox.nearest(event.y)
+        if idx < 0 or idx >= self.ip_listbox.size(): return
+        bbox = self.ip_listbox.bbox(idx)
+        if not bbox or event.y < bbox[1] or event.y > bbox[1] + bbox[3]: return
+        self.last_clicked_idx = idx
+        text = self.ip_listbox.get(idx)
+        bg = self.ip_listbox.itemcget(idx, "bg") or "#121212"
+        if text.startswith("[X] "):
+            new_text = "[ ] " + text[4:]; fg = "white"
+        elif text.startswith("[ ] "):
+            new_text = "[X] " + text[4:]; fg = "#FFA500" if bg == "#121212" else "white"
+        else:
+            new_text = "[X] " + text; fg = "#FFA500" if bg == "#121212" else "white"
+        self.ip_listbox.delete(idx)
+        self.ip_listbox.insert(idx, new_text)
+        self.ip_listbox.itemconfig(idx, bg=bg, fg=fg)
+        self.ip_listbox.selection_clear(0, tk.END)
+        clean_val = new_text.replace("[X] ", "").replace("[ ] ", "")
+        parts = clean_val.split(' - ', 1)
+        self.ip_entry.delete(0, tk.END); self.ip_entry.insert(0, parts[0].strip())
+        self.name_entry.delete(0, tk.END)
+        if len(parts) > 1: self.name_entry.insert(0, parts[1].strip())
 
     def set_main_status(self, text, color):
         self.status_label.config(text=text, fg=color)
@@ -353,14 +417,17 @@ class AutoSysApp(tk.Tk):
         self._main_status_timer = self.after(7000, lambda: self.status_label.config(text="Status: Ready", fg="white"))
 
     def start_ping_threads(self):
+        idx = self.get_checked_indices()
+        if not idx:
+            self.set_main_status("Select IPs first!", "#FF3333")
+            return
         self.keep_pinging = True
-        idx = self.ip_listbox.curselection()
         self.ip_listbox.selection_clear(0, tk.END)
         for i in idx:
             threading.Thread(target=self.ping_loop, args=(i,), daemon=True).start()
             if self.open_cmd_var.get():
                 ip = self.get_pure_ip(self.ip_listbox.get(i))
-                subprocess.Popen(f'start cmd /k ping {ip} -t', shell=True)
+                subprocess.Popen(f'start "AutoSys_Ping_{ip}" cmd /k ping {ip} -t', shell=True)
         self.stop_btn.config(bg="#CC0303", activebackground="#B22222")
 
     def ping_loop(self, i):
@@ -383,13 +450,16 @@ class AutoSysApp(tk.Tk):
     def stop_all_pings(self):
         self.keep_pinging = False
         self.stop_btn.config(bg=self.btn_style["bg"])
-        for i in range(self.ip_listbox.size()): self.ip_listbox.itemconfig(i, bg="#121212")
+        for i in range(self.ip_listbox.size()):
+            text = self.ip_listbox.get(i)
+            fg_color = "#FFA500" if text.startswith("[X]") else "white"
+            self.ip_listbox.itemconfig(i, bg="#121212", fg=fg_color)
 
-    def open_selected_folders_thread(self): 
+    def open_selected_folders_thread(self):
         threading.Thread(target=self.open_selected_folders, daemon=True).start()
 
     def open_selected_folders(self):
-        idx = self.ip_listbox.curselection()
+        idx = self.get_checked_indices()
         if not idx: self.after(0, lambda: self.set_main_status("Select IPs first!", "#FF3333")); return
         for i in idx:
             ip = self.get_pure_ip(self.ip_listbox.get(i))
@@ -407,41 +477,10 @@ class AutoSysApp(tk.Tk):
                 text = self.ip_listbox.get(i).replace("[X] ", "").replace("[ ] ", "")
                 f.write(text + "\n")
 
-    def update_checkmarks(self):
-        sel = self.ip_listbox.curselection()
-        for i in range(self.ip_listbox.size()):
-            text = self.ip_listbox.get(i)
-            clean_text = text.replace("[X] ", "").replace("[ ] ", "")
-            new_text = f"[X] {clean_text}" if i in sel else f"[ ] {clean_text}"
-            
-            if text != new_text:
-                bg = self.ip_listbox.itemcget(i, "bg")
-                fg = self.ip_listbox.itemcget(i, "fg")
-                self.ip_listbox.delete(i)
-                self.ip_listbox.insert(i, new_text)
-                self.ip_listbox.itemconfig(i, bg=bg, fg=fg)
-                if i in sel:
-                    self.ip_listbox.selection_set(i)
-
-    def on_ip_select(self, event=None):
-        sel = self.ip_listbox.curselection()
-        if len(sel) == 1:
-            val = self.ip_listbox.get(sel[0]).replace("[X] ", "").replace("[ ] ", "")
-            parts = val.split(' - ', 1)
-            
-            self.ip_entry.delete(0, tk.END)
-            self.ip_entry.insert(0, parts[0].strip())
-            
-            self.name_entry.delete(0, tk.END)
-            if len(parts) > 1:
-                self.name_entry.insert(0, parts[1].strip())
-        
-        self.after(10, self.update_checkmarks)
-
-    def add_ip(self): 
+    def add_ip(self):
         ip = self.ip_entry.get().strip()
         name = self.name_entry.get().strip()
-        if ip: 
+        if ip:
             entry_text = f"{ip} - {name}" if name else ip
             self.ip_listbox.insert(tk.END, f"[ ] {entry_text}")
             self.save_ips()
@@ -449,33 +488,39 @@ class AutoSysApp(tk.Tk):
             self.name_entry.delete(0, tk.END)
 
     def edit_ip(self):
-        sel = self.ip_listbox.curselection()
-        if len(sel) == 1:
+        checked = self.get_checked_indices()
+        target_idx = None
+        if len(checked) == 1:
+            target_idx = checked[0]
+        elif self.last_clicked_idx is not None and self.last_clicked_idx < self.ip_listbox.size():
+            target_idx = self.last_clicked_idx
+        if target_idx is not None:
             ip = self.ip_entry.get().strip()
             name = self.name_entry.get().strip()
             if ip:
-                entry_text = f"[ ] {ip} - {name}" if name else f"[ ] {ip}"
-                idx = sel[0]
-                bg = self.ip_listbox.itemcget(idx, "bg")
-                fg = self.ip_listbox.itemcget(idx, "fg")
-                self.ip_listbox.delete(idx)
-                self.ip_listbox.insert(idx, entry_text)
-                if bg: self.ip_listbox.itemconfig(idx, bg=bg)
-                if fg: self.ip_listbox.itemconfig(idx, fg=fg)
-                self.ip_listbox.selection_set(idx)
+                was_checked = self.ip_listbox.get(target_idx).startswith("[X]")
+                prefix = "[X]" if was_checked else "[ ]"
+                fg_color = "#FFA500" if was_checked else "white"
+                entry_text = f"{prefix} {ip} - {name}" if name else f"{prefix} {ip}"
+                self.ip_listbox.delete(target_idx)
+                self.ip_listbox.insert(target_idx, entry_text)
+                self.ip_listbox.itemconfig(target_idx, fg=fg_color)
                 self.save_ips()
-                self.update_checkmarks()
+                self.set_main_status("Entry updated!", "#FFA500")
         else:
-            self.set_main_status("Select exactly ONE item to edit!", "#FF3333")
+            self.set_main_status("Select ONE item to edit!", "#FF3333")
 
     def del_ip(self):
-        sel = self.ip_listbox.curselection()
-        if sel:
-            for idx in reversed(sel):
+        checked = self.get_checked_indices()
+        if checked:
+            for idx in reversed(checked):
                 self.ip_listbox.delete(idx)
             self.save_ips()
             self.ip_entry.delete(0, tk.END)
             self.name_entry.delete(0, tk.END)
+            self.last_clicked_idx = None
+        else:
+            self.set_main_status("Check [X] items to delete!", "#FF3333")
 
     # ================= STARTUP TAB LOGIC =================
     def setup_startup_tab(self):

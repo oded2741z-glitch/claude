@@ -618,7 +618,7 @@ class Assets:
         self.walker = Clip("walker.mp4", 1.15)
         self.turn = Clip("turn.mp4")
         self.tv_shows = sorted(os.path.splitext(f)[0] for f in os.listdir(IMG_DIR) if f.startswith("tv_show") and f.endswith(".mp4"))
-        names = ["room_left", "room_right", "room_closet", "room_close", "tv_wrong", "tv_empty"] + self.tv_shows
+        names = ["room_left", "room_right", "room_closet", "tv_wrong", "tv_empty"] + self.tv_shows
         self.glass = {k: Clip(f"{k}.mp4") for k in names}
         self.clips = [self.intro, self.scare, self.walker, self.turn] + list(self.glass.values())
         threading.Thread(target=self._load_clips, daemon=True).start()
@@ -1436,7 +1436,7 @@ class Renderer:
             else:
                 r = np.ascontiguousarray(r[:, ::-1])
                 r = cv2.GaussianBlur(r, (0, 0), 1.2)
-                gain = {"glass": 0.38, "lit": 0.85, "close": 0.75}[mode]
+                gain = {"glass": 0.38, "lit": 0.85}[mode]
                 r = cv2.addWeighted(r, gain, r, 0, 0)
             surf = rgb_surface(r).convert()
             if len(self._glass_cache) > 40:
@@ -1486,10 +1486,7 @@ class Renderer:
         t = now_ms()
         if gl["mode"] == "intro":
             return
-        if gl["mode"] == "close":
-            pl = gl["close_player"]
-            c.blit(self.glass_frame(pl.clip, pl.t, "close"), (0, 0))
-        elif gl["tv"]:
+        if gl["tv"]:
             pl = gl["tv_player"]
             if A.tv_set is not None:
                 c.blit(self.glass_frame(A.tv_set, 0, "set"), (0, 0))
@@ -1516,8 +1513,6 @@ class Renderer:
                 c.blit(spot, (int(fx - rad), int(fy - rad)), special_flags=pygame.BLEND_RGB_ADD)
         if t < gl["static_until"]:
             self.draw_noise(c, self.noise, 0.55)
-        if gl["mode"] == "close":
-            return
         px = clamp(2.4 * vmin(), 14, 24)
         f = font("display", px)
         pt = clamp(0.03 * W, 10, 28)
@@ -2323,6 +2318,7 @@ GLASS_SPOTS = {
     "closet": dict(clip="room_closet", rect=(0.38, 0.2, 0.62, 0.8), pan=(0.7, 0.7)),
 }
 GLASS_HOLD = 0.3
+SIGHT_TIME = 2.0
 TV_SCREEN = (0.4135, 0.284, 0.5835, 0.514)
 NIGHTS = 5
 
@@ -2385,7 +2381,7 @@ def glass_night(n):
     gl = S.glass
     night_len = 90.0
     gl.update(night=n, t=0.0, hour_len=night_len / 6, tv=True, charge=1.0, flash_until=0, static_until=0,
-              clown="away", spot=None, threat=0.0, cooldown=rand(6, 9) - n * 0.6, fake=rand(8, 14), mode="night")
+              clown="away", spot=None, threat=0.0, seen=None, cooldown=rand(6, 9) - n * 0.6, fake=rand(8, 14), mode="night")
     threat_time = 7.4 - 0.9 * n
     gl["tv_name"] = None
     glass_set_tv_clip(gl, "tv_show")
@@ -2416,6 +2412,7 @@ def glass_night(n):
                 rp.play()
                 gl["clown"] = "peek"
                 gl["threat"] = 0.0
+                gl["seen"] = None
                 if A.runstep_walk:
                     v = play(random.choice(A.runstep_walk), 0.35)
                     if v:
@@ -2424,9 +2421,15 @@ def glass_night(n):
         elif gl["clown"] == "peek":
             if rp.t >= GLASS_HOLD * rp.clip.duration:
                 rp.pause()
-            gl["threat"] += dt / threat_time * (0.35 if gl["tv"] else 1.0)
-            if gl["threat"] >= 1:
-                break
+            if not gl["tv"] and gl["seen"] is None:
+                gl["seen"] = gl["t"]
+            if gl["seen"] is not None:
+                if gl["t"] - gl["seen"] >= SIGHT_TIME:
+                    break
+            else:
+                gl["threat"] += dt / threat_time * 0.35
+                if gl["threat"] >= 1:
+                    break
         elif gl["clown"] == "retreat":
             if rp.ended:
                 gl["clown"] = "away"
@@ -2451,14 +2454,7 @@ def glass_night(n):
             gl["mode"] = "intro"
             return True
     gl["music"].fade_out(0.05, 0.3)
-    gl["mode"] = "close"
-    gl["tv"] = False
-    gl["static_until"] = now_ms() + 200
-    cp = gl["close_player"]
-    cp.rate = 4.0
-    cp.seek(0)
-    cp.play()
-    yield cp.clip.duration * 1000 / cp.rate
+    gl["mode"] = "dead"
     S.game.fail_msg = "He was standing right behind you."
     return False
 
@@ -2466,7 +2462,7 @@ def glass_night(n):
 def stage_glass():
     S.hud = False
     S.glass = dict(mode="intro", tv=True, room_player=Player(A.glass["room_left"]), tv_player=Player(A.glass["tv_show"], loop=True),
-                   close_player=Player(A.glass["room_close"]), music=None, hits=0, night=1, t=0.0, hour_len=15.0,
+                   music=None, hits=0, night=1, t=0.0, hour_len=15.0,
                    charge=1.0, flash_until=0, static_until=0, flash_pos=(0, 0), tv_name=None)
     show_panel([Text("DARK GLASS", "h2"),
                 Text("He is somewhere behind you. Do not turn around. Turn the TV off and watch the room in the dark glass. "
@@ -2486,7 +2482,7 @@ def stage_glass():
         yield 2400
         hide_panel()
     gl = S.glass
-    for p in (gl["room_player"], gl["tv_player"], gl["close_player"]):
+    for p in (gl["room_player"], gl["tv_player"]):
         p.pause()
         if p in PLAYERS:
             PLAYERS.remove(p)

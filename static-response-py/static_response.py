@@ -646,7 +646,6 @@ class Assets:
                      "p3": (css_filter(f19, ("gray", 1), ("bright", 0.9), ("contrast", 1.3)), 1.0, 1.18)}
         self.narr = [load_sound("story1.wav"), load_sound("story2.wav")]
         self.steps = load_sound("steps.mp3")
-        self.playwithme = load_sound("playwithme.mp3", 1.3)
         self.music_box = make_music_box()
         self.room_empty = read_optional("room_empty.jpg")
         self.tv_set = read_optional("tv_set.jpg")
@@ -2368,11 +2367,9 @@ def stage_clown_game():
 
 def stage_clown():
     S.hud = False
-    voice = play_narration(A.playwithme)
     show_panel([Text("ONE, TWO, THREE, CLOWN", "h2"),
                 Text("He wants to play. Walk to him while his back is turned. When he turns around, do not move.", color=DIM)])
     yield 4500
-    stop_narration(voice)
     hide_panel()
     while True:
         ok = yield from stage_clown_game()

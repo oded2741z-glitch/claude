@@ -2455,7 +2455,7 @@ def glass_night(n):
     gl["tv"] = False
     gl["static_until"] = now_ms() + 200
     cp = gl["close_player"]
-    cp.rate = 2.0
+    cp.rate = 4.0
     cp.seek(0)
     cp.play()
     yield cp.clip.duration * 1000 / cp.rate

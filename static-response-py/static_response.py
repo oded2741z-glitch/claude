@@ -1,4 +1,4 @@
-import datetime
+import json
 import math
 import os
 import random
@@ -26,7 +26,6 @@ OKC = (143, 211, 168)
 
 SR = 44100
 MASTER = 0.85
-LEVELS = 10
 
 
 def now_ms():
@@ -556,20 +555,6 @@ def cue_whisper(v):
     play_synth(noise * g, True)
 
 
-def buzz():
-    n = int(0.25 * SR)
-    t = np.arange(n) / SR
-    sq = np.sign(np.sin(2 * np.pi * 92 * t))
-    play_synth(sq * env_curve(n, 0, 0.12, 0.005, 0.12, 0.05))
-
-
-def play_steps(v):
-    if A.steps is None:
-        cue_knock(v)
-        return
-    play(A.steps, v)
-
-
 def camera_flash():
     n = int(0.35 * SR)
     hp = fft_filter(np.random.uniform(-1, 1, n), "highpass", 2500)
@@ -650,7 +635,6 @@ class Assets:
         self.peek = {"flash": (css_filter(flash_src, ("gray", 1), ("bright", 0.95), ("contrast", 1.4)), 0.9, 1.05),
                      "p3": (css_filter(f19, ("gray", 1), ("bright", 0.9), ("contrast", 1.3)), 1.0, 1.18)}
         self.narr = [load_sound("story1.wav"), load_sound("story2.wav")]
-        self.steps = load_sound("steps.mp3")
         self.music_box = make_music_box()
         self.room_empty = read_optional("room_empty.jpg")
         self.tv_set = read_optional("tv_set.jpg")
@@ -982,29 +966,6 @@ class Row:
                     xx += w + gap
                 yy += rh + gap
         return [Block(bw, bh, draw, self.glitchable)]
-
-
-class Stats:
-    def __init__(self, pairs):
-        self.pairs = pairs
-
-    def blocks(self, maxw):
-        px = clamp(3 * vmin(), 16, 28)
-        f = font("display", px)
-        lw = max(f.size(a)[0] for a, _ in self.pairs)
-        rw = max(f.size(b)[0] for _, b in self.pairs)
-        lh = f.get_height()
-        bw = lw + 24 + rw
-        bh = lh * len(self.pairs) + 4 * (len(self.pairs) - 1)
-
-        def draw(surf, x, y, bright):
-            for i, (a, b) in enumerate(self.pairs):
-                yy = y + i * (lh + 4)
-                ia = f.render(a, True, brighten(DIM) if bright else DIM)
-                ib = f.render(b, True, brighten(PHOSPHOR) if bright else PHOSPHOR)
-                surf.blit(ia, (int(x + lw - ia.get_width()), int(yy)))
-                surf.blit(ib, (int(x + lw + 24), int(yy)))
-        return [Block(bw, bh, draw, True)]
 
 
 DART = [(0.0, 0, 0), (0.18, 0, 0), (0.21, -0.025, 0.01), (0.40, -0.025, 0.01), (0.43, 0.02, -0.01), (0.62, 0.02, -0.01),
@@ -1358,8 +1319,6 @@ class Renderer:
             c.fill((0, 0, 0))
         if now_ms() < S.flash_until and S.flash_img is not None:
             self.draw_flash(c, S.flash_img)
-        if S.hud:
-            self.draw_hud(c)
         self.draw_peek(c)
         self.draw_hand(c)
         if S.walker:
@@ -1424,46 +1383,6 @@ class Renderer:
                 self._hand_cache.clear()
             self._hand_cache[key] = s
         return s
-
-    def draw_hud(self, c):
-        W, H = self.W, self.H
-        g = S.game
-        lv = g.lv if g else None
-        px = clamp(2.4 * vmin(), 14, 24)
-        f = font("display", px)
-        pt = clamp(0.03 * W, 10, 28)
-        pl = clamp(0.04 * W, 14, 40)
-        fh = f.get_height()
-        img, _ = text_image("display", px, S.hud_level, PHOSPHOR, 0.06)
-        c.blit(img, (int(pl), int(pt)))
-        box = int(0.9 * px)
-        strikes = lv.strikes if lv else 0
-        for i in range(3):
-            x = int(W - pl - (3 - i) * box - (2 - i) * 6)
-            y = int(pt + (fh - box) / 2)
-            if i < strikes:
-                pygame.draw.rect(c, BLOOD, (x, y, box, box))
-            else:
-                pygame.draw.rect(c, DIM, (x, y, box, box), 1)
-        by = int(pt + fh + 6)
-        bw = int(W - 2 * pl)
-        bar = pygame.Surface((bw, 3), pygame.SRCALPHA)
-        bar.fill(PHOSPHOR + (31,))
-        c.blit(bar, (int(pl), by))
-        if lv:
-            pygame.draw.rect(c, DIM, (int(pl), by, int(bw * min(1, lv.gt / lv.D)), 3))
-        hint, _ = text_image("display", px, "PRESS SPACE OR TAP WHEN YOU HEAR STEPS. STOP HIM BEFORE HE REACHES YOU.", DIM, 0.06)
-        d = datetime.datetime.now()
-        h12 = d.hour % 12 or 12
-        clock = f"{d.month}/{d.day}/{d.year}, {h12}:{d.minute:02d}:{d.second:02d} {'AM' if d.hour < 12 else 'PM'}"
-        cimg, _ = text_image("display", px, clock, DIM, 0.06)
-        foot_top = H - pt - fh * 2 - 4
-        c.blit(hint, (int((W - hint.get_width()) / 2), int(foot_top)))
-        c.blit(cimg, (int((W - cimg.get_width()) / 2), int(foot_top + fh + 4)))
-        if S.feedback and now_ms() < S.feedback_until:
-            fimg, _ = text_image("display", px, S.feedback, OKC if S.feedback_ok else BLOOD, 0.06)
-            top_bottom = by + 3
-            c.blit(fimg, (int((W - fimg.get_width()) / 2), int((top_bottom + foot_top - fh) / 2)))
 
     _glass_cache = {}
 
@@ -1775,7 +1694,6 @@ class Runner:
 
 
 RUN = Runner()
-SIDE = Runner()
 KEYS = []
 
 
@@ -1791,11 +1709,6 @@ class State:
     hand = None
     shake_until = 0
     peek = None
-    hud = False
-    hud_level = ""
-    feedback = ""
-    feedback_ok = True
-    feedback_until = 0
     walker = False
     walker_player = None
     run_steps = None
@@ -1810,19 +1723,7 @@ S = State()
 
 
 class Game:
-    def __init__(self, start_stage):
-        self.start_stage = start_stage
-        self.stage = start_stage + 1
-        self.scare_level = 3 + random.randint(0, 5)
-        self.hits = 0
-        self.misses = 0
-        self.falses = 0
-        self.rt_sum = 0.0
-        self.lv = None
-        self.paused = False
-        self.level = 1
-        self.chain = 0
-        self.caught = False
+    def __init__(self):
         self.fail_msg = None
 
 
@@ -2065,38 +1966,6 @@ def stage_story():
     return True
 
 
-class Level:
-    def __init__(self, n):
-        g = S.game
-        D = 81000
-        count = round(D / max(6000, 12000 - n * 600))
-        win = max(650, 1700 - n * 105)
-        vis = max(160, 520 - n * 35)
-        slot = (D - 2500) / count
-        self.evs = []
-        for i in range(count):
-            t = 1500 + i * slot + random.random() * max(0, slot - win - 700)
-            self.evs.append(dict(t=t, kind="chain", win=win, dur=vis, state="pending", start=0, stage=0))
-        if n == g.scare_level:
-            self.evs[1 + random.randint(0, count - 3)]["kind"] = "scare"
-        self.n = n
-        self.D = D
-        self.gt = 0.0
-        self.strikes = 0
-        self.active = None
-        self.grace = 0.0
-        self.busy = 0.0
-        self.vol = max(0.35, 1 - n * 0.065)
-        self.result = None
-        self.done = False
-
-
-def feedback(text, ok):
-    S.feedback = text
-    S.feedback_ok = ok
-    S.feedback_until = now_ms() + 1100
-
-
 def show_walker(rate):
     S.walker = True
     pl = S.walker_player
@@ -2132,139 +2001,6 @@ def hide_walker():
     S.walker = False
     S.walker_player.pause()
     stop_run_steps()
-
-
-def finish_level(ok):
-    lv = S.game.lv
-    if lv.done:
-        return
-    lv.done = True
-    hide_walker()
-    lv.result = ok
-
-
-def scare_in_level(lv):
-    yield from jumpscare()
-    lv.grace = lv.gt + 900
-    AU.start_drone()
-    S.game.paused = False
-
-
-def level_update(dt):
-    g = S.game
-    lv = g.lv
-    if lv.done:
-        return
-    lv.gt += dt
-    if lv.active and lv.gt - lv.active["start"] > lv.active["win"]:
-        ev = lv.active
-        ev["state"] = "missed"
-        lv.active = None
-        g.misses += 1
-        if ev["stage"] == 1:
-            hide_walker()
-            g.caught = True
-            finish_level(False)
-            return
-        g.chain = 1
-        feedback("IT IS GETTING CLOSER", False)
-    for ev in lv.evs:
-        if ev["state"] != "pending" or lv.gt < ev["t"]:
-            continue
-        if lv.active:
-            ev["t"] = lv.gt + 400
-            continue
-        if lv.gt < lv.busy:
-            ev["t"] = lv.busy + 300
-            continue
-        if ev["kind"] == "scare":
-            ev["state"] = "done"
-            g.paused = True
-            AU.stop_drone()
-            SIDE.start(scare_in_level(lv), clear_keys=False)
-            return
-        ev["state"] = "active"
-        ev["start"] = lv.gt
-        lv.active = ev
-        ev["stage"] = g.chain
-        if ev["stage"] == 0:
-            play_steps(lv.vol)
-            ev["win"] = A.steps.get_length() * 1000 if A.steps else ev["win"]
-            lv.busy = lv.gt + ev["win"]
-        else:
-            rate = 1 + (lv.n - 1) * 0.05
-            ev["win"] = 5030 / rate
-            show_walker(rate)
-        break
-    if not lv.active and lv.gt >= lv.D:
-        finish_level(True)
-
-
-def strike(msg):
-    lv = S.game.lv
-    lv.strikes += 1
-    feedback(msg, False)
-    buzz()
-    R.hit_until = now_ms() + 220
-    if lv.strikes >= 3:
-        finish_level(False)
-
-
-def press():
-    g = S.game
-    if not g or not g.lv or g.paused or g.lv.done:
-        return
-    lv = g.lv
-    if lv.gt < lv.grace:
-        return
-    if lv.active:
-        rt = lv.gt - lv.active["start"]
-        was_run = lv.active["stage"] == 1
-        lv.active["state"] = "hit"
-        g.chain = 0
-        lv.active = None
-        g.hits += 1
-        g.rt_sum += rt
-        if was_run:
-            hide_walker()
-        feedback(f"{'STOPPED' if was_run else 'RESPONSE'} {rt / 1000:.3f} S", True)
-        lv.grace = lv.gt + 250
-    else:
-        lv.grace = lv.gt + 400
-        g.falses += 1
-        strike("NO STIMULUS DETECTED")
-
-
-def play_level(n):
-    g = S.game
-    g.lv = Level(n)
-    S.hud_level = f"LEVEL {n} / {LEVELS}"
-    S.feedback = ""
-    S.hud = True
-    lv = g.lv
-    return (yield (lambda: lv.result))
-
-
-def stage_reaction():
-    g = S.game
-    for n in range(1, LEVELS + 1):
-        g.level = n
-        S.hud = False
-        show_panel([Text(f"LEVEL {n}", "h2"), Text("Eyes on the screen.", color=DIM)])
-        yield 2200
-        hide_panel()
-        ok = yield from play_level(n)
-        g.lv = None
-        S.hud = False
-        if not ok:
-            return False
-        show_panel([Text(f"LEVEL {n} COMPLETED", "h2")])
-        yield 2000
-        if n < LEVELS:
-            for sec in range(5, 0, -1):
-                show_panel([Text(f"LEVEL {n} COMPLETED", "h2"), Text(f"The next level begins in {sec} second{'s' if sec > 1 else ''}")])
-                yield 1000
-    return True
 
 
 TURN = dict(backStart=0.1, backEnd=4.8, turnStart=4.95, front=5.6, frontStart=6.0, frontEnd=9.8, revStart=10.0, revEnd=11.3)
@@ -2371,7 +2107,6 @@ def stage_clown_game():
 
 
 def stage_clown():
-    S.hud = False
     show_panel([Text("ONE, TWO, THREE, CLOWN", "h2"),
                 Text("He wants to play. Walk to him while his back is turned. When he turns around, do not move.", color=DIM)])
     yield 4500
@@ -2531,45 +2266,105 @@ def glass_night(n):
     return False
 
 
-def stage_glass():
-    S.hud = False
+def glass_setup():
     S.glass = dict(mode="intro", tv=True, room_player=Player(A.glass["room_left"]), tv_player=Player(A.glass["tv_show"], loop=True),
                    music=None, hits=0, night=1, t=0.0, hour_len=15.0,
                    charge=1.0, flash_until=0, static_until=0, flash_pos=(0, 0), tv_name=None)
-    show_panel([Text("DARK GLASS", "h2"),
-                Text("He is somewhere behind you. Do not turn around. Turn the TV off and watch the room in the dark glass. "
-                     "When you see him, click on him to use the flash. The flash charges only while the TV is on. Survive until 6 AM.", color=DIM)])
-    yield 7000
-    hide_panel()
-    ok = True
-    for n in range(1, NIGHTS + 1):
-        S.glass["mode"] = "intro"
-        show_panel([Text(f"NIGHT {n}", "h2"), Text("12:00 AM", color=DIM)])
-        yield 2200
-        hide_panel()
-        ok = yield from glass_night(n)
-        if not ok:
-            break
-        show_panel([Text("6:00 AM", "h2"), Text(f"NIGHT {n} SURVIVED", color=DIM)])
-        yield 2400
-        hide_panel()
+
+
+def glass_teardown():
     gl = S.glass
     for p in (gl["room_player"], gl["tv_player"]):
         p.pause()
         if p in PLAYERS:
             PLAYERS.remove(p)
     S.glass = None
-    return ok
 
 
-STAGES = [
-    ("QUESTIONS", stage_questions),
-    ("ACTIONS", stage_actions),
-    ("STORY", stage_story),
-    ("REACTION TEST", stage_reaction),
-    ("CLOWN GAME", stage_clown),
-    ("DARK GLASS", stage_glass),
-]
+def play_night(n, show_help):
+    glass_setup()
+    if show_help:
+        show_panel([Text("THE DARK GLASS", "h2"),
+                    Text("He is somewhere behind you. Do not turn around. Turn the TV off and watch the room in the dark glass. "
+                         "When you see him, click on him to use the flash. The flash charges only while the TV is on. Survive until 6 AM.", color=DIM)])
+        yield 7000
+        hide_panel()
+    while True:
+        S.glass["mode"] = "intro"
+        show_panel([Text(f"NIGHT {n}", "h2"), Text("12:00 AM", color=DIM)])
+        yield 2200
+        hide_panel()
+        ok = yield from glass_night(n)
+        if ok:
+            break
+        AU.stop_drone()
+        yield 250
+        yield from jumpscare()
+        AU.start_drone()
+    show_panel([Text("6:00 AM", "h2"), Text(f"NIGHT {n} SURVIVED", color=DIM)])
+    yield 2400
+    hide_panel()
+    glass_teardown()
+    return True
+
+
+SAVE_FILE = "save.json"
+
+
+def has_save():
+    try:
+        with open(SAVE_FILE) as f:
+            return json.load(f).get("checkpoint") == "nights"
+    except (OSError, ValueError):
+        return False
+
+
+def write_save():
+    try:
+        with open(SAVE_FILE, "w") as f:
+            json.dump({"checkpoint": "nights"}, f)
+    except OSError:
+        pass
+
+
+def clear_save():
+    try:
+        os.remove(SAVE_FILE)
+    except OSError:
+        pass
+
+
+def save_checkpoint():
+    write_save()
+    show_panel([Text("PROGRESS SAVED", "h2")])
+    yield 1800
+    hide_panel()
+    return True
+
+
+def titled(title, gen_fn):
+    def run():
+        show_panel([Text(title, "h2")])
+        yield 2200
+        hide_panel()
+        return (yield from gen_fn())
+    return run
+
+
+def build_segments():
+    segs = [("QUESTIONS", titled("QUESTIONS", stage_questions)),
+            ("ACTIONS", titled("ACTIONS", stage_actions)),
+            ("SAVE", save_checkpoint)]
+    for n in range(1, NIGHTS + 1):
+        segs.append(("CLOWN GAME", stage_clown))
+        segs.append((f"NIGHT {n}", (lambda n=n: play_night(n, n == 1))))
+    segs.append(("STORY", stage_story))
+    return segs
+
+
+SEGMENTS = build_segments()
+CONTINUE_INDEX = 3
+DEV_PICKS = ["QUESTIONS", "ACTIONS", "CLOWN GAME", "NIGHT 1", "NIGHT 2", "NIGHT 3", "NIGHT 4", "NIGHT 5", "STORY"]
 
 
 # ---------------------------------------------------------------- game flow
@@ -2583,68 +2378,69 @@ def set_intro_clown(on):
         S.intro_player.pause()
 
 
-def run_game(start_stage=0):
+def begin(segments, finish):
     set_intro_clown(False)
     hide_panel()
     show_panel([Text("LOADING", "h2")])
     yield (lambda: True if A.ready() else None)
-    g = Game(start_stage)
-    S.game = g
+    hide_panel()
+    S.game = Game()
     AU.start_drone()
-    for i in range(start_stage, len(STAGES)):
-        g.stage = i + 1
-        show_panel([Text(f"STAGE {i + 1}", "h2"), Text(STAGES[i][0], color=DIM)])
-        yield 2200
-        hide_panel()
-        ok = yield from STAGES[i][1]()
-        if not ok:
-            AU.stop_drone()
-            yield 250
-            yield from jumpscare()
-            show_end(False)
-            return
-    AU.stop_drone()
-    show_end(True)
+    for _, fn in segments:
+        yield from fn()
+    finish()
 
 
-def show_end(won):
-    g = S.game
-    avg = f"{g.rt_sum / g.hits / 1000:.3f} S" if g.hits else "-"
-    if won:
-        head = [Text("ASSESSMENT COMPLETE", "h1"),
-                Text(f"You responded to every stimulus through all {LEVELS} levels. Your results have been recorded.")]
-    else:
-        msg = g.fail_msg or (f"It reached you at level {g.level}." if g.caught else f"Too many errors at level {g.level}.")
-        head = [Text("TERMINATED", "h1"), Text(msg, "warn")]
-    stats = Stats([("STIMULI CAUGHT", str(g.hits)), ("MISSED", str(g.misses)),
-                   ("FALSE RESPONSES", str(g.falses)), ("AVG RESPONSE", avg)])
-    again = Button("RUN AGAIN", lambda: RUN.start(run_game(g.start_stage)))
-    show_panel(head + [stats, Row([again], glitch=False)])
+def new_game():
+    RUN.start(begin(SEGMENTS, game_complete))
+
+
+def continue_game():
+    RUN.start(begin(SEGMENTS[CONTINUE_INDEX:], game_complete))
+
+
+def test_segment(label):
+    seg = next(sg for sg in SEGMENTS if sg[0] == label)
+    if label == "NIGHT 1":
+        seg = (label, lambda: play_night(1, True))
+    RUN.start(begin([seg], show_intro))
+
+
+def game_complete():
+    clear_save()
+    show_end()
+
+
+def show_end():
+    show_panel([Text("DARK GLASS", "h1", color=BLOOD, eff=("glow", BLOOD, 0.5, 12)),
+                Text("THANK YOU FOR PLAYING", color=DIM),
+                Row([Button("PLAY AGAIN", new_game)], glitch=False)])
 
 
 def show_intro():
     set_intro_clown(True)
     picks = [Text("TEST ONE STAGE", "label", glitch=False)]
-    for i, (name, _) in enumerate(STAGES):
-        picks.append(Button(f"{i + 1}. {name}", (lambda i=i: RUN.start(run_game(i))), small=True))
+    for label in DEV_PICKS:
+        picks.append(Button(label, (lambda label=label: test_segment(label)), small=True))
+    if has_save():
+        main_row = Row([Button("CONTINUE", continue_game), Button("NEW GAME", new_game)], glitch=False)
+    else:
+        main_row = Row([Button("BEGIN", new_game)], glitch=False)
     show_panel([
-        Text("STATIC RESPONSE", "h1"),
-        Text("This program measures how fast you react to things you do not expect. Each level lasts over a minute and moves faster than the one before."),
+        Text("DARK GLASS", "h1"),
         OList(["Sit in a dark room.",
                "Wear headphones and turn the volume up.",
-               "Press SPACE, or tap the screen, the moment you hear a sound or see an image.",
-               "Do not press when nothing is there.",
-               "Three errors in one level end the session.",
+               "Answer honestly. Do what you are asked.",
                "Do not look away from the screen."]),
         Text("CONTAINS LOUD SOUNDS AND SUDDEN FRIGHTENING IMAGES", "warn"),
-        Row([Button("BEGIN", lambda: RUN.start(run_game(0)))], glitch=False),
+        main_row,
         Row(picks, glitch=False),
     ])
 
 
 def show_gate():
     show_panel([
-        Text("STATIC RESPONSE", "h1"),
+        Text("DARK GLASS", "h1"),
         Text("PUT ON HEADPHONES. THIS PROGRAM USES SOUND.", "warn"),
         Row([Button("CLICK TO ENTER")], glitch=False),
     ])
@@ -2694,13 +2490,10 @@ def handle_event(ev):
 
 
 def on_pointer_down(ev):
-    g = S.game
     if S.glass and ev.button == 1:
         glass_flash(R.to_crt(ev.pos))
     if S.rlgl:
         S.holding = True
-    if g and g.lv:
-        press()
 
 
 def on_pointer_up(ev):
@@ -2708,13 +2501,10 @@ def on_pointer_up(ev):
 
 
 def on_key_down(ev):
-    g = S.game
     if ev.key == pygame.K_SPACE and S.glass:
         glass_toggle_tv()
     if ev.key == pygame.K_SPACE and S.rlgl:
         S.holding = True
-    if ev.key == pygame.K_SPACE and g and g.lv:
-        press()
 
 
 def on_key_up(ev):
@@ -2730,7 +2520,7 @@ def main():
     pygame.mixer.pre_init(SR, -16, 2, 512)
     pygame.init()
     pygame.mixer.set_num_channels(64)
-    pygame.display.set_caption("Static Response")
+    pygame.display.set_caption("Dark Glass")
     icon = pygame.Surface((32, 32))
     icon.fill(VOID)
     pygame.display.set_icon(icon)
@@ -2772,11 +2562,7 @@ def finish_loading():
 
 
 def tick(dt):
-    g = S.game
-    if g and g.lv and not g.paused:
-        level_update(dt * 1000)
     RUN.update()
-    SIDE.update()
     for pl in PLAYERS:
         pl.update(dt)
     update_run_steps()

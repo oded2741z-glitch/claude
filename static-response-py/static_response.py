@@ -2356,9 +2356,8 @@ def stage_clown_game():
         if caught:
             v.pause()
             S.rlgl = None
-            S.game.fail_msg = "He saw you move."
             show_walker(1.6)
-            yield 2300
+            yield 2000
             hide_walker()
             return False
         rg["scale"] = 0.42 + 0.78 * progress
@@ -2375,10 +2374,12 @@ def stage_clown():
     yield 4500
     stop_narration(voice)
     hide_panel()
-    ok = yield from stage_clown_game()
-    S.rlgl = None
-    S.holding = False
-    return ok
+    while True:
+        ok = yield from stage_clown_game()
+        S.rlgl = None
+        S.holding = False
+        if ok:
+            return True
 
 
 GLASS_SPOTS = {

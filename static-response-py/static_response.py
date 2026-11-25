@@ -1966,14 +1966,14 @@ def stage_story():
     return True
 
 
-def show_walker(rate):
+def show_walker(rate, step_ms=340):
     S.walker = True
     pl = S.walker_player
     pl.rate = rate
     pl.seek(0)
     pl.play()
     if A.runstep_walk and not S.run_steps:
-        S.run_steps = dict(interval=340 / rate, next=now_ms(), voices=[])
+        S.run_steps = dict(interval=step_ms / rate, next=now_ms(), voices=[])
 
 
 def stop_run_steps():
@@ -2096,7 +2096,7 @@ def stage_clown_game():
         if caught:
             v.pause()
             S.rlgl = None
-            show_walker(1.6)
+            show_walker(0.8, 520)
             yield 2000
             hide_walker()
             return False
@@ -2386,8 +2386,13 @@ def begin(segments, finish):
     hide_panel()
     S.game = Game()
     AU.start_drone()
-    for _, fn in segments:
+    for i, (_, fn) in enumerate(segments):
         yield from fn()
+        if i < len(segments) - 1:
+            hide_panel()
+            S.blackout = True
+            yield 5000
+            S.blackout = False
     finish()
 
 

@@ -421,6 +421,9 @@ def play(sound, gain=1.0):
     return Voice(sound, gain)
 
 
+DRONE_LEVEL = 0.5
+
+
 class Drone:
     def __init__(self):
         self.out = Param(0)
@@ -434,11 +437,11 @@ class Drone:
             self.hg.ramp(0.22, 1.5)
 
     def update(self):
-        self.synth.gain.set(self.out.value() * A.drone_scale)
+        self.synth.gain.set(self.out.value() * A.drone_scale * DRONE_LEVEL)
         if self.heart:
-            self.heart.gain.set(self.hg.value())
+            self.heart.gain.set(self.hg.value() * DRONE_LEVEL)
         if self.amb:
-            self.amb.gain.set(self.hg.value() * 0.6)
+            self.amb.gain.set(self.hg.value() * 0.6 * DRONE_LEVEL)
         if self.stop_at is not None and now_ms() >= self.stop_at:
             for v in (self.synth, self.heart, self.amb):
                 if v:
@@ -631,10 +634,12 @@ class Assets:
         except Exception as e:
             self.error = e
 
-    def _load_base(self):
+    def load_drone(self):
         self.drone_synth, self.drone_scale = make_drone_synth()
         self.heart = load_sound("heartbeat.wav")
         self.ambient = load_sound("ambient.wav")
+
+    def _load_base(self):
         self.scream = load_sound("scream.mp3", 1.8)
         self.eye = css_filter(read_rgb("eye.jpg"), ("gray", 1), ("contrast", 1.2), ("bright", 0.9))
         self.flash = [css_filter(read_rgb(f"f{i}.jpg"), ("contrast", 1.2), ("bright", 0.95)) for i in (18, 19, 20)]
@@ -2752,6 +2757,8 @@ def main():
 
 def start_loading():
     S.loading = dict(video=StreamVideo("loading.mp4"), t0=now_ms(), last=now_ms(), x=0.0)
+    A.load_drone()
+    AU.start_drone()
     A.load()
 
 

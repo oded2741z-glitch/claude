@@ -640,7 +640,9 @@ class Assets:
         self.flash = [css_filter(read_rgb(f"f{i}.jpg"), ("contrast", 1.2), ("bright", 0.95)) for i in (18, 19, 20)]
         self.xray = css_filter(read_rgb("xray.jpg"), ("contrast", 1.2))
         f19 = read_rgb("f19.jpg")
-        self.peek = {"flash": (css_filter(f19, ("gray", 1), ("bright", 0.95), ("contrast", 1.4)), 0.9, 1.05),
+        fam = read_optional("family.jpg")
+        flash_src = fam if fam is not None else f19
+        self.peek = {"flash": (css_filter(flash_src, ("gray", 1), ("bright", 0.95), ("contrast", 1.4)), 0.9, 1.05),
                      "p3": (css_filter(f19, ("gray", 1), ("bright", 0.9), ("contrast", 1.3)), 1.0, 1.18)}
         self.narr = [load_sound("story1.mp3", 1.3), load_sound("story2.mp3", 1.3)]
         self.steps = load_sound("steps.mp3")
@@ -1631,7 +1633,7 @@ class Renderer:
             return
         rgb, op, scale = A.peek[S.peek]
         h = int(self.H * 0.92 * scale)
-        w = int(h * 783 / 1000)
+        w = int(h * rgb.shape[1] / rgb.shape[0])
         key = ("peek", S.peek, w, h)
         img = self._hand_cache.get(key)
         if img is None:

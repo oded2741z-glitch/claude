@@ -421,7 +421,7 @@ def play(sound, gain=1.0):
     return Voice(sound, gain)
 
 
-DRONE_LEVEL = 0.5
+DRONE_LEVEL = 0.15
 
 
 class Drone:

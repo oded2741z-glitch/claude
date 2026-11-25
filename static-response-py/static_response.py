@@ -644,7 +644,7 @@ class Assets:
         flash_src = fam if fam is not None else f19
         self.peek = {"flash": (css_filter(flash_src, ("gray", 1), ("bright", 0.95), ("contrast", 1.4)), 0.9, 1.05),
                      "p3": (css_filter(f19, ("gray", 1), ("bright", 0.9), ("contrast", 1.3)), 1.0, 1.18)}
-        self.narr = [load_sound("story1.mp3", 1.3), load_sound("story2.mp3", 1.3)]
+        self.narr = [load_sound("story1.wav"), load_sound("story2.wav")]
         self.steps = load_sound("steps.mp3")
         self.playwithme = load_sound("playwithme.mp3", 1.3)
         self.music_box = make_music_box()
@@ -2039,11 +2039,11 @@ def stage_story():
     show_panel([StoryBlock(STORY_DARK, STORY_LAST)])
     n2 = play_narration(A.narr[1])
     if n2:
-        yield 23800
+        yield 19200
         yield from peek_flash()
-        yield 24700
+        yield 8000
         yield from peek_flash()
-        yield max(0, A.narr[1].get_length() * 1000 - 52000)
+        yield max(0, A.narr[1].get_length() * 1000 - 31200)
     else:
         yield 5000
         yield from peek_flash()

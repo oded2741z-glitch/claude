@@ -2022,7 +2022,7 @@ STORY_LAST = '"I saved my best friend for last."'
 
 def peek_flash():
     S.peek = "flash"
-    yield 500
+    yield 2000
     S.peek = None
 
 
@@ -2041,9 +2041,9 @@ def stage_story():
     if n2:
         yield 23800
         yield from peek_flash()
-        yield 26200
+        yield 24700
         yield from peek_flash()
-        yield max(0, A.narr[1].get_length() * 1000 - 50500)
+        yield max(0, A.narr[1].get_length() * 1000 - 52000)
     else:
         yield 5000
         yield from peek_flash()

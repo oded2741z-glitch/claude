@@ -2003,6 +2003,7 @@ def hide_walker():
     stop_run_steps()
 
 
+RLGL_WALK = 30.0
 TURN = dict(backStart=0.1, backEnd=4.8, turnStart=4.95, front=5.6, frontStart=6.0, frontEnd=9.8, revStart=10.0, revEnd=11.3)
 
 
@@ -2044,7 +2045,7 @@ def stage_clown_game():
             if v.t >= TURN["backEnd"]:
                 seek(TURN["backStart"])
             if holding:
-                progress = min(1, progress + dt / 45)
+                progress = min(1, progress + dt / RLGL_WALK)
                 step_t -= dt
                 if step_t <= 0 and A.runstep_clown:
                     play(random.choice(A.runstep_clown))
@@ -2128,6 +2129,17 @@ GLASS_HOLD = 0.3
 SIGHT_TIME = 2.0
 TV_SCREEN = (0.4135, 0.284, 0.5835, 0.514)
 NIGHTS = 5
+NIGHT_LEN = 660.0
+QUIET_START = 180.0
+MAX_VISITS = 3
+
+
+def night_spawn_times(night_len):
+    lo, hi = QUIET_START, night_len - 30.0
+    while True:
+        ts = sorted(rand(lo, hi) for _ in range(MAX_VISITS))
+        if all(b - a >= 45.0 for a, b in zip(ts, ts[1:])):
+            return ts
 
 
 def glass_spot_rect(spot):
@@ -2186,9 +2198,10 @@ def glass_set_tv_clip(gl, name):
 
 def glass_night(n):
     gl = S.glass
-    night_len = 420.0
+    night_len = NIGHT_LEN
     gl.update(night=n, t=0.0, hour_len=night_len / 6, tv=True, charge=1.0, flash_until=0, static_until=0,
-              clown="away", spot=None, threat=0.0, seen=None, cooldown=rand(6, 9) - n * 0.6, fake=rand(8, 14), mode="night")
+              clown="away", spot=None, threat=0.0, seen=None, cooldown=0.0, fake=rand(8, 14), mode="night")
+    gl["spawns"] = night_spawn_times(night_len)
     threat_time = 7.4 - 0.9 * n
     gl["tv_name"] = None
     glass_set_tv_clip(gl, "tv_show")
@@ -2208,8 +2221,8 @@ def glass_night(n):
         if gl["tv"]:
             gl["charge"] = min(1.0, gl["charge"] + dt / 8.0)
         if gl["clown"] == "away":
-            gl["cooldown"] -= dt
-            if gl["cooldown"] <= 0:
+            if gl["spawns"] and gl["t"] >= gl["spawns"][0]:
+                gl["spawns"].pop(0)
                 choices = [k for k in GLASS_SPOTS if k != gl["spot"]]
                 gl["spot"] = random.choice(choices)
                 sp = GLASS_SPOTS[gl["spot"]]
@@ -2240,7 +2253,6 @@ def glass_night(n):
         elif gl["clown"] == "retreat":
             if rp.ended:
                 gl["clown"] = "away"
-                gl["cooldown"] = rand(5.5, 9.5) * (1 - 0.1 * (n - 1))
         if n >= 3:
             gl["fake"] -= dt
             if gl["fake"] <= 0:

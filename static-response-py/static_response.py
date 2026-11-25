@@ -2013,11 +2013,11 @@ STORY_DARK = [
     "You put your hand on the screen, and something on the other side pressed back.",
     "Look at the dark glass. Just behind your shoulder.",
     'He always used to smile and say, "Now it\'s just you and me."',
-    "He said it every time another child from your class stopped coming to school.",
-    "There is no one left now.",
-    "Only you.",
+    "Every night, after the clown left, Mom came into your room to kiss you goodnight.",
+    "Her lips were always too red, and little bells were caught in her hair.",
+    'She whispered, "You don\'t need friends. You have me."',
 ]
-STORY_LAST = '"I saved my best friend for last."'
+STORY_LAST = '"No one will ever love you like Mommy."'
 
 
 def peek_flash():

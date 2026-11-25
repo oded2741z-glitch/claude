@@ -2186,7 +2186,7 @@ def glass_set_tv_clip(gl, name):
 
 def glass_night(n):
     gl = S.glass
-    night_len = 90.0
+    night_len = 420.0
     gl.update(night=n, t=0.0, hour_len=night_len / 6, tv=True, charge=1.0, flash_until=0, static_until=0,
               clown="away", spot=None, threat=0.0, seen=None, cooldown=rand(6, 9) - n * 0.6, fake=rand(8, 14), mode="night")
     threat_time = 7.4 - 0.9 * n

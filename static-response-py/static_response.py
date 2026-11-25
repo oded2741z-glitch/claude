@@ -189,6 +189,37 @@ class Clip:
         return self._surf
 
 
+class StreamVideo:
+    def __init__(self, name):
+        self.cap = cv2.VideoCapture(os.path.join(IMG_DIR, name))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 24.0
+        self.n = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.ok = self.cap.isOpened() and self.n > 0
+        self.idx = -1
+        self.surf = None
+
+    def frame(self, t):
+        if not self.ok:
+            return None
+        i = int(t * self.fps) % self.n
+        if i != self.idx:
+            if i < self.idx:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                self.idx = -1
+            f = None
+            while self.idx < i:
+                ok, f = self.cap.read()
+                if not ok:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self.idx = -1
+                    f = None
+                    break
+                self.idx += 1
+            if f is not None:
+                self.surf = rgb_surface(np.ascontiguousarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)[:, ::-1]))
+        return self.surf
+
+
 class Player:
     def __init__(self, clip, loop=False):
         self.clip = clip
@@ -583,7 +614,24 @@ def slam_hit():
 # ---------------------------------------------------------------- assets
 
 class Assets:
+    progress = 0.0
+    error = None
+
     def load(self):
+        threading.Thread(target=self._load_all, daemon=True).start()
+
+    def _load_all(self):
+        try:
+            self._load_base()
+            self.progress = 0.15
+            for i, c in enumerate(self.clips):
+                c.load()
+                self.progress = 0.15 + 0.85 * (i + 1) / len(self.clips)
+            self.clips_done = True
+        except Exception as e:
+            self.error = e
+
+    def _load_base(self):
         self.drone_synth, self.drone_scale = make_drone_synth()
         self.heart = load_sound("heartbeat.wav")
         self.ambient = load_sound("ambient.wav")
@@ -621,12 +669,6 @@ class Assets:
         names = ["room_left", "room_right", "room_closet", "tv_wrong", "tv_empty"] + self.tv_shows
         self.glass = {k: Clip(f"{k}.mp4") for k in names}
         self.clips = [self.intro, self.scare, self.walker, self.turn] + list(self.glass.values())
-        threading.Thread(target=self._load_clips, daemon=True).start()
-
-    def _load_clips(self):
-        for c in self.clips:
-            c.load()
-        self.clips_done = True
 
     clips_done = False
 
@@ -1326,6 +1368,8 @@ class Renderer:
             ch = H * 0.82
             cw = ch * 460 / 720
             draw_screen_video(c, S.intro_player, (W - W * 0.03 - cw, H - H * 0.02 - ch, cw, ch), 0.75, 0.85)
+        if S.loading:
+            self.draw_loading(c)
         P.draw(c)
         c.blit(self.scan, (0, 0))
         c.blit(self.vignette, (0, 0))
@@ -1538,6 +1582,28 @@ class Renderer:
         charge = gl["charge"]
         pygame.draw.rect(c, BLOOD, (bx + 4, by + 4, int((bw - 8) * charge), bh - 8))
 
+    def draw_loading(self, c):
+        W, H = self.W, self.H
+        ld = S.loading
+        t = now_ms()
+        dt = min(0.05, (t - ld["last"]) / 1000)
+        ld["last"] = t
+        ld["x"] += (A.progress - ld["x"]) * min(1.0, dt * 2.5)
+        img = ld["video"].frame((t - ld["t0"]) / 1000)
+        if img is not None:
+            h = int(H * 0.62)
+            w = int(h * img.get_width() / img.get_height())
+            cx = W * 0.05 + ld["x"] * W * 0.9
+            c.blit(pygame.transform.smoothscale(img, (w, h)), (int(cx - w / 2), int(H * 0.08)), special_flags=pygame.BLEND_RGB_ADD)
+        px = clamp(3 * vmin(), 16, 28)
+        txt, pad = text_image("display", px, "LOADING", PHOSPHOR, 0.12, ("glow", PHOSPHOR, 0.3, 8))
+        c.blit(txt, (int((W - txt.get_width()) / 2), int(H * 0.76 - pad)))
+        bw, bx, by = int(W * 0.5), int(W * 0.25), int(H * 0.76 + px * 1.6)
+        bar = pygame.Surface((bw, 4), pygame.SRCALPHA)
+        bar.fill(PHOSPHOR + (38,))
+        c.blit(bar, (bx, by))
+        pygame.draw.rect(c, PHOSPHOR, (bx, by, int(bw * ld["x"]), 4))
+
     def draw_rlgl(self, c):
         W, H = self.W, self.H
         rg = S.rlgl
@@ -1731,6 +1797,7 @@ class State:
     holding = False
     turn_player = None
     glass = None
+    loading = None
 
 
 S = State()
@@ -2594,6 +2661,8 @@ def handle_event(ev):
         R.screen = pygame.display.set_mode((max(320, ev.w), max(200, ev.h)), pygame.RESIZABLE)
         R.build()
         return
+    if S.loading:
+        return
     if ev.type == pygame.MOUSEBUTTONDOWN:
         if S.gate:
             enter_from_gate()
@@ -2663,22 +2732,36 @@ def main():
     R = Renderer()
     R.screen.fill(VOID)
     pygame.display.flip()
-    A.load()
-    S.intro_player = Player(A.intro, loop=True)
-    S.scare_player = Player(A.scare, loop=True)
-    S.walker_player = Player(A.walker)
-    S.turn_player = Player(A.turn)
-    show_gate()
+    start_loading()
     clock = pygame.time.Clock()
     last = now_ms()
     while True:
         for ev in pygame.event.get():
             handle_event(ev)
+        if S.loading:
+            if A.error:
+                raise A.error
+            if A.ready() and S.loading["x"] > 0.97:
+                finish_loading()
         t = now_ms()
         dt = min(0.05, (t - last) / 1000)
         last = t
         tick(dt)
         clock.tick(60)
+
+
+def start_loading():
+    S.loading = dict(video=StreamVideo("loading.mp4"), t0=now_ms(), last=now_ms(), x=0.0)
+    A.load()
+
+
+def finish_loading():
+    S.loading = None
+    S.intro_player = Player(A.intro, loop=True)
+    S.scare_player = Player(A.scare, loop=True)
+    S.walker_player = Player(A.walker)
+    S.turn_player = Player(A.turn)
+    show_gate()
 
 
 def tick(dt):

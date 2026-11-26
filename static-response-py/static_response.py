@@ -1322,9 +1322,17 @@ class Renderer:
         self.draw_peek(c)
         self.draw_hand(c)
         if S.walker:
-            h = H
-            w = h * 460 / 720
-            draw_screen_video(c, S.walker_player, ((W - w) / 2, 0, w, h))
+            wf = S.walker_from
+            if wf:
+                k = clamp((now_ms() - wf["t0"]) / wf["dur"], 0, 1)
+                h = H * (wf["s0"] + (1 - wf["s0"]) * k)
+                bottom = H * (wf["b0"] + (1 - wf["b0"]) * k)
+                w = h * 460 / 720
+                draw_screen_video(c, S.walker_player, ((W - w) / 2, bottom - h, w, h))
+            else:
+                h = H
+                w = h * 460 / 720
+                draw_screen_video(c, S.walker_player, ((W - w) / 2, 0, w, h))
         if S.rlgl:
             self.draw_rlgl(c)
         if S.glass:
@@ -1711,6 +1719,7 @@ class State:
     peek = None
     walker = False
     walker_player = None
+    walker_from = None
     run_steps = None
     rlgl = None
     holding = False
@@ -1999,6 +2008,7 @@ def update_run_steps():
 
 def hide_walker():
     S.walker = False
+    S.walker_from = None
     S.walker_player.pause()
     stop_run_steps()
 
@@ -2097,6 +2107,8 @@ def stage_clown_game():
         if caught:
             v.pause()
             S.rlgl = None
+            sc = rg["scale"]
+            S.walker_from = dict(s0=0.96 * sc, b0=0.02 + 0.96 * (0.7 + 0.3 * sc), t0=now_ms(), dur=2000)
             show_walker(0.8, 520)
             yield 2000
             hide_walker()

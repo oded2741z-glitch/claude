@@ -31,21 +31,27 @@ header { padding:0.75rem 1.5rem; background:#ffffff; border-bottom:1px solid var
 .status { margin-left:auto; display:flex; align-items:center; gap:8px; font-size:0.9rem; font-weight:600; color:var(--text-gray); }
 .dot { width:6px; height:6px; background:var(--border-color); border-radius:50%; }
 .dot.live { background:#10b981; }
-.screen { flex:1; min-height:0; display:flex; align-items:center; justify-content:center; overflow:hidden; }
-.screen img { display:block; width:100%; height:100%; object-fit:contain; }
-.screen .empty { color:var(--text-gray); font-size:1.05rem; }
+.reset-btn { display:none; background:#ffffff; color:var(--text-dark); border:1px solid var(--border-color); border-radius:8px; padding:0.6rem 1rem; font-weight:700; cursor:pointer; transition:border-color 0.2s; }
+.reset-btn:hover { border-color:var(--primary-accent); }
+.screen { flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; overflow:hidden; user-select:none; }
+.screen canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+.screen canvas.selectable { cursor:crosshair; }
+.screen .empty { position:relative; color:var(--text-gray); font-size:1.05rem; }
+.select-box { position:absolute; display:none; border:2px solid var(--primary-accent); background:rgba(37,99,235,0.15); pointer-events:none; }
 </style>
 </head>
 <body>
 <header>
   <a href="#" class="logo-text">Screen<span class="logo-accent">Viewer</span></a>
   <div class="computers" id="computers"></div>
+  <button class="reset-btn" id="reset">Reset zoom</button>
   <div class="status"><span class="dot" id="dot"></span><span id="status">No computer selected</span></div>
 </header>
 
 <div class="screen" id="screen">
   <span class="empty" id="empty">Select a computer above</span>
-  <img id="img" alt="" style="display:none">
+  <canvas id="canvas"></canvas>
+  <div class="select-box" id="box"></div>
 </div>
 
 <script>
@@ -57,7 +63,14 @@ var COMPUTERS = [
 var DELAY = 500;
 
 var list = document.getElementById('computers');
-var img = document.getElementById('img');
+var canvas = document.getElementById('canvas');
+var ctx = canvas.getContext('2d');
+var box = document.getElementById('box');
+var resetBtn = document.getElementById('reset');
+var frame = null;
+var crop = null;
+var map = { x: 0, y: 0, s: 1, sx: 0, sy: 0 };
+var start = null;
 var empty = document.getElementById('empty');
 var dot = document.getElementById('dot');
 var statusText = document.getElementById('status');
@@ -70,13 +83,84 @@ function setStatus(text, live) {
   dot.className = live ? 'dot live' : 'dot';
 }
 
+function draw() {
+  var dpr = window.devicePixelRatio || 1;
+  var cw = canvas.clientWidth, ch = canvas.clientHeight;
+  if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+    canvas.width = Math.round(cw * dpr);
+    canvas.height = Math.round(ch * dpr);
+  }
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  canvas.className = frame && !crop ? 'selectable' : '';
+  if (!frame) return;
+  var sx = 0, sy = 0, sw = frame.naturalWidth, sh = frame.naturalHeight;
+  if (crop) { sx = crop.x; sy = crop.y; sw = crop.w; sh = crop.h; }
+  var s = Math.min(cw / sw, ch / sh);
+  var dw = sw * s, dh = sh * s, dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(frame, sx, sy, sw, sh, dx * dpr, dy * dpr, dw * dpr, dh * dpr);
+  map = { x: dx, y: dy, s: s, sx: sx, sy: sy };
+}
+
+function setCrop(c) {
+  crop = c;
+  resetBtn.style.display = c ? 'block' : 'none';
+  draw();
+}
+
+function point(e) {
+  var r = canvas.getBoundingClientRect();
+  return { x: Math.max(0, Math.min(r.width, e.clientX - r.left)), y: Math.max(0, Math.min(r.height, e.clientY - r.top)) };
+}
+
+canvas.addEventListener('mousedown', function (e) {
+  if (e.button !== 0 || !frame || crop) return;
+  start = point(e);
+  box.style.left = start.x + 'px';
+  box.style.top = start.y + 'px';
+  box.style.width = '0px';
+  box.style.height = '0px';
+  box.style.display = 'block';
+  e.preventDefault();
+});
+
+window.addEventListener('mousemove', function (e) {
+  if (!start) return;
+  var p = point(e);
+  box.style.left = Math.min(start.x, p.x) + 'px';
+  box.style.top = Math.min(start.y, p.y) + 'px';
+  box.style.width = Math.abs(p.x - start.x) + 'px';
+  box.style.height = Math.abs(p.y - start.y) + 'px';
+});
+
+window.addEventListener('mouseup', function (e) {
+  if (!start) return;
+  var p = point(e);
+  var a = start;
+  start = null;
+  box.style.display = 'none';
+  if (!frame || Math.abs(p.x - a.x) < 10 || Math.abs(p.y - a.y) < 10) return;
+  var iw = frame.naturalWidth, ih = frame.naturalHeight;
+  var x1 = Math.max(0, Math.min(iw, map.sx + (Math.min(a.x, p.x) - map.x) / map.s));
+  var y1 = Math.max(0, Math.min(ih, map.sy + (Math.min(a.y, p.y) - map.y) / map.s));
+  var x2 = Math.max(0, Math.min(iw, map.sx + (Math.max(a.x, p.x) - map.x) / map.s));
+  var y2 = Math.max(0, Math.min(ih, map.sy + (Math.max(a.y, p.y) - map.y) / map.s));
+  if (x2 - x1 < 2 || y2 - y1 < 2) return;
+  setCrop({ x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+});
+
+resetBtn.onclick = function () { setCrop(null); };
+window.addEventListener('resize', draw);
+
 function select(c, btn) {
   current = c;
   session++;
   clearTimeout(timer);
   Array.prototype.forEach.call(list.children, function (b) { b.classList.remove('active'); });
   btn.classList.add('active');
-  img.style.display = 'none';
+  frame = null;
+  setCrop(null);
   empty.style.display = '';
   empty.textContent = 'Connecting to ' + c.name + '...';
   setStatus('Connecting to ' + c.name, false);
@@ -89,15 +173,16 @@ function load(s) {
   var next = new Image();
   next.onload = function () {
     if (s !== session) return;
-    img.src = next.src;
-    img.style.display = '';
+    frame = next;
+    draw();
     empty.style.display = 'none';
     setStatus(current.name + ' - live', true);
     timer = setTimeout(function () { load(s); }, DELAY);
   };
   next.onerror = function () {
     if (s !== session) return;
-    img.style.display = 'none';
+    frame = null;
+    draw();
     empty.style.display = '';
     empty.textContent = 'Cannot reach ' + current.name + '. Make sure Screen Stream is running there.';
     setStatus(current.name + ' - not connected, retrying', false);

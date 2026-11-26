@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%232563eb' stroke-width='2'%3E%3Crect x='2' y='4' width='20' height='13' rx='2'/%3E%3Cpath d='M8 21h8M12 17v4'/%3E%3C/svg%3E">
+<meta name="theme-color" content="#f9fafb">
+<title>Screen Viewer</title>
+<meta name="description" content="View the screen of any computer running Screen Stream.">
+<style>
+:root {
+  --primary-accent: #2563eb;
+  --primary-hover:  #1d4ed8;
+  --bg-light:       #f9fafb;
+  --text-dark:      #111827;
+  --text-gray:      #64748b;
+  --border-color:   #e2e8f0;
+}
+* { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+body { background:var(--bg-light); color:var(--text-dark); min-height:100vh; display:flex; flex-direction:column; overflow-x:hidden; }
+header { padding:1.5rem 6%; background:#ffffff; border-bottom:1px solid var(--border-color); }
+.logo-text { font-weight:800; font-size:1.5rem; letter-spacing:-0.5px; color:var(--text-dark); text-decoration:none; }
+.logo-accent { color:var(--primary-accent); }
+.work-wrap { max-width:1400px; margin:2rem auto; padding:0 6%; width:100%; flex:1; display:flex; flex-direction:column; gap:1.5rem; }
+h1 { font-size:2.2rem; letter-spacing:-1px; color:var(--text-dark); }
+.subtitle { font-size:1.05rem; color:var(--text-gray); line-height:1.6; }
+.section-label { font-size:0.75rem; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:var(--text-gray); margin-bottom:0.75rem; }
+.computers { display:flex; gap:0.75rem; flex-wrap:wrap; }
+.computer-btn { background:#ffffff; color:var(--text-dark); border:1px solid var(--border-color); border-radius:8px; padding:0.75rem 1.25rem; font-weight:700; cursor:pointer; text-align:left; display:flex; flex-direction:column; gap:0.25rem; transition:border-color 0.2s; }
+.computer-btn:hover { border-color:var(--primary-accent); }
+.computer-btn.active { background:var(--primary-accent); border-color:var(--primary-accent); color:#fff; }
+.computer-btn small { font-size:0.8rem; font-weight:600; color:var(--text-gray); }
+.computer-btn.active small { color:#fff; }
+.panel { background:#ffffff; border:1px solid var(--border-color); border-radius:12px; padding:1rem; display:flex; flex-direction:column; gap:0.75rem; box-shadow:0 4px 12px rgba(0,0,0,0.04); }
+.status { display:flex; align-items:center; gap:8px; font-size:0.95rem; font-weight:600; color:var(--text-gray); }
+.dot { width:6px; height:6px; background:var(--border-color); border-radius:50%; }
+.dot.live { background:#10b981; }
+.screen { position:relative; background:var(--bg-light); border-radius:8px; height:70vh; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+.screen img { display:block; width:100%; height:100%; object-fit:contain; }
+.screen .empty { color:var(--text-gray); font-size:1.05rem; }
+.site-footer { padding:2rem 6%; border-top:1px solid var(--border-color); text-align:center; color:var(--text-gray); font-size:0.9rem; background:transparent; }
+.acc-btn { position:fixed; bottom:30px; left:30px; width:50px; height:50px; border-radius:50%; background:var(--primary-accent); display:flex; align-items:center; justify-content:center; cursor:pointer; border:none; box-shadow:0 4px 12px rgba(0,0,0,0.15); z-index:1000; }
+.acc-menu { position:fixed; bottom:90px; left:30px; width:260px; display:none; flex-direction:column; gap:0.8rem; padding:1.5rem; background:white; border:1px solid var(--border-color); border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.2); z-index:1000; }
+.acc-toggle { width:100%; padding:0.6rem; border:1px solid var(--border-color); border-radius:6px; background:white; font-weight:700; text-align:left; cursor:pointer; }
+.acc-toggle:hover { border-color:var(--primary-accent); }
+body.acc-high-contrast { background:#000; color:#fff; }
+body.acc-high-contrast * { background:#000 !important; color:#fff !important; border-color:#fff !important; }
+body.acc-large-text * { font-size:120% !important; }
+body.acc-highlight-links a { background:yellow !important; color:black !important; padding:2px !important; }
+@media (max-width:768px){ h1{font-size:1.8rem;} .screen{height:50vh;} }
+</style>
+</head>
+<body>
+<header>
+  <a href="#" class="logo-text">Screen<span class="logo-accent">Viewer</span></a>
+</header>
+
+<div class="work-wrap">
+  <div>
+    <h1>Screen Viewer</h1>
+    <p class="subtitle">Choose a computer to view its screen.</p>
+  </div>
+
+  <div>
+    <div class="section-label">Computers</div>
+    <div class="computers" id="computers"></div>
+  </div>
+
+  <div class="panel">
+    <div class="status"><span class="dot" id="dot"></span><span id="status">No computer selected</span></div>
+    <div class="screen" id="screen">
+      <span class="empty" id="empty">Select a computer above</span>
+      <img id="img" alt="" style="display:none">
+    </div>
+  </div>
+</div>
+
+<footer class="site-footer">© 2026 Screen Viewer. All rights reserved.</footer>
+
+<button class="acc-btn" onclick="document.getElementById('acc-menu').style.display=(document.getElementById('acc-menu').style.display==='flex'?'none':'flex')">
+  <svg viewBox="0 0 24 24" fill="white" width="24"><path d="M12 2c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm9 7h-6v13h-2v-6h-2v6H9V9H3V7h18v2z"/></svg>
+</button>
+<div class="acc-menu" id="acc-menu">
+  <h4 style="margin-bottom:0.5rem;">Accessibility Options</h4>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-high-contrast')">High Contrast Mode</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-large-text')">Increase Font Size</button>
+  <button class="acc-toggle" onclick="document.body.classList.toggle('acc-highlight-links')">Highlight Links</button>
+  <button class="acc-toggle" onclick="location.reload()" style="color:red;border-color:red;margin-top:10px;">Reset All</button>
+</div>
+
+<script>
+var COMPUTERS = [
+  { name: 'Office',  address: '192.168.1.20:8080' },
+  { name: 'Laptop',  address: '192.168.1.21:8080' },
+  { name: 'Kitchen', address: '192.168.1.22:8080' }
+];
+var DELAY = 500;
+
+var list = document.getElementById('computers');
+var img = document.getElementById('img');
+var empty = document.getElementById('empty');
+var dot = document.getElementById('dot');
+var statusText = document.getElementById('status');
+var current = null;
+var session = 0;
+var timer = null;
+
+function setStatus(text, live) {
+  statusText.textContent = text;
+  dot.className = live ? 'dot live' : 'dot';
+}
+
+function select(c, btn) {
+  current = c;
+  session++;
+  clearTimeout(timer);
+  Array.prototype.forEach.call(list.children, function (b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  img.style.display = 'none';
+  empty.style.display = '';
+  empty.textContent = 'Connecting to ' + c.name + '...';
+  setStatus('Connecting to ' + c.name + ' (' + c.address + ')', false);
+  load(session);
+}
+
+function load(s) {
+  if (s !== session) return;
+  if (document.hidden) { timer = setTimeout(function () { load(s); }, 1000); return; }
+  var next = new Image();
+  next.onload = function () {
+    if (s !== session) return;
+    img.src = next.src;
+    img.style.display = '';
+    empty.style.display = 'none';
+    setStatus(current.name + ' (' + current.address + ') - live', true);
+    timer = setTimeout(function () { load(s); }, DELAY);
+  };
+  next.onerror = function () {
+    if (s !== session) return;
+    img.style.display = 'none';
+    empty.style.display = '';
+    empty.textContent = 'Cannot reach ' + current.name + '. Make sure Screen Stream is running there.';
+    setStatus(current.name + ' (' + current.address + ') - not connected, retrying', false);
+    timer = setTimeout(function () { load(s); }, 2000);
+  };
+  next.src = 'http://' + current.address + '/frame?t=' + Date.now();
+}
+
+COMPUTERS.forEach(function (c) {
+  var b = document.createElement('button');
+  b.className = 'computer-btn';
+  b.innerHTML = '<span></span><small></small>';
+  b.firstChild.textContent = c.name;
+  b.lastChild.textContent = c.address;
+  b.onclick = function () { select(c, b); };
+  list.appendChild(b);
+});
+</script>
+</body>
+</html>

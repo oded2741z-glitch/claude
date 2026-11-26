@@ -9,8 +9,12 @@ import cv2
 import numpy as np
 import pygame
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    HERE = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+else:
+    HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
+DEMO = False
 IMG_DIR = "img"
 AUDIO_DIR = "audio"
 FONT_DIR = "fonts"
@@ -626,6 +630,15 @@ class Assets:
 
     def _load_base(self):
         self.scream = load_sound("scream.mp3", 1.8)
+        if DEMO:
+            self._load_runsteps()
+            self.faces = []
+            self.intro = Clip("intro.mp4", 1.1)
+            self.scare = Clip("scare.mp4")
+            self.walker = Clip("walker.mp4", 1.15)
+            self.turn = Clip("turn.mp4")
+            self.clips = [self.intro, self.scare, self.walker, self.turn]
+            return
         self.eye = css_filter(read_rgb("eye.jpg"), ("gray", 1), ("contrast", 1.2), ("bright", 0.9))
         self.flash = [css_filter(read_rgb(f"f{i}.jpg"), ("contrast", 1.2), ("bright", 0.95)) for i in (18, 19, 20)]
         self.xray = css_filter(read_rgb("xray.jpg"), ("contrast", 1.2))
@@ -638,13 +651,7 @@ class Assets:
         self.music_box = make_music_box()
         self.room_empty = read_optional("room_empty.jpg")
         self.tv_set = read_optional("tv_set.jpg")
-        rs = load_sound("runstep.mp3")
-        self.runstep_walk = []
-        self.runstep_clown = []
-        if rs is not None:
-            arr = sound_array(rs)
-            self.runstep_walk = [to_sound(np.tanh(resample(arr, r) * 2.5)) for r in np.linspace(0.92, 1.08, 7)]
-            self.runstep_clown = [to_sound(np.tanh(resample(arr, r) * 1.4)) for r in np.linspace(0.85, 0.95, 5)]
+        self._load_runsteps()
         self.faces = []
         for i in (6, 7, 8, 9, 10):
             try:
@@ -659,6 +666,15 @@ class Assets:
         names = ["room_left", "room_right", "room_closet", "tv_wrong", "tv_empty"] + self.tv_shows
         self.glass = {k: Clip(f"{k}.mp4") for k in names}
         self.clips = [self.intro, self.scare, self.walker, self.turn] + list(self.glass.values())
+
+    def _load_runsteps(self):
+        rs = load_sound("runstep.mp3")
+        self.runstep_walk = []
+        self.runstep_clown = []
+        if rs is not None:
+            arr = sound_array(rs)
+            self.runstep_walk = [to_sound(np.tanh(resample(arr, r) * 2.5)) for r in np.linspace(0.92, 1.08, 7)]
+            self.runstep_clown = [to_sound(np.tanh(resample(arr, r) * 1.4)) for r in np.linspace(0.85, 0.95, 5)]
 
     clips_done = False
 
@@ -2119,11 +2135,12 @@ def stage_clown_game():
         rg["stop"] = phase != "back"
 
 
-def stage_clown():
-    show_panel([Text("ONE, TWO, THREE, CLOWN", "h2"),
-                Text("He wants to play. Walk to him while his back is turned. When he turns around, do not move.", color=DIM)])
-    yield 4500
-    hide_panel()
+def stage_clown(intro=True):
+    if intro:
+        show_panel([Text("ONE, TWO, THREE, CLOWN", "h2"),
+                    Text("He wants to play. Walk to him while his back is turned. When he turns around, do not move.", color=DIM)])
+        yield 4500
+        hide_panel()
     while True:
         ok = yield from stage_clown_game()
         S.rlgl = None
@@ -2446,7 +2463,42 @@ def show_end():
                 Row([Button("PLAY AGAIN", new_game)], glitch=False)])
 
 
+DEMO_ROUNDS = 3
+
+
+def demo_segments():
+    return [("CLOWN GAME", (lambda i=i: stage_clown(i == 0))) for i in range(DEMO_ROUNDS)]
+
+
+def start_demo():
+    RUN.start(begin(demo_segments(), show_demo_end))
+
+
+def show_demo_end():
+    show_panel([Text("DARK GLASS", "h1", color=BLOOD, eff=("glow", BLOOD, 0.5, 12)),
+                Text("He will be back tomorrow night.", "h2", eff=SHADOW),
+                Text("THANK YOU FOR PLAYING THE DEMO. WISHLIST DARK GLASS ON STEAM.", color=DIM),
+                Row([Button("PLAY AGAIN", start_demo)], glitch=False)])
+
+
+def show_demo_intro():
+    set_intro_clown(True)
+    show_panel([
+        Text("DARK GLASS", "h1"),
+        Text("DEMO", "warn"),
+        OList(["Sit in a dark room.",
+               "Wear headphones and turn the volume up.",
+               "Hold SPACE or the mouse button to walk.",
+               "When he turns around, do not move."]),
+        Text("CONTAINS LOUD SOUNDS AND SUDDEN FRIGHTENING IMAGES", "warn"),
+        Row([Button("PLAY DEMO", start_demo)], glitch=False),
+    ])
+
+
 def show_intro():
+    if DEMO:
+        show_demo_intro()
+        return
     set_intro_clown(True)
     picks = [Text("TEST ONE STAGE", "label", glitch=False)]
     for label in DEV_PICKS:
@@ -2549,7 +2601,7 @@ def main():
     pygame.mixer.pre_init(SR, -16, 2, 512)
     pygame.init()
     pygame.mixer.set_num_channels(64)
-    pygame.display.set_caption("Dark Glass")
+    pygame.display.set_caption("Dark Glass Demo" if DEMO else "Dark Glass")
     icon = pygame.Surface((32, 32))
     icon.fill(VOID)
     pygame.display.set_icon(icon)

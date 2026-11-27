@@ -1482,6 +1482,68 @@ class Renderer:
             self._glass_cache[key] = g
         return g
 
+    def draw_tv_view(self, c):
+        W, H = self.W, self.H
+        pl = S.glass["tv_player"]
+        if A.tv_set is not None:
+            c.blit(self.glass_frame(A.tv_set, 0, "set"), (0, 0))
+            c.blit(self.tv_screen(pl.clip, pl.t), (int(TV_SCREEN[0] * W), int(TV_SCREEN[1] * H)), special_flags=pygame.BLEND_RGB_ADD)
+        else:
+            c.blit(self.glass_frame(pl.clip, pl.t, "tv"), (0, 0))
+
+    def draw_room_view(self, c, lit=False):
+        gl = S.glass
+        pl = gl["room_player"]
+        src = A.room_empty if gl["clown"] == "away" and A.room_empty is not None else pl.clip
+        c.blit(self.glass_frame(src, pl.t, "lit" if lit else "glass"), (0, 0))
+        c.blit(self.glare(), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+
+    _turn_snap = None
+
+    def look_down(self, u):
+        W, H = self.W, self.H
+        key = (S.glass.get("trans_until"), W, H)
+        if self._turn_snap is None or self._turn_snap[0] != key:
+            tmp = pygame.Surface((W, H)).convert()
+            self.draw_tv_view(tmp)
+            self._turn_snap = (key, tmp, {})
+        tmp, done = self._turn_snap[1], self._turn_snap[2]
+        if u >= 1 and "floor" in done:
+            return done["floor"]
+        z = 1 + 0.35 * u
+        sw, sh = W / z, H / z
+        sy = clamp(H * (0.5 + 0.32 * u) - sh / 2, 0, H - sh)
+        sx = (W - sw) / 2
+        out = pygame.transform.smoothscale(tmp.subsurface((int(sx), int(sy), int(sw), int(sh))), (W, H))
+        g = int(255 * (1 - 0.55 * u))
+        out.fill((g, g, g), special_flags=pygame.BLEND_RGB_MULT)
+        if u >= 1:
+            done["floor"] = out
+        return out
+
+    def draw_turn(self, c, k):
+        W, H = self.W, self.H
+        split = 0.45
+        if k < split:
+            c.blit(self.look_down(ease_in_out(k / split)), (0, 0))
+            return
+        u = ease_in_out((k - split) / (1 - split))
+        comp = pygame.Surface((W, H)).convert()
+        comp.fill((0, 0, 0))
+        dx = int(u * W)
+        comp.blit(self.look_down(1.0), (-dx, 0))
+        room = pygame.Surface((W, H)).convert()
+        self.draw_room_view(room)
+        comp.blit(room, (W - dx, 0))
+        blur = math.sin(math.pi * u)
+        f = 1 + 14 * blur
+        if f > 1.2:
+            small = pygame.transform.smoothscale(comp, (max(8, int(W / f)), H))
+            comp = pygame.transform.smoothscale(small, (W, H))
+        g = int(255 * (1 - 0.35 * blur))
+        comp.fill((g, g, g), special_flags=pygame.BLEND_RGB_MULT)
+        c.blit(comp, (0, 0))
+
     def draw_glass(self, c):
         gl = S.glass
         W, H = self.W, self.H
@@ -1489,18 +1551,13 @@ class Renderer:
         if gl["mode"] == "intro":
             return
         if gl["tv"]:
-            pl = gl["tv_player"]
-            if A.tv_set is not None:
-                c.blit(self.glass_frame(A.tv_set, 0, "set"), (0, 0))
-                c.blit(self.tv_screen(pl.clip, pl.t), (int(TV_SCREEN[0] * W), int(TV_SCREEN[1] * H)), special_flags=pygame.BLEND_RGB_ADD)
-            else:
-                c.blit(self.glass_frame(pl.clip, pl.t, "tv"), (0, 0))
+            self.draw_tv_view(c)
+        elif t < gl.get("trans_until", 0):
+            k = 1 - (gl["trans_until"] - t) / TURN_TIME
+            self.draw_turn(c, clamp(k, 0, 1))
         else:
             lit = t < gl["flash_until"]
-            pl = gl["room_player"]
-            src = A.room_empty if gl["clown"] == "away" and A.room_empty is not None else pl.clip
-            c.blit(self.glass_frame(src, pl.t, "lit" if lit else "glass"), (0, 0))
-            c.blit(self.glare(), (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+            self.draw_room_view(c, lit)
             if lit:
                 k = (gl["flash_until"] - t) / 300
                 fx, fy = gl["flash_pos"]
@@ -2165,6 +2222,7 @@ GLASS_SPOTS = {
     "closet": dict(clip="room_closet", rect=(0.38, 0.2, 0.62, 0.8), pan=(0.7, 0.7)),
 }
 GLASS_HOLD = 0.3
+TURN_TIME = 800
 SIGHT_TIME = 2.0
 TV_SCREEN = (0.4135, 0.284, 0.5835, 0.514)
 NIGHTS = 5
@@ -2191,7 +2249,11 @@ def glass_toggle_tv():
     if not gl or gl["mode"] != "night":
         return
     gl["tv"] = not gl["tv"]
-    gl["static_until"] = now_ms() + 150
+    if gl["tv"]:
+        gl["trans_until"] = 0
+        gl["static_until"] = now_ms() + 150
+    else:
+        gl["trans_until"] = now_ms() + TURN_TIME
     tv_click()
     if gl["music"]:
         gl["music"].gain.toward(0.16 if gl["tv"] else 0.0, 0.15)
@@ -2199,7 +2261,7 @@ def glass_toggle_tv():
 
 def glass_flash(pos):
     gl = S.glass
-    if not gl or gl["mode"] != "night" or gl["tv"] or gl["charge"] < 1:
+    if not gl or gl["mode"] != "night" or gl["tv"] or gl["charge"] < 1 or now_ms() < gl.get("trans_until", 0):
         return
     gl["charge"] = 0.0
     gl["flash_until"] = now_ms() + 300
@@ -2280,7 +2342,7 @@ def glass_night(n):
         elif gl["clown"] == "peek":
             if rp.t >= GLASS_HOLD * rp.clip.duration:
                 rp.pause()
-            if not gl["tv"] and gl["seen"] is None:
+            if not gl["tv"] and gl["seen"] is None and now_ms() >= gl.get("trans_until", 0):
                 gl["seen"] = gl["t"]
             if gl["seen"] is not None:
                 if gl["t"] - gl["seen"] >= SIGHT_TIME:

@@ -623,6 +623,19 @@ class Assets:
         except Exception as e:
             self.error = e
 
+    def load_bike(self):
+        snd = load_sound("bike.wav")
+        if snd is None:
+            self.bike = None
+            return
+        a = sound_array(snd) * 2.0
+        nx = int(0.3 * SR)
+        if len(a) > 3 * nx:
+            k = np.linspace(0, 1, nx)[:, None]
+            head = a[:nx] * k + a[-nx:] * (1 - k)
+            a = np.concatenate([head, a[nx:-nx]])
+        self.bike = to_sound(np.tanh(a))
+
     def load_drone(self):
         self.drone_synth, self.drone_scale = make_drone_synth()
         self.heart = load_sound("heartbeat.wav")
@@ -2692,10 +2705,14 @@ def start_loading():
     S.loading = dict(video=StreamVideo("loading.mp4"), t0=now_ms(), last=now_ms(), x=0.0)
     A.load_drone()
     AU.start_drone()
+    A.load_bike()
+    S.loading["bike"] = Voice(A.bike, 1.0, loops=-1) if A.bike else None
     A.load()
 
 
 def finish_loading():
+    if S.loading.get("bike"):
+        S.loading["bike"].fade_out(0.3, 1.2)
     S.loading = None
     S.intro_player = Player(A.intro, loop=True)
     S.scare_player = Player(A.scare, loop=True)

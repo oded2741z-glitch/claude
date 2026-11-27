@@ -13,6 +13,7 @@ python -m PyInstaller --noconfirm --clean --windowed --name DarkGlassDemo ^
  --add-data "audio\ambient.wav;audio" ^
  --add-data "audio\runstep.mp3;audio" ^
  --add-data "audio\scream.mp3;audio" ^
+ --add-data "audio\bike.wav;audio" ^
  dark_glass_demo.py
 if errorlevel 1 goto fail
 echo.

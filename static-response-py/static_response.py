@@ -1191,11 +1191,7 @@ class Renderer:
     def __init__(self):
         info = pygame.display.Info()
         sw, sh = info.current_w or 1366, info.current_h or 768
-        w = min(1312, int(sw * 0.9))
-        h = min(752, int(sh * 0.85))
-        w = min(w, int((h - 32) * 16 / 9) + 32)
-        h = min(h, int((w - 32) * 9 / 16) + 32)
-        self.screen = pygame.display.set_mode((w, h), pygame.RESIZABLE)
+        self.screen = pygame.display.set_mode((sw, sh), pygame.NOFRAME)
         self.shake_dir = 1
         self.shake_boost = 1.0
         self.shake_x = 0.0
@@ -1742,6 +1738,7 @@ class State:
     turn_player = None
     glass = None
     loading = None
+    menu = False
 
 
 S = State()
@@ -2420,6 +2417,7 @@ def set_intro_clown(on):
 
 
 def begin(segments, finish):
+    S.menu = False
     set_intro_clown(False)
     hide_panel()
     show_panel([Text("LOADING", "h2")])
@@ -2460,7 +2458,8 @@ def game_complete():
 def show_end():
     show_panel([Text("DARK GLASS", "h1", color=BLOOD, eff=("glow", BLOOD, 0.5, 12)),
                 Text("THANK YOU FOR PLAYING", color=DIM),
-                Row([Button("PLAY AGAIN", new_game)], glitch=False)])
+                Row([Button("PLAY AGAIN", new_game)], glitch=False),
+                exit_row()])
 
 
 DEMO_ROUNDS = 3
@@ -2478,7 +2477,8 @@ def show_demo_end():
     show_panel([Text("DARK GLASS", "h1", color=BLOOD, eff=("glow", BLOOD, 0.5, 12)),
                 Text("He will be back tomorrow night.", "h2", eff=SHADOW),
                 Text("THANK YOU FOR PLAYING THE DEMO. WISHLIST DARK GLASS ON STEAM.", color=DIM),
-                Row([Button("PLAY AGAIN", start_demo)], glitch=False)])
+                Row([Button("PLAY AGAIN", start_demo)], glitch=False),
+                exit_row()])
 
 
 def show_demo_intro():
@@ -2492,10 +2492,12 @@ def show_demo_intro():
                "When he turns around, do not move."]),
         Text("CONTAINS LOUD SOUNDS AND SUDDEN FRIGHTENING IMAGES", "warn"),
         Row([Button("PLAY DEMO", start_demo)], glitch=False),
+        exit_row(),
     ])
 
 
 def show_intro():
+    S.menu = True
     if DEMO:
         show_demo_intro()
         return
@@ -2515,8 +2517,18 @@ def show_intro():
                "Do not look away from the screen."]),
         Text("CONTAINS LOUD SOUNDS AND SUDDEN FRIGHTENING IMAGES", "warn"),
         main_row,
+        exit_row(),
         Row(picks, glitch=False),
     ])
+
+
+def quit_game():
+    pygame.quit()
+    sys.exit()
+
+
+def exit_row():
+    return Row([Button("EXIT", quit_game, small=True)], glitch=False)
 
 
 def show_gate():
@@ -2524,7 +2536,42 @@ def show_gate():
         Text("DARK GLASS", "h1"),
         Text("PUT ON HEADPHONES. THIS PROGRAM USES SOUND.", "warn"),
         Row([Button("CLICK TO ENTER")], glitch=False),
+        exit_row(),
     ])
+
+
+def return_to_menu():
+    RUN.gen = None
+    RUN.cond = None
+    KEYS.clear()
+    if S.glass:
+        if S.glass.get("music"):
+            S.glass["music"].stop()
+        glass_teardown()
+    S.rlgl = None
+    S.holding = False
+    if S.walker_player:
+        hide_walker()
+    if S.scare:
+        if S.scare.get("player"):
+            S.scare["player"].pause()
+        S.scare = None
+    S.peek = None
+    S.hand = None
+    S.blackout = False
+    S.flash_until = 0
+    S.shake_until = 0
+    R.shake_boost = 1.0
+    keep = set()
+    for d in [AU.drone] + AU.dying:
+        if d:
+            keep.update(id(v) for v in (d.synth, d.heart, d.amb) if v)
+    for v in VOICES[:]:
+        if id(v) not in keep:
+            v.stop()
+    AU.start_drone()
+    hide_panel()
+    show_intro()
 
 
 def enter_from_gate():
@@ -2547,6 +2594,10 @@ def handle_event(ev):
         return
     if ev.type == pygame.MOUSEBUTTONDOWN:
         if S.gate:
+            pos = R.to_crt(ev.pos)
+            for rect, btn in P.hits:
+                if btn.label == "EXIT" and rect.collidepoint(pos):
+                    quit_game()
             enter_from_gate()
             return
         if S.scare:
@@ -2559,6 +2610,10 @@ def handle_event(ev):
         on_pointer_up(ev)
         return
     if ev.type == pygame.KEYDOWN:
+        if ev.key == pygame.K_ESCAPE:
+            if not S.gate and not S.menu:
+                return_to_menu()
+            return
         if S.gate:
             enter_from_gate()
             return
@@ -2598,6 +2653,13 @@ R = None
 
 def main():
     global R
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    os.environ["SDL_VIDEO_WINDOW_POS"] = "0,0"
     pygame.mixer.pre_init(SR, -16, 2, 512)
     pygame.init()
     pygame.mixer.set_num_channels(64)

@@ -434,9 +434,9 @@ class Drone:
         self.stop_at = None
         self.synth = Voice(A.drone_synth, 0, loops=-1)
         self.out.ramp(0.025, 2)
-        self.heart = Voice(A.heart, 0, loops=-1) if A.heart else None
-        self.amb = Voice(A.ambient, 0, loops=-1) if A.heart and A.ambient else None
-        if self.heart:
+        self.heart = None
+        self.amb = Voice(A.ambient, 0, loops=-1) if A.ambient else None
+        if self.amb:
             self.hg.ramp(0.22, 1.5)
 
     def update(self):
@@ -638,11 +638,12 @@ class Assets:
 
     def load_drone(self):
         self.drone_synth, self.drone_scale = make_drone_synth()
-        self.heart = load_sound("heartbeat.wav")
+        self.heart = None
         self.ambient = load_sound("ambient.wav")
 
     def _load_base(self):
         self.scream = load_sound("scream.mp3", 1.8)
+        self._load_chant()
         if DEMO:
             self._load_runsteps()
             self.faces = []
@@ -679,6 +680,14 @@ class Assets:
         names = ["room_left", "room_right", "room_closet", "tv_wrong", "tv_empty"] + self.tv_shows
         self.glass = {k: Clip(f"{k}.mp4") for k in names}
         self.clips = [self.intro, self.scare, self.walker, self.turn] + list(self.glass.values())
+
+    def _load_chant(self):
+        snd = load_sound("one_two_three.wav")
+        self.chant = []
+        if snd is not None:
+            arr = sound_array(snd) * 0.9
+            for r in CHANT_RATES:
+                self.chant.append((r, to_sound(resample(arr, r))))
 
     def _load_runsteps(self):
         rs = load_sound("runstep.mp3")
@@ -2097,6 +2106,15 @@ def hide_walker():
 
 
 RLGL_WALK = 30.0
+CHANT_RATES = [0.85, 0.95, 1.05, 1.15, 1.3, 1.45, 1.6, 1.8]
+
+
+def start_chant(progress):
+    if not A.chant:
+        return None, rand(2, 4.5) * (1 - 0.5 * progress)
+    want = rand(0.88, 1.12) * (1 + 0.6 * progress)
+    r, snd = min(A.chant, key=lambda c: abs(c[0] - want))
+    return play(snd), snd.get_length()
 TURN = dict(backStart=0.1, backEnd=4.8, turnStart=4.95, front=5.6, frontStart=6.0, frontEnd=9.8, revStart=10.0, revEnd=11.3)
 
 
@@ -2116,7 +2134,7 @@ def stage_clown_game():
     S.holding = False
     phase = "back"
     progress = 0.0
-    timer = rand(2.5, 4.5)
+    chant, timer = start_chant(0.0)
     watch_t = 0.0
     step_t = 0.0
     last = now_ms()
@@ -2145,6 +2163,8 @@ def stage_clown_game():
                     step_t = 0.5
             timer -= dt
             if progress >= 1:
+                if chant:
+                    chant.fade_out(0.08, 0.3)
                 S.rlgl = None
                 show_panel([Text("You touched him.", "h2")])
                 cue_whisper(1)
@@ -2186,7 +2206,7 @@ def stage_clown_game():
                 if v.t >= TURN["revEnd"] or watch_t > 2:
                     phase = "back"
                     seek(TURN["backStart"])
-                    timer = rand(2, 4.5) * (1 - 0.5 * progress)
+                    chant, timer = start_chant(progress)
         if caught:
             v.pause()
             S.rlgl = None

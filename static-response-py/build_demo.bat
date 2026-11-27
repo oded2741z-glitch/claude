@@ -9,7 +9,7 @@ python -m PyInstaller --noconfirm --clean --windowed --name DarkGlassDemo ^
  --add-data "img\turn.mp4;img" ^
  --add-data "img\walker.mp4;img" ^
  --add-data "img\scare.mp4;img" ^
- --add-data "audio\heartbeat.wav;audio" ^
+ --add-data "audio\one_two_three.wav;audio" ^
  --add-data "audio\ambient.wav;audio" ^
  --add-data "audio\runstep.mp3;audio" ^
  --add-data "audio\scream.mp3;audio" ^

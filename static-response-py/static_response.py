@@ -1358,11 +1358,17 @@ class Renderer:
         if S.walker:
             wf = S.walker_from
             if wf:
-                k = clamp((now_ms() - wf["t0"]) / wf["dur"], 0, 1)
-                h = H * (wf["s0"] + (1 - wf["s0"]) * k)
-                bottom = H * (wf["b0"] + (1 - wf["b0"]) * k)
-                w = h * 460 / 720
-                draw_screen_video(c, S.walker_player, ((W - w) / 2, bottom - h, w, h))
+                el = (now_ms() - wf["t0"]) / 1000
+                steps = wf["dur"] / wf["step"]
+                ph = clamp(el / wf["step"], 0, steps)
+                k = (math.floor(ph) + ease_in_out(ph - math.floor(ph))) / steps if ph < steps else 1.0
+                fh = H * (wf["fh0"] + (WALK_END_FH - wf["fh0"]) * k)
+                fbot = H * (wf["fbot0"] + (WALK_END_FBOT - wf["fbot0"]) * k)
+                fbot -= math.sin(math.pi * (ph - math.floor(ph))) * WALK_BOB * fh
+                wt, wb, wcx = figure_box(S.walker_player.clip, 0.0)
+                h = fh / (wb - wt)
+                w = h * S.walker_player.clip.size[0] / S.walker_player.clip.size[1]
+                draw_screen_video(c, S.walker_player, (W / 2 - wcx * w, fbot - wb * h, w, h))
             else:
                 h = H
                 w = h * 460 / 720
@@ -2106,6 +2112,29 @@ def hide_walker():
 
 
 RLGL_WALK = 30.0
+WALK_RATE = 1.5
+WALK_STEP = 0.65
+WALK_TIME = 2.0
+WALK_BOB = 0.012
+WALK_END_FH = 0.95
+WALK_END_FBOT = 0.99
+_fig_cache = {}
+
+
+def figure_box(clip, t):
+    key = (id(clip), round(t, 2))
+    box = _fig_cache.get(key)
+    if box is None:
+        g = cv2.cvtColor(clip.rgb(t), cv2.COLOR_RGB2GRAY)
+        m = g > 60
+        rows = np.where(m.sum(1) > 3)[0]
+        cols = np.where(m.sum(0) > 6)[0]
+        if len(rows) and len(cols):
+            box = (rows.min() / g.shape[0], rows.max() / g.shape[0], (cols.min() + cols.max()) / 2 / g.shape[1])
+        else:
+            box = (0.05, 0.97, 0.5)
+        _fig_cache[key] = box
+    return box
 CHANT_RATES = [0.85, 0.95, 1.05, 1.15, 1.3, 1.45, 1.6, 1.8]
 
 
@@ -2212,9 +2241,13 @@ def stage_clown_game():
             v.pause()
             S.rlgl = None
             sc = rg["scale"]
-            S.walker_from = dict(s0=0.96 * sc, b0=0.02 + 0.96 * (0.7 + 0.3 * sc), t0=now_ms(), dur=2000)
-            show_walker(0.8, 520)
-            yield 2000
+            vh = 0.96 * sc
+            vtop = 0.02 + 0.96 * 0.7 - 0.7 * vh
+            tt, tb, _ = figure_box(A.turn, (TURN["frontStart"] + TURN["frontEnd"]) / 2)
+            S.walker_from = dict(fh0=(tb - tt) * vh, fbot0=vtop + tb * vh, t0=now_ms(), dur=WALK_TIME,
+                                 step=WALK_STEP / WALK_RATE)
+            show_walker(WALK_RATE, WALK_STEP * 1000)
+            yield WALK_TIME * 1000
             hide_walker()
             return False
         rg["scale"] = 0.42 + 0.78 * progress

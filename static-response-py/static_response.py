@@ -684,7 +684,9 @@ class Assets:
         self.walker = Clip("walker.mp4", 1.15)
         self.turn = Clip("turn.mp4")
         self.tv_shows = sorted(os.path.splitext(f)[0] for f in os.listdir(IMG_DIR) if f.startswith("tv_show") and f.endswith(".mp4"))
-        names = ["room_left", "room_right", "room_closet", "tv_wrong", "tv_empty"] + self.tv_shows
+        names = ["room_left", "room_right", "room_closet", "tv_empty"] + self.tv_shows
+        if os.path.exists(os.path.join(IMG_DIR, "tv_wrong.mp4")):
+            names.append("tv_wrong")
         self.glass = {k: Clip(f"{k}.mp4") for k in names}
         self.clips = [self.intro, self.scare, self.walker, self.turn] + list(self.glass.values())
 
@@ -2446,7 +2448,7 @@ def glass_night(n, demo=False):
             pass
         elif gl["clown"] == "peek" and gl["threat"] >= 0.8:
             glass_set_tv_clip(gl, "tv_empty")
-        elif gl["clown"] == "peek" and gl["threat"] >= 0.5:
+        elif gl["clown"] == "peek" and gl["threat"] >= 0.5 and "tv_wrong" in A.glass:
             glass_set_tv_clip(gl, "tv_wrong")
         else:
             glass_set_tv_clip(gl, "tv_show")

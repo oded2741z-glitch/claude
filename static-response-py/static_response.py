@@ -2114,7 +2114,7 @@ def hide_walker():
 RLGL_WALK = 30.0
 WALK_RATE = 1.5
 WALK_STEP = 0.65
-WALK_TIME = 2.0
+WALK_TIME = 4.0
 WALK_BOB = 0.012
 WALK_END_FH = 0.95
 WALK_END_FBOT = 0.99
@@ -2249,6 +2249,9 @@ def stage_clown_game():
             show_walker(WALK_RATE, WALK_STEP * 1000)
             yield WALK_TIME * 1000
             hide_walker()
+            S.blackout = True
+            yield 5000
+            S.blackout = False
             return False
         rg["scale"] = 0.42 + 0.78 * progress
         rg["progress"] = progress

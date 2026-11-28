@@ -644,14 +644,21 @@ class Assets:
     def _load_base(self):
         self.scream = load_sound("scream.mp3", 1.8)
         self._load_chant()
+        self._load_tinnitus()
         if DEMO:
             self._load_runsteps()
             self.faces = []
+            self.music_box = make_music_box()
+            self.room_empty = read_optional("room_empty.jpg")
+            self.tv_set = read_optional("tv_set.jpg")
             self.intro = Clip("intro.mp4", 1.1)
             self.scare = Clip("scare.mp4")
             self.walker = Clip("walker.mp4", 1.15)
             self.turn = Clip("turn.mp4")
-            self.clips = [self.intro, self.scare, self.walker, self.turn]
+            self.tv_shows = []
+            empty = Clip("tv_empty.mp4")
+            self.glass = {"tv_empty": empty, "room_left": empty}
+            self.clips = [self.intro, self.scare, self.walker, self.turn, empty]
             return
         self.eye = css_filter(read_rgb("eye.jpg"), ("gray", 1), ("contrast", 1.2), ("bright", 0.9))
         self.flash = [css_filter(read_rgb(f"f{i}.jpg"), ("contrast", 1.2), ("bright", 0.95)) for i in (18, 19, 20)]
@@ -688,6 +695,18 @@ class Assets:
             arr = sound_array(snd) * 0.9
             for r in CHANT_RATES:
                 self.chant.append((r, to_sound(resample(arr, r))))
+
+    def _load_tinnitus(self):
+        snd = load_sound("tinnitus.wav")
+        self.tinnitus = None
+        if snd is not None:
+            a = sound_array(snd)[: int(5.0 * SR)] * 0.55
+            n = len(a)
+            fade = np.ones(n)
+            fi, fo = int(0.15 * SR), int(1.5 * SR)
+            fade[:fi] = np.linspace(0, 1, fi)
+            fade[n - fo:] = np.linspace(1, 0, fo)
+            self.tinnitus = to_sound(a * fade[:, None])
 
     def _load_runsteps(self):
         rs = load_sound("runstep.mp3")
@@ -1591,7 +1610,8 @@ class Renderer:
         f = font("display", px)
         pt = clamp(0.03 * W, 10, 28)
         pl_ = clamp(0.04 * W, 14, 40)
-        img, pad = text_image("display", px, f"NIGHT {gl['night']}", PHOSPHOR, 0.06, ("shadow", (6,)))
+        label = "DEMO" if gl.get("demo") else f"NIGHT {gl['night']}"
+        img, pad = text_image("display", px, label, DIM if gl.get("demo") else PHOSPHOR, 0.06, ("shadow", (6,)))
         c.blit(img, (int(pl_ - pad), int(pt - pad)))
         hour = int(gl["t"] / gl["hour_len"])
         img, pad = text_image("display", px, f"{12 if hour == 0 else hour}:00 AM", PHOSPHOR, 0.06, ("shadow", (6,)))
@@ -1599,7 +1619,7 @@ class Renderer:
         if gl["tv"]:
             hint = "CHARGING THE FLASH    SPACE  TURN OFF THE TV" if gl["charge"] < 1 else "SPACE  TURN OFF THE TV"
         else:
-            hint = "CLICK ON HIM TO FLASH    SPACE  TV ON" if gl["charge"] >= 1 else "THE FLASH CHARGES ONLY WHILE THE TV IS ON"
+            hint = ("CLICK TO FLASH    SPACE  TV ON" if gl.get("demo") else "CLICK ON HIM TO FLASH    SPACE  TV ON") if gl["charge"] >= 1 else "THE FLASH CHARGES ONLY WHILE THE TV IS ON"
         img, pad = text_image("display", px, hint, DIM, 0.06, ("shadow", (6, 2)))
         fh = f.get_height()
         c.blit(img, (int((W - img.get_width()) / 2), int(H - pt - fh - pad)))
@@ -2250,6 +2270,7 @@ def stage_clown_game():
             yield WALK_TIME * 1000
             hide_walker()
             S.blackout = True
+            play(A.tinnitus)
             yield 5000
             S.blackout = False
             return False
@@ -2354,15 +2375,16 @@ def glass_set_tv_clip(gl, name):
         gl["static_until"] = now_ms() + 120
 
 
-def glass_night(n):
+def glass_night(n, demo=False):
     gl = S.glass
-    night_len = NIGHT_LEN
+    night_len = DEMO_ROOM_LEN if demo else NIGHT_LEN
     gl.update(night=n, t=0.0, hour_len=night_len / 6, tv=True, charge=1.0, flash_until=0, static_until=0,
               clown="away", spot=None, threat=0.0, seen=None, cooldown=0.0, fake=rand(8, 14), mode="night")
-    gl["spawns"] = night_spawn_times(night_len)
+    gl["spawns"] = [] if demo else night_spawn_times(night_len)
+    gl["demo"] = demo
     threat_time = 7.4 - 0.9 * n
     gl["tv_name"] = None
-    glass_set_tv_clip(gl, "tv_show")
+    glass_set_tv_clip(gl, "tv_empty" if demo else "tv_show")
     rp = gl["room_player"]
     rp.clip = A.glass["room_left"]
     rp.seek(rp.clip.duration)
@@ -2411,7 +2433,7 @@ def glass_night(n):
         elif gl["clown"] == "retreat":
             if rp.ended:
                 gl["clown"] = "away"
-        if n >= 3:
+        if n >= 3 and not demo:
             gl["fake"] -= dt
             if gl["fake"] <= 0:
                 gl["fake"] = rand(7, 13)
@@ -2420,7 +2442,9 @@ def glass_night(n):
                     if v:
                         v.pan = random.choice([sp["pan"] for sp in GLASS_SPOTS.values()])
                         v.apply()
-        if gl["clown"] == "peek" and gl["threat"] >= 0.8:
+        if demo:
+            pass
+        elif gl["clown"] == "peek" and gl["threat"] >= 0.8:
             glass_set_tv_clip(gl, "tv_empty")
         elif gl["clown"] == "peek" and gl["threat"] >= 0.5:
             glass_set_tv_clip(gl, "tv_wrong")
@@ -2437,7 +2461,7 @@ def glass_night(n):
 
 
 def glass_setup():
-    S.glass = dict(mode="intro", tv=True, room_player=Player(A.glass["room_left"]), tv_player=Player(A.glass["tv_show"], loop=True),
+    S.glass = dict(mode="intro", tv=True, room_player=Player(A.glass["room_left"]), tv_player=Player(A.glass.get("tv_show", A.glass["tv_empty"]), loop=True),
                    music=None, hits=0, night=1, t=0.0, hour_len=15.0,
                    charge=1.0, flash_until=0, static_until=0, flash_pos=(0, 0), tv_name=None)
 
@@ -2597,8 +2621,29 @@ def show_end():
 DEMO_ROUNDS = 3
 
 
+DEMO_ROOM_LEN = 60.0
+
+
+def demo_room(show_help):
+    glass_setup()
+    if show_help:
+        show_panel([Text("THE DARK GLASS", "h2"),
+                    Text("Do not turn around. Press SPACE to turn the TV off and watch the room in the dark glass. "
+                         "Click to use the flash. The flash charges only while the TV is on.", color=DIM)])
+        yield 7000
+        hide_panel()
+    yield from glass_night(1, demo=True)
+    glass_teardown()
+    return True
+
+
 def demo_segments():
-    return [("CLOWN GAME", (lambda i=i: stage_clown(i == 0))) for i in range(DEMO_ROUNDS)]
+    segs = []
+    for i in range(DEMO_ROUNDS):
+        segs.append(("CLOWN GAME", (lambda i=i: stage_clown(i == 0))))
+        if i < DEMO_ROUNDS - 1:
+            segs.append(("ROOM", (lambda i=i: demo_room(i == 0))))
+    return segs
 
 
 def start_demo():

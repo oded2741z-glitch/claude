@@ -14,6 +14,10 @@ python -m PyInstaller --noconfirm --clean --windowed --name DarkGlassDemo ^
  --add-data "audio\runstep.mp3;audio" ^
  --add-data "audio\scream.mp3;audio" ^
  --add-data "audio\bike.wav;audio" ^
+ --add-data "audio\tinnitus.wav;audio" ^
+ --add-data "img\tv_empty.mp4;img" ^
+ --add-data "img\tv_set.jpg;img" ^
+ --add-data "img\room_empty.jpg;img" ^
  dark_glass_demo.py
 if errorlevel 1 goto fail
 echo.

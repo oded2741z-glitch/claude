@@ -2166,7 +2166,7 @@ def start_chant(progress):
     want = rand(0.88, 1.12) * (1 + 0.6 * progress)
     r, snd = min(A.chant, key=lambda c: abs(c[0] - want))
     return play(snd), snd.get_length()
-TURN = dict(backStart=0.1, backEnd=4.8, turnStart=5.0, front=7.7, frontStart=8.2, frontEnd=13.5, revStart=13.8, revEnd=15.4)
+TURN = dict(backStart=0.1, backEnd=5.0, turnStart=5.2, front=7.5, frontStart=8.0, frontEnd=13.8, revStart=14.1, revEnd=15.35)
 TURN_RATE = 3.2
 
 

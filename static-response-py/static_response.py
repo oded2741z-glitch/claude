@@ -2115,7 +2115,8 @@ def start_chant(progress):
     want = rand(0.88, 1.12) * (1 + 0.6 * progress)
     r, snd = min(A.chant, key=lambda c: abs(c[0] - want))
     return play(snd), snd.get_length()
-TURN = dict(backStart=0.1, backEnd=4.8, turnStart=4.95, front=5.6, frontStart=6.0, frontEnd=9.8, revStart=10.0, revEnd=11.3)
+TURN = dict(backStart=0.1, backEnd=4.8, turnStart=5.0, front=7.7, frontStart=8.2, frontEnd=13.5, revStart=13.8, revEnd=15.4)
+TURN_RATE = 3.2
 
 
 def next_frame():
@@ -2175,13 +2176,13 @@ def stage_clown_game():
             if timer <= 0:
                 phase = "turning"
                 watch_t = 0
-                v.rate = 2.6
+                v.rate = TURN_RATE
                 seek(TURN["turnStart"])
         elif phase == "turning":
             watch_t += dt
             if holding and v.t >= (TURN["turnStart"] + TURN["front"]) / 2:
                 caught = True
-            elif v.t >= TURN["front"] or watch_t > 0.6:
+            elif v.t >= TURN["front"] or watch_t > (TURN["front"] - TURN["turnStart"]) / TURN_RATE + 0.15:
                 phase = "watching"
                 watch_t = 0
                 v.rate = 1.0

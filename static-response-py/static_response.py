@@ -2560,7 +2560,15 @@ def build_segments():
 
 SEGMENTS = build_segments()
 CONTINUE_INDEX = 3
-DEV_PICKS = ["QUESTIONS", "ACTIONS", "CLOWN GAME", "NIGHT 1", "NIGHT 2", "NIGHT 3", "NIGHT 4", "NIGHT 5", "STORY"]
+DEV_PICKS = ["QUESTIONS", "ACTIONS", "CLOWN GAME", "NIGHT 1", "NIGHT 2", "NIGHT 3", "NIGHT 4", "NIGHT 5", "STORY", "JUMPSCARE"]
+
+
+def test_jumpscare():
+    yield 500
+    AU.stop_drone()
+    yield from jumpscare()
+    AU.start_drone()
+    return True
 
 
 # ---------------------------------------------------------------- game flow
@@ -2602,6 +2610,9 @@ def continue_game():
 
 
 def test_segment(label):
+    if label == "JUMPSCARE":
+        RUN.start(begin([(label, test_jumpscare)], show_intro))
+        return
     seg = next(sg for sg in SEGMENTS if sg[0] == label)
     if label == "NIGHT 1":
         seg = (label, lambda: play_night(1, True))
